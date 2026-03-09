@@ -3,17 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
-import { api, type Balance, type Fill } from "@/lib/api";
-
-interface Position {
-  ticker: string;
-  market_title?: string;
-  side: string;
-  quantity: number;
-  avg_price_dollars?: number;
-  market_price_dollars?: number;
-  pnl_dollars?: number;
-}
+import { api, type Balance, type Fill, type Position } from "@/lib/api";
 
 export default function PortfolioPage() {
   const [balance, setBalance] = useState<Balance | null>(null);
@@ -39,9 +29,10 @@ export default function PortfolioPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const totalInvested = positions.reduce((s, p) => s + ((p.avg_price_dollars ?? 0) * (p.quantity ?? 0)), 0);
-  const totalPnl = positions.reduce((s, p) => s + (p.pnl_dollars ?? 0), 0);
-  const totalValue = (balance?.balance_dollars ?? 0) + totalInvested;
+  const totalPnl = positions.reduce((s, p) => s + parseFloat(p.realized_pnl_dollars ?? "0"), 0);
+  const balanceDollars = parseFloat(balance?.balance_dollars ?? "0");
+  const totalExposure = balance?.total_exposure ?? 0;
+  const totalValue = balanceDollars + totalExposure;
 
   return (
     <div className="space-y-6">
@@ -55,9 +46,9 @@ export default function PortfolioPage() {
       {/* Stats Row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Total Value" value={`$${totalValue.toFixed(2)}`} />
-        <StatCard label="Available Cash" value={`$${balance?.balance_dollars?.toFixed(2) ?? "—"}`} />
-        <StatCard label="Invested" value={`$${totalInvested.toFixed(2)}`} />
-        <StatCard label="Total P&L" value={`${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`} change={totalValue > 0 ? (totalPnl / totalValue) * 100 : 0} />
+        <StatCard label="Available Cash" value={`$${balanceDollars.toFixed(2)}`} />
+        <StatCard label="Exposure" value={`$${totalExposure.toFixed(2)}`} />
+        <StatCard label="Realized P&L" value={`${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`} change={totalValue > 0 ? (totalPnl / totalValue) * 100 : 0} />
       </div>
 
       {/* Positions Table */}
@@ -72,40 +63,35 @@ export default function PortfolioPage() {
               <thead>
                 <tr className="border-b border-white/10 text-xs text-[var(--muted)]">
                   <th className="pb-2 pr-4 font-medium">Market</th>
-                  <th className="pb-2 pr-4 font-medium">Side</th>
-                  <th className="pb-2 pr-4 font-medium">Qty</th>
-                  <th className="pb-2 pr-4 font-medium">Avg Entry</th>
-                  <th className="pb-2 pr-4 font-medium">Market Price</th>
-                  <th className="pb-2 font-medium">P&L</th>
+                  <th className="pb-2 pr-4 font-medium">Position</th>
+                  <th className="pb-2 pr-4 font-medium">Exposure</th>
+                  <th className="pb-2 pr-4 font-medium">Realized P&L</th>
+                  <th className="pb-2 font-medium">Fees</th>
                 </tr>
               </thead>
               <tbody>
                 {positions.map((p, i) => {
-                  const pnl = p.pnl_dollars ?? 0;
+                  const pnl = parseFloat(p.realized_pnl_dollars ?? "0");
                   return (
                     <tr key={i} className="border-b border-white/5 last:border-0">
                       <td className="py-3 pr-4">
                         <div className="text-sm font-medium text-white">{p.ticker}</div>
-                        {p.market_title && (
-                          <div className="text-xs text-[var(--muted)] line-clamp-1">{p.market_title}</div>
-                        )}
                       </td>
                       <td className="py-3 pr-4">
                         <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                          p.side === "yes" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                          p.position > 0 ? "bg-green-500/20 text-green-400" : p.position < 0 ? "bg-red-500/20 text-red-400" : "bg-white/10 text-[var(--muted)]"
                         }`}>
-                          {(p.side || "—").toUpperCase()}
+                          {p.position > 0 ? `YES ×${p.position}` : p.position < 0 ? `NO ×${Math.abs(p.position)}` : "FLAT"}
                         </span>
                       </td>
-                      <td className="py-3 pr-4 text-sm text-white tabular-nums">{p.quantity}</td>
                       <td className="py-3 pr-4 text-sm text-[var(--muted)] tabular-nums">
-                        {p.avg_price_dollars != null ? `$${p.avg_price_dollars.toFixed(2)}` : "—"}
+                        {p.market_exposure_dollars ? `$${p.market_exposure_dollars}` : "—"}
                       </td>
-                      <td className="py-3 pr-4 text-sm text-white tabular-nums">
-                        {p.market_price_dollars != null ? `$${p.market_price_dollars.toFixed(2)}` : "—"}
-                      </td>
-                      <td className={`py-3 text-sm font-medium tabular-nums ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                      <td className={`py-3 pr-4 text-sm font-medium tabular-nums ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
                         {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+                      </td>
+                      <td className="py-3 text-sm text-[var(--muted)] tabular-nums">
+                        {p.fees_paid_dollars ? `$${p.fees_paid_dollars}` : "—"}
                       </td>
                     </tr>
                   );
