@@ -19,10 +19,14 @@ from pydantic import BaseModel, Field
 
 
 class MarketStatus(str, Enum):
+    # ── Values accepted by Kalshi API status filter ──
+    OPEN = "open"
+    CLOSED = "closed"
+    SETTLED = "settled"
+    # ── Response-only values (markets may have these in their data) ──
     INITIALIZED = "initialized"
     INACTIVE = "inactive"
-    ACTIVE = "active"
-    CLOSED = "closed"
+    ACTIVE = "active"       # legacy alias — use OPEN for API queries
     DETERMINED = "determined"
     DISPUTED = "disputed"
     AMENDED = "amended"
@@ -388,7 +392,7 @@ class OrderbookLevel(BaseModel):
 class Orderbook(BaseModel):
     """Full orderbook for a market."""
 
-    ticker: str
+    ticker: str | None = None  # Not always in response; caller injects it
     yes_bids: list[OrderbookLevel] = Field(default_factory=list)
     no_bids: list[OrderbookLevel] = Field(default_factory=list)
 
