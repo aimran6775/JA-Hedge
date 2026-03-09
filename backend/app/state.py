@@ -23,7 +23,7 @@ class AppState:
     # Engines
     execution_engine: Any | None = None  # ExecutionEngine
     risk_manager: Any | None = None  # RiskManager
-    trading_strategy: Any | None = None  # TradingStrategy
+    trading_strategy: Any | None = None  # TradingStrategy (legacy)
 
     # Pipelines
     market_pipeline: Any | None = None  # MarketDataPipeline
@@ -32,7 +32,10 @@ class AppState:
     # AI
     feature_engine: Any | None = None  # FeatureEngine
     prediction_model: Any | None = None  # PredictionModel
-    autonomous_agent: Any | None = None  # AutonomousAgent
+    autonomous_agent: Any | None = None  # AutonomousAgent (legacy)
+
+    # 🧟 FRANKENSTEIN — The unified AI brain
+    frankenstein: Any | None = None  # Frankenstein
 
     # Alerts
     alert_manager: Any | None = None  # AlertManager

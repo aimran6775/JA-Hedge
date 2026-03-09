@@ -73,6 +73,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.ai.models import XGBoostPredictor
     from app.ai.strategy import TradingStrategy
     from app.ai.agent import AutonomousAgent
+    from app.frankenstein import Frankenstein
+    from app.frankenstein.brain import FrankensteinConfig
 
     feat_engine = FeatureEngine()
     model = XGBoostPredictor()
@@ -90,7 +92,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.prediction_model = model
     state.trading_strategy = strategy
 
-    # Autonomous AI Trading Agent
+    # Autonomous AI Trading Agent (legacy — kept for backwards compatibility)
     agent = AutonomousAgent(
         model=model,
         feature_engine=feat_engine,
@@ -98,6 +100,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         risk_manager=risk_mgr,
     )
     state.autonomous_agent = agent
+
+    # 🧟 FRANKENSTEIN — The unified AI brain
+    frank_config = FrankensteinConfig(
+        scan_interval=settings.strategy_scan_interval,
+        retrain_interval=3600.0,  # Retrain every hour
+        min_train_samples=50,
+        retrain_threshold=25,
+        memory_persist_path="data/frankenstein_memory.json",
+        checkpoint_dir="data/models",
+    )
+    frankenstein = Frankenstein(
+        model=model,
+        feature_engine=feat_engine,
+        execution_engine=exec_engine,
+        risk_manager=risk_mgr,
+        config=frank_config,
+    )
+    state.frankenstein = frankenstein
+    log.info("🧟 frankenstein_created", generation=0)
 
     # Market data pipeline
     from app.pipeline import MarketDataPipeline
@@ -118,6 +139,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── Shutdown ──────────────────────────────────────────
     log.info("shutting_down")
+
+    # Stop Frankenstein first (saves memory)
+    if state.frankenstein:
+        try:
+            await state.frankenstein.sleep()
+        except Exception:
+            pass
 
     # Stop strategy
     if state.trading_strategy:
@@ -194,17 +222,18 @@ async def health_check() -> dict:
         "status": "ok" if app_state.ready else "starting",
         "mode": settings.jahedge_mode.value,
         "has_api_keys": settings.has_api_keys,
-        "version": "0.1.0",
+        "version": "0.2.0",
         "components": {
             "database": "connected",
             "kalshi_api": "ready" if app_state.kalshi_api else "not_initialized",
             "execution_engine": "ready" if app_state.execution_engine else "not_initialized",
             "risk_manager": "ready" if app_state.risk_manager else "not_initialized",
             "ai_strategy": "ready" if app_state.trading_strategy else "not_initialized",
+            "frankenstein": "alive" if (app_state.frankenstein and app_state.frankenstein._state.is_alive) else "sleeping",
         },
     }
 
 
 @app.get("/")
 async def root() -> dict:
-    return {"name": "JA Hedge", "version": "0.1.0", "docs": "/docs"}
+    return {"name": "JA Hedge", "version": "0.2.0", "brain": "Frankenstein", "docs": "/docs"}

@@ -10,6 +10,7 @@ from app.routes.risk import router as risk_router
 from app.routes.alerts import router as alerts_router
 from app.routes.backtest import router as backtest_router
 from app.routes.agent import router as agent_router
+from app.routes.frankenstein import router as frankenstein_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(markets_router)
@@ -20,3 +21,4 @@ api_router.include_router(risk_router)
 api_router.include_router(alerts_router)
 api_router.include_router(backtest_router)
 api_router.include_router(agent_router)
+api_router.include_router(frankenstein_router)
