@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+.venv-old-icloud/
+.venv*/
+venv/
+env/
+
+# Node
+node_modules/
+node_modules*/
+.next/
+out/
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.production
+*.pem
+*.key
+keys/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+server.log
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ML Models
+models/*.pkl
+models/*.joblib
+models/*.pt
+mlruns/
+
+# Research docs (keep in repo)
+# !RESEARCH.md
+# !BUILD_PLAN.md

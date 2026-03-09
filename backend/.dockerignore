@@ -1,0 +1,16 @@
+.venv
+.venv-old-icloud
+.venv 2
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+htmlcov
+*.egg-info
+dist
+build
+.eggs
+server.log
+keys/
+alembic/versions/

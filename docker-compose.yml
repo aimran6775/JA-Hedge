@@ -1,0 +1,91 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL + TimescaleDB ───────────────────────────
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: jahedge-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jahedge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jahedge_dev_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-jahedge}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jahedge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: jahedge-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI) ──────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: jahedge-backend
+    env_file: .env
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - ./keys:/app/keys:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Frontend (Next.js) ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: jahedge-frontend
+    env_file: .env    environment:
+      - INTERNAL_API_URL=http://backend:8000    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    command: npm run dev
+
+  # ── Celery Worker (AI tasks, backtesting) ──────────────
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: jahedge-celery
+    env_file: .env
+    volumes:
+      - ./backend:/app
+      - ./keys:/app/keys:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+
+volumes:
+  pgdata:
+  redisdata:
