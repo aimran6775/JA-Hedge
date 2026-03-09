@@ -8,19 +8,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency spec first for Docker layer caching
-COPY pyproject.toml ./
+COPY backend/pyproject.toml ./
 
 # Install Python deps (non-editable for production)
 RUN pip install --no-cache-dir .
 
-# Copy application code
-COPY . .
+# Copy application code (from backend/ subdirectory — build context is repo root)
+COPY backend/ .
 
 # Create keys dir — private key injected at runtime via KALSHI_PRIVATE_KEY_BASE64
 RUN mkdir -p /app/keys
 
-# Entrypoint script writes key file from env var, then starts uvicorn
-COPY entrypoint.sh /app/entrypoint.sh
+# Make entrypoint executable (already copied by COPY backend/ .)
 RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8000
