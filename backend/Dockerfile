@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir .
 COPY backend/ .
 
 # Create keys dir — private key injected at runtime via KALSHI_PRIVATE_KEY_BASE64
-RUN mkdir -p /app/keys
+RUN rm -rf /app/keys && mkdir -p /app/keys
 
 # Make entrypoint executable (already copied by COPY backend/ .)
 RUN chmod +x /app/entrypoint.sh

@@ -1,0 +1,31 @@
+# Root .dockerignore for Railway builds (build context = repo root)
+.git
+.gitignore
+*.md
+LICENSE
+
+# Python
+backend/.venv
+backend/.venv-old-icloud
+backend/.venv 2
+backend/__pycache__
+backend/*.pyc
+backend/*.egg-info
+backend/dist
+backend/build
+backend/server.log
+backend/keys
+backend/.pytest_cache
+backend/.coverage
+backend/htmlcov
+
+# Frontend
+frontend/node_modules
+frontend/node_modules 2
+frontend/.next
+frontend/.env
+frontend/.env.local
+
+# OS files
+.DS_Store
+**/.DS_Store
