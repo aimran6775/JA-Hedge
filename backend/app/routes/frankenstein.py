@@ -187,3 +187,127 @@ async def scheduler_status() -> dict:
     """Get background scheduler status."""
     frank = _get_frank()
     return frank.scheduler.stats()
+
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
+
+def _get_chat():
+    """Get or create the Frankenstein chat engine."""
+    frank = _get_frank()
+    if not hasattr(frank, '_chat') or frank._chat is None:
+        from app.frankenstein.chat import FrankensteinChat
+        frank._chat = FrankensteinChat(brain=frank)
+    return frank._chat
+
+
+@router.get("/chat/welcome")
+async def chat_welcome() -> dict:
+    """Get Frankenstein's welcome message when chat opens."""
+    chat = _get_chat()
+    msg = chat.get_welcome()
+    return msg.to_dict()
+
+
+@router.post("/chat")
+async def chat_message(body: dict) -> dict:
+    """Send a message to Frankenstein and get a response."""
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(400, "Message cannot be empty")
+
+    chat = _get_chat()
+
+    # Handle slash commands
+    if message.startswith("/"):
+        return await _handle_command(message, chat)
+
+    response = chat.chat(message)
+    return response.to_dict()
+
+
+@router.get("/chat/history")
+async def chat_history(n: int = 50) -> list[dict]:
+    """Get recent chat history."""
+    chat = _get_chat()
+    return chat.get_history(n=n)
+
+
+async def _handle_command(command: str, chat) -> dict:
+    """Handle slash commands in chat."""
+    from app.frankenstein.chat import ChatMessage
+
+    cmd = command.lower().strip()
+    frank = chat.brain
+
+    if cmd == "/status":
+        resp = chat.chat("What's your current status?")
+        return resp.to_dict()
+
+    elif cmd == "/awaken":
+        if frank._state.is_alive:
+            msg = ChatMessage(
+                role="frankenstein",
+                content="🧟⚡ I'm already awake! Ask me anything.",
+                data={"type": "command", "command": "awaken"},
+            )
+        else:
+            await frank.awaken()
+            msg = ChatMessage(
+                role="frankenstein",
+                content=(
+                    "🧟⚡ **FRANKENSTEIN IS ALIVE!**\n\n"
+                    "All systems online. Background tasks started:\n"
+                    "- 🔍 Market scanning\n"
+                    "- 🧬 Hourly retraining\n"
+                    "- 📊 Performance tracking\n"
+                    "- 🎛️ Strategy adaptation\n"
+                    "- 💾 Auto-save\n"
+                    "- ❤️ Health monitoring\n\n"
+                    "I'm ready to trade. What would you like to know?"
+                ),
+                data={"type": "command", "command": "awaken"},
+            )
+        chat.session.add(msg)
+        return msg.to_dict()
+
+    elif cmd == "/sleep":
+        await frank.sleep()
+        msg = ChatMessage(
+            role="frankenstein",
+            content="🧟💤 Going to sleep... Memory saved. Goodnight.",
+            data={"type": "command", "command": "sleep"},
+        )
+        chat.session.add(msg)
+        return msg.to_dict()
+
+    elif cmd == "/retrain":
+        result = await frank.force_retrain()
+        if result.get("success"):
+            msg = ChatMessage(
+                role="frankenstein",
+                content=(
+                    f"🧬 **Model Retrained!**\n\n"
+                    f"- New version: `{result['version']}`\n"
+                    f"- Generation: {result['generation']}\n"
+                    f"- Validation AUC: {result['auc']:.4f}\n\n"
+                    f"The new model has been promoted. Let's see if it trades better."
+                ),
+                data={"type": "command", "command": "retrain", "result": result},
+            )
+        else:
+            msg = ChatMessage(
+                role="frankenstein",
+                content=(
+                    f"🧬 Retrain attempted but no promotion — "
+                    f"{result.get('reason', 'unknown reason')}.\n"
+                    f"Need more trade data or the challenger didn't beat the champion."
+                ),
+                data={"type": "command", "command": "retrain", "result": result},
+            )
+        chat.session.add(msg)
+        return msg.to_dict()
+
+    else:
+        # Unknown command — treat as regular message
+        resp = chat.chat(command)
+        return resp.to_dict()

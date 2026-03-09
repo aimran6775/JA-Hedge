@@ -272,4 +272,28 @@ export const api = {
         body: JSON.stringify(config),
       }),
   },
+
+  // Frankenstein AI Brain
+  frankenstein: {
+    status: () => apiFetch<Record<string, unknown>>("/frankenstein/status"),
+    health: () => apiFetch<Record<string, unknown>>("/frankenstein/health"),
+    awaken: () =>
+      apiFetch<{ status: string; message: string }>("/frankenstein/awaken", {
+        method: "POST",
+      }),
+    sleep: () =>
+      apiFetch<{ status: string; message: string }>("/frankenstein/sleep", {
+        method: "POST",
+      }),
+    chatWelcome: () => apiFetch<Record<string, unknown>>("/frankenstein/chat/welcome"),
+    chat: (message: string) =>
+      apiFetch<Record<string, unknown>>("/frankenstein/chat", {
+        method: "POST",
+        body: JSON.stringify({ message }),
+      }),
+    chatHistory: (n?: number) =>
+      apiFetch<Record<string, unknown>[]>(
+        `/frankenstein/chat/history${n ? `?n=${n}` : ""}`,
+      ),
+  },
 };

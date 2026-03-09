@@ -66,3 +66,6 @@ mlruns/
 # Research docs (keep in repo)
 # !RESEARCH.md
 # !BUILD_PLAN.md
+
+# Frankenstein runtime data
+backend/data/
