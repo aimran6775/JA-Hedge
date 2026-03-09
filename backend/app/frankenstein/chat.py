@@ -76,18 +76,19 @@ INTENT_KEYWORDS: dict[str, list[str]] = {
         "losing", "earning", "results", "track record",
     ],
     "strategy": [
-        "strategy", "approach", "how do you trade", "method",
+        "strategy", "strategies", "approach", "how do you trade", "method",
         "technique", "plan", "thinking", "logic", "algorithm",
         "kelly", "sizing", "confidence", "edge", "threshold",
         "parameters", "config", "settings", "aggressive", "conservative",
+        "trading", "trade style",
     ],
     "markets": [
         "market", "markets", "opportunity", "opportunities",
         "looking at", "watching", "scanning", "candidates",
-        "kalshi", "events", "categories",
+        "kalshi", "events", "categories", "ticker",
     ],
     "memory": [
-        "memory", "trades", "history", "recent", "last trade",
+        "memory", "memories", "trades", "history", "recent", "last trade",
         "past trades", "trade log", "experience", "remember",
         "pending", "open trades", "positions",
     ],
@@ -103,7 +104,7 @@ INTENT_KEYWORDS: dict[str, list[str]] = {
         "sentiment",
     ],
     "risk": [
-        "risk", "danger", "drawdown", "max loss", "stop loss",
+        "risk", "risks", "risky", "danger", "drawdown", "max loss", "stop loss",
         "careful", "safe", "exposure", "pause", "kill switch",
         "degrading",
     ],
