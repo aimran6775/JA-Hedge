@@ -623,7 +623,7 @@ async def phase_7_portfolio_tracking(api):
     # Test 7.2: Positions
     try:
         positions = await api.portfolio.get_all_positions(
-            settlement_status="unsettled", count_filter="non_zero"
+            settlement_status="unsettled"
         )
         test_pass("Positions fetch", f"{len(positions)} open positions")
     except Exception as e:

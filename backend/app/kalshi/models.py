@@ -80,7 +80,9 @@ class MarketResult(str, Enum):
 
 class StrikeType(str, Enum):
     GREATER = "greater"
+    GREATER_OR_EQUAL = "greater_or_equal"
     LESS = "less"
+    LESS_OR_EQUAL = "less_or_equal"
     BETWEEN = "between"
     FUNCTIONAL = "functional"
     CUSTOM = "custom"

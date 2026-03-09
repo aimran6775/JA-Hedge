@@ -50,14 +50,12 @@ class PortfolioAPI:
         settlement_status: str | None = None,
         ticker: str | None = None,
         event_ticker: str | None = None,
-        count_filter: str | None = None,
     ) -> tuple[list[MarketPosition], str | None]:
         """
         List all market positions.
 
         Args:
             settlement_status: "unsettled" | "settled" | "all"
-            count_filter: "non_zero" | "has_yes" | "has_no" | "all"
         """
         params: dict[str, Any] = {"limit": limit}
         if cursor:
@@ -68,8 +66,6 @@ class PortfolioAPI:
             params["ticker"] = ticker
         if event_ticker:
             params["event_ticker"] = event_ticker
-        if count_filter:
-            params["count_filter"] = count_filter
 
         resp = await self._client.get("/portfolio/positions", params=params)
         positions = [
@@ -82,12 +78,10 @@ class PortfolioAPI:
         self,
         *,
         settlement_status: str = "unsettled",
-        count_filter: str = "non_zero",
     ) -> list[MarketPosition]:
         """Fetch ALL positions across pages."""
         params: dict[str, Any] = {
             "settlement_status": settlement_status,
-            "count_filter": count_filter,
         }
         raw = await self._client.get_all_pages(
             "/portfolio/positions",
