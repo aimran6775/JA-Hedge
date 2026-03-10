@@ -3,9 +3,10 @@ set -e
 
 # Write Kalshi private key from base64 env var (if provided)
 if [ -n "$KALSHI_PRIVATE_KEY_BASE64" ]; then
-    echo "$KALSHI_PRIVATE_KEY_BASE64" | base64 -d > /app/keys/kalshi.pem
+    printf '%s' "$KALSHI_PRIVATE_KEY_BASE64" | base64 -d > /app/keys/kalshi.pem
     chmod 600 /app/keys/kalshi.pem
-    echo "✅ Kalshi private key written to /app/keys/kalshi.pem"
+    KEY_SIZE=$(wc -c < /app/keys/kalshi.pem | tr -d ' ')
+    echo "✅ Kalshi private key written to /app/keys/kalshi.pem (${KEY_SIZE} bytes)"
 fi
 
 # Use PORT env var from Railway (defaults to 8000)
