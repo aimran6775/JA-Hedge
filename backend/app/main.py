@@ -234,6 +234,25 @@ async def health_check() -> dict:
     }
 
 
+@app.get("/health/auth")
+async def auth_test() -> dict:
+    """Test if Kalshi API authentication works (GET balance + GET positions)."""
+    from app.state import state as app_state
+    results: dict = {"api_initialized": bool(app_state.kalshi_api)}
+    if app_state.kalshi_api:
+        try:
+            bal = await app_state.kalshi_api.portfolio.get_balance()
+            results["balance"] = {"ok": True, "balance_dollars": bal.balance_dollars}
+        except Exception as e:
+            results["balance"] = {"ok": False, "error": str(e)}
+        try:
+            pos = await app_state.kalshi_api.portfolio.get_all_positions()
+            results["positions"] = {"ok": True, "count": len(pos)}
+        except Exception as e:
+            results["positions"] = {"ok": False, "error": str(e)}
+    return results
+
+
 @app.get("/")
 async def root() -> dict:
     return {"name": "JA Hedge", "version": "0.2.0", "brain": "Frankenstein", "docs": "/docs"}

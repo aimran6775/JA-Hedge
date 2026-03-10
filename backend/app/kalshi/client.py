@@ -159,7 +159,11 @@ class KalshiClient:
                     return body
 
                 # Error handling
-                error_msg = body.get("message", body.get("error", str(body)))
+                error_obj = body.get("error", {})
+                if isinstance(error_obj, dict):
+                    error_msg = error_obj.get("message", error_obj.get("code", str(error_obj)))
+                else:
+                    error_msg = body.get("message", str(error_obj or body))
                 exc_class = STATUS_CODE_MAP.get(response.status_code, KalshiError)
 
                 # Don't retry client errors (except 429)

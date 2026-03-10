@@ -339,7 +339,7 @@ class FrankensteinChat:
             f"- Trades executed: {s.total_trades_executed}\n"
             f"- Trades rejected: {s.total_trades_rejected}\n"
             f"- Last scan: {s.current_scan_time_ms:.0f}ms\n\n"
-            f"🧠 **Memory:** {status['memory']['total_trades']} trades stored\n"
+            f"🧠 **Memory:** {status['memory']['total_recorded']} trades stored\n"
             f"📈 **Scheduler:** {status['scheduler']['total_tasks']} background tasks"
         )
 
@@ -522,15 +522,16 @@ class FrankensteinChat:
                     f"conf={t.confidence:.0%}, P&L={pnl_str}\n"
                 )
 
+        outcomes = stats.get('outcomes', {})
         text = (
-            f"🧠 **Trade Memory** — {stats['total_trades']} trades stored\n\n"
+            f"🧠 **Trade Memory** — {stats['total_recorded']} trades stored\n\n"
             f"**Breakdown:**\n"
             f"- Resolved: {stats['total_resolved']}\n"
-            f"- Pending: {stats['total_pending']}\n"
-            f"- Wins: {stats.get('total_wins', 'N/A')}\n"
-            f"- Losses: {stats.get('total_losses', 'N/A')}\n\n"
-            f"**Important trades pinned:** {stats.get('important_trades', 0)}\n"
-            f"**Memory capacity:** {stats['total_trades']}/{stats.get('max_capacity', 50000)}"
+            f"- Pending: {stats['pending']}\n"
+            f"- Wins: {outcomes.get('win', 0)}\n"
+            f"- Losses: {outcomes.get('loss', 0)}\n\n"
+            f"**Important trades pinned:** {stats.get('important_pinned', 0)}\n"
+            f"**Buffer size:** {stats['buffer_size']}"
             f"{recent_lines}"
         )
 
@@ -558,8 +559,8 @@ class FrankensteinChat:
         text = (
             f"🧬 **Learning System** — Generation {stats['generation']}\n\n"
             f"**Model:** `{stats['current_version']}` (XGBoost)\n"
-            f"**Training data:** {stats['training_samples']} samples\n"
-            f"**Checkpoints saved:** {stats['checkpoints_saved']}\n\n"
+            f"**Training data:** {stats.get('champion_samples', stats.get('last_train_count', 0))} samples\n"
+            f"**Checkpoints saved:** {stats.get('checkpoints', 0)}\n\n"
             f"**How I learn:**\n"
             f"1. Every trade is recorded with its features and prediction\n"
             f"2. When the market settles, I mark it as WIN or LOSS\n"
