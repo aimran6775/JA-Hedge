@@ -238,18 +238,28 @@ async def health_check() -> dict:
 async def auth_test() -> dict:
     """Test if Kalshi API authentication works (GET balance + GET positions)."""
     from app.state import state as app_state
-    results: dict = {"api_initialized": bool(app_state.kalshi_api)}
+    import os
+    from pathlib import Path
+    results: dict = {
+        "api_initialized": bool(app_state.kalshi_api),
+        "key_id_set": bool(settings.kalshi_api_key_id),
+        "key_id_prefix": settings.kalshi_api_key_id[:8] + "..." if settings.kalshi_api_key_id else "EMPTY",
+        "key_path": str(settings.resolved_key_path),
+        "key_file_exists": settings.resolved_key_path.exists(),
+        "key_file_size": settings.resolved_key_path.stat().st_size if settings.resolved_key_path.exists() else 0,
+        "base64_env_set": bool(os.environ.get("KALSHI_PRIVATE_KEY_BASE64")),
+    }
     if app_state.kalshi_api:
         try:
             bal = await app_state.kalshi_api.portfolio.get_balance()
             results["balance"] = {"ok": True, "balance_dollars": bal.balance_dollars}
         except Exception as e:
-            results["balance"] = {"ok": False, "error": str(e)}
+            results["balance"] = {"ok": False, "error": str(e), "type": type(e).__name__}
         try:
             pos = await app_state.kalshi_api.portfolio.get_all_positions()
             results["positions"] = {"ok": True, "count": len(pos)}
         except Exception as e:
-            results["positions"] = {"ok": False, "error": str(e)}
+            results["positions"] = {"ok": False, "error": str(e), "type": type(e).__name__}
     return results
 
 
