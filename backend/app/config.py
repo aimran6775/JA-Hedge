@@ -132,7 +132,9 @@ class Settings(BaseSettings):
     risk_max_position_size: int = 10
     risk_max_portfolio_exposure: float = 500.0
     kill_switch_enabled: bool = True
-
+    # ── Paper Trading ─────────────────────────────────────────────
+    paper_trading: bool = True  # Use simulated balance (fake money)
+    paper_trading_balance: int = 10_000_00  # Starting balance in cents ($10,000)
     # ── Strategy Defaults ─────────────────────────────────
     strategy_min_confidence: float = 0.60
     strategy_min_edge: float = 0.05

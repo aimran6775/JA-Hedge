@@ -161,6 +161,13 @@ export interface HealthStatus {
   mode: string;
   has_api_keys: boolean;
   version: string;
+  paper_trading?: {
+    enabled: boolean;
+    balance?: string;
+    starting_balance?: string;
+    pnl?: string;
+    total_trades?: number;
+  };
   components: Record<string, string>;
 }
 

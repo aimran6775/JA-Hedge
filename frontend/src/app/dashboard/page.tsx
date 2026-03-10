@@ -53,8 +53,10 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3">
           {health ? (
             <div className="flex items-center gap-2 rounded-lg glass px-3 py-1.5 text-xs">
-              <IconCircle size={6} className="text-accent" />
-              <span className="font-medium text-accent">{health.mode.toUpperCase()}</span>
+              <IconCircle size={6} className={health.paper_trading?.enabled ? "text-[var(--warning)]" : "text-accent"} />
+              <span className={`font-medium ${health.paper_trading?.enabled ? "text-[var(--warning)]" : "text-accent"}`}>
+                {health.paper_trading?.enabled ? "PAPER" : health.mode.toUpperCase()}
+              </span>
               <span className="text-[var(--text-muted)]">{health.has_api_keys ? "API Connected" : "No Keys"}</span>
             </div>
           ) : (

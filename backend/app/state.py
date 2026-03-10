@@ -24,6 +24,7 @@ class AppState:
     execution_engine: Any | None = None  # ExecutionEngine
     risk_manager: Any | None = None  # RiskManager
     trading_strategy: Any | None = None  # TradingStrategy (legacy)
+    paper_simulator: Any | None = None  # PaperTradingSimulator (fake money)
 
     # Pipelines
     market_pipeline: Any | None = None  # MarketDataPipeline

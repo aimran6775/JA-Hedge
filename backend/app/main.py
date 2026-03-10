@@ -62,10 +62,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     risk_mgr = RiskManager(limits=risk_limits)
     state.risk_manager = risk_mgr
 
+    # Paper trading wrapper (fake money mode)
+    from app.engine.paper_trader import PaperTradingSimulator
+
+    api_for_engine = kalshi  # default: real API
+    if settings.paper_trading:
+        simulator = PaperTradingSimulator(
+            starting_balance_cents=settings.paper_trading_balance,
+        )
+        api_for_engine = simulator.wrap_api(kalshi)
+        state.paper_simulator = simulator
+        log.info(
+            "paper_trading_enabled",
+            balance=f"${settings.paper_trading_balance / 100:.2f}",
+        )
+
     # Execution engine
     from app.engine.execution import ExecutionEngine
 
-    exec_engine = ExecutionEngine(api=kalshi, risk_manager=risk_mgr)
+    exec_engine = ExecutionEngine(api=api_for_engine, risk_manager=risk_mgr)
     state.execution_engine = exec_engine
 
     # AI components
@@ -218,11 +233,23 @@ app.include_router(api_router)
 async def health_check() -> dict:
     from app.state import state as app_state
 
+    paper_info = None
+    if app_state.paper_simulator:
+        sim = app_state.paper_simulator
+        paper_info = {
+            "enabled": True,
+            "balance": sim.balance_dollars,
+            "starting_balance": f"{sim.starting_balance_cents / 100:.2f}",
+            "pnl": sim.pnl_dollars,
+            "total_trades": sim.total_fills,
+        }
+
     return {
         "status": "ok" if app_state.ready else "starting",
         "mode": settings.jahedge_mode.value,
         "has_api_keys": settings.has_api_keys,
         "version": "0.2.0",
+        "paper_trading": paper_info or {"enabled": False},
         "components": {
             "database": "connected",
             "kalshi_api": "ready" if app_state.kalshi_api else "not_initialized",
