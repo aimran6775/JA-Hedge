@@ -77,7 +77,7 @@ export default function FrankensteinPage() {
   useEffect(() => {
     const check = async () => {
       try {
-        const r = await fetch(`${API_BASE}/frankenstein/health`);
+        const r = await fetch(`${API_BASE}/api/frankenstein/health`);
         setConnected(r.ok);
       } catch {
         setConnected(false);
@@ -106,7 +106,7 @@ export default function FrankensteinPage() {
       const body: Record<string, unknown> = { message: text.trim() };
       if (sessionId) body.session_id = sessionId;
 
-      const res = await fetch(`${API_BASE}/frankenstein/chat`, {
+      const res = await fetch(`${API_BASE}/api/frankenstein/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -119,7 +119,7 @@ export default function FrankensteinPage() {
 
       const assistantMsg: ChatMessage = {
         role: "assistant",
-        content: data.response || data.message || "No response received",
+        content: data.content || data.response || data.message || "No response received",
         timestamp: new Date().toISOString(),
       };
       setMessages(prev => [...prev, assistantMsg]);
