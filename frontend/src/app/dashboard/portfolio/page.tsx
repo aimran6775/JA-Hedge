@@ -3,134 +3,123 @@
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
-import { api, type Balance, type Fill, type Position } from "@/lib/api";
+import { IconPortfolio, IconTrendUp, IconTrendDown, IconCircle, IconTarget, IconZap } from "@/components/ui/Icons";
+import { api, type Balance, type Position, type Fill } from "@/lib/api";
+import { pnlColor } from "@/lib/utils";
 
 export default function PortfolioPage() {
   const [balance, setBalance] = useState<Balance | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [fills, setFills] = useState<Fill[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<"positions" | "history">("positions");
 
   useEffect(() => {
     const load = async () => {
-      setLoading(true);
       const [bRes, pRes, fRes] = await Promise.all([
         api.portfolio.balance().catch(() => null),
         api.portfolio.positions().catch(() => []),
-        api.portfolio.fills({ limit: 30 }).catch(() => []),
+        api.portfolio.fills({ limit: 50 }).catch(() => []),
       ]);
       setBalance(bRes);
-      setPositions(Array.isArray(pRes) ? pRes : []);
+      setPositions(pRes);
       setFills(fRes);
-      setLoading(false);
     };
     load();
-    const interval = setInterval(load, 15000);
-    return () => clearInterval(interval);
+    const iv = setInterval(load, 10000);
+    return () => clearInterval(iv);
   }, []);
 
-  const totalPnl = positions.reduce((s, p) => s + parseFloat(p.realized_pnl_dollars ?? "0"), 0);
-  const balanceDollars = parseFloat(balance?.balance_dollars ?? "0");
-  const totalExposure = balance?.total_exposure ?? 0;
-  const totalValue = balanceDollars + totalExposure;
+  const totalPnl = positions.reduce((s, p) => s + (p.market_exposure ?? 0), 0);
+  const pnlPercent = balance?.balance_cents && balance.balance_cents > 0 ? ((totalPnl / balance.balance_cents) * 100) : 0;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Portfolio</h1>
-        <span className="text-xs text-[var(--muted)]">
-          {loading ? "Loading..." : `${positions.length} positions • ${fills.length} fills`}
-        </span>
+    <div className="space-y-6 animate-fade-in">
+      <div>
+        <h1 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Portfolio</h1>
+        <p className="text-xs text-[var(--text-muted)] mt-1">Live positions, balance, and trade history</p>
       </div>
 
-      {/* Stats Row */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Total Value" value={`$${totalValue.toFixed(2)}`} />
-        <StatCard label="Available Cash" value={`$${balanceDollars.toFixed(2)}`} />
-        <StatCard label="Exposure" value={`$${totalExposure.toFixed(2)}`} />
-        <StatCard label="Realized P&L" value={`${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`} change={totalValue > 0 ? (totalPnl / totalValue) * 100 : 0} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Balance" value={balance ? `$${balance.balance_dollars.toFixed(2)}` : "—"} icon={<IconPortfolio size={18} />} />
+        <StatCard label="Available" value={balance ? `$${balance.available_dollars.toFixed(2)}` : "—"} icon={<IconTarget size={18} />} />
+        <StatCard label="Exposure" value={`$${(totalPnl / 100).toFixed(2)}`} trend={totalPnl >= 0 ? "up" : "down"} icon={<IconTrendUp size={18} />} />
+        <StatCard label="P&L %" value={`${pnlPercent >= 0 ? "+" : ""}${pnlPercent.toFixed(2)}%`} trend={pnlPercent >= 0 ? "up" : "down"} icon={<IconZap size={18} />} />
       </div>
 
-      {/* Positions Table */}
-      <Card title="Open Positions" action={<span className="text-xs text-[var(--muted)]">{positions.length} positions</span>}>
-        <div className="overflow-x-auto">
-          {positions.length === 0 ? (
-            <div className="py-12 text-center text-sm text-[var(--muted)]">
-              No open positions — go to Trading to place your first order!
-            </div>
-          ) : (
-            <table className="w-full text-left">
+      <Card>
+        <div className="flex items-center gap-2 mb-5">
+          {(["positions", "history"] as const).map((t) => (
+            <button key={t} onClick={() => setActiveTab(t)}
+              className={`rounded-xl px-4 py-2 text-xs font-semibold uppercase tracking-wider transition-all ${
+                activeTab === t ? "bg-accent/10 text-accent border border-accent/20" : "bg-white/[0.02] border border-white/[0.04] text-[var(--text-muted)] hover:bg-white/[0.04]"
+              }`}>{t}</button>
+          ))}
+        </div>
+
+        {activeTab === "positions" && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/10 text-xs text-[var(--muted)]">
-                  <th className="pb-2 pr-4 font-medium">Market</th>
-                  <th className="pb-2 pr-4 font-medium">Position</th>
-                  <th className="pb-2 pr-4 font-medium">Exposure</th>
-                  <th className="pb-2 pr-4 font-medium">Realized P&L</th>
-                  <th className="pb-2 font-medium">Fees</th>
+                <tr className="border-b border-white/[0.06]">
+                  {["Market", "Side", "Qty", "Avg Cost", "Mkt Value", "Exposure"].map(h => (
+                    <th key={h} className="pb-3 text-left text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">{h}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {positions.map((p, i) => {
-                  const pnl = parseFloat(p.realized_pnl_dollars ?? "0");
-                  return (
-                    <tr key={i} className="border-b border-white/5 last:border-0">
+                {positions.length === 0 ? (
+                  <tr><td colSpan={6} className="py-10 text-center text-[var(--text-muted)]">No open positions</td></tr>
+                ) : (
+                  positions.map((p, i) => (
+                    <tr key={i} className="group border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
                       <td className="py-3 pr-4">
-                        <div className="text-sm font-medium text-white">{p.ticker}</div>
+                        <span className="text-[var(--text-primary)] group-hover:text-accent transition-colors font-medium">{p.ticker}</span>
                       </td>
                       <td className="py-3 pr-4">
-                        <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                          p.position > 0 ? "bg-green-500/20 text-green-400" : p.position < 0 ? "bg-red-500/20 text-red-400" : "bg-white/10 text-[var(--muted)]"
+                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          p.side === "yes" ? "bg-accent/10 text-accent" : "bg-loss/10 text-loss"
                         }`}>
-                          {p.position > 0 ? `YES ×${p.position}` : p.position < 0 ? `NO ×${Math.abs(p.position)}` : "FLAT"}
+                          <IconCircle size={5} className={p.side === "yes" ? "text-accent" : "text-loss"} />
+                          {p.side?.toUpperCase() ?? "—"}
                         </span>
                       </td>
-                      <td className="py-3 pr-4 text-sm text-[var(--muted)] tabular-nums">
-                        {p.market_exposure_dollars ? `$${p.market_exposure_dollars}` : "—"}
-                      </td>
-                      <td className={`py-3 pr-4 text-sm font-medium tabular-nums ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
-                      </td>
-                      <td className="py-3 text-sm text-[var(--muted)] tabular-nums">
-                        {p.fees_paid_dollars ? `$${p.fees_paid_dollars}` : "—"}
+                      <td className="py-3 pr-4 text-[var(--text-primary)] tabular-nums font-mono">{p.quantity ?? "—"}</td>
+                      <td className="py-3 pr-4 text-[var(--text-secondary)] tabular-nums font-mono">{p.avg_price_cents != null ? `${p.avg_price_cents}¢` : "—"}</td>
+                      <td className="py-3 pr-4 text-[var(--text-secondary)] tabular-nums font-mono">{p.market_value_cents != null ? `${p.market_value_cents}¢` : "—"}</td>
+                      <td className={`py-3 tabular-nums font-mono font-medium ${pnlColor(p.market_exposure ?? 0)}`}>
+                        {p.market_exposure != null ? `$${(p.market_exposure / 100).toFixed(2)}` : "—"}
                       </td>
                     </tr>
-                  );
-                })}
+                  ))
+                )}
               </tbody>
             </table>
-          )}
-        </div>
-      </Card>
+          </div>
+        )}
 
-      {/* Trade History (Fills) */}
-      <Card title="Trade History" action={<span className="text-xs text-[var(--muted)]">{fills.length} fills</span>}>
-        <div className="space-y-1 max-h-96 overflow-y-auto">
-          {fills.length === 0 ? (
-            <div className="py-8 text-center text-sm text-[var(--muted)]">
-              No trades yet
-            </div>
-          ) : (
-            fills.map((f, i) => (
-              <div key={i} className="flex items-center justify-between rounded-md bg-white/5 px-3 py-2 text-sm">
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-[var(--muted)]">
-                    {f.created_time ? new Date(f.created_time).toLocaleString() : "—"}
-                  </span>
-                  <span className={`font-medium ${f.action === "buy" ? "text-green-400" : "text-red-400"}`}>
-                    {(f.action || "—").toUpperCase()}
-                  </span>
-                  <span className="text-white">{f.ticker}</span>
-                  <span className={`text-xs ${f.side === "yes" ? "text-green-400" : "text-red-400"}`}>
-                    {(f.side || "—").toUpperCase()}
-                  </span>
+        {activeTab === "history" && (
+          <div className="space-y-1.5">
+            {fills.length === 0 ? (
+              <div className="py-10 text-center text-[var(--text-muted)]">No trade history</div>
+            ) : (
+              fills.map((f, i) => (
+                <div key={i} className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3 transition-colors hover:bg-white/[0.04]">
+                  <div className="flex items-center gap-3">
+                    {f.action === "buy" ? <IconTrendUp size={14} className="text-accent" /> : <IconTrendDown size={14} className="text-loss" />}
+                    <div>
+                      <div className="text-sm text-[var(--text-primary)] font-medium">{f.ticker}</div>
+                      <div className="text-xs text-[var(--text-muted)]">{f.action.toUpperCase()} {f.side?.toUpperCase()} x{f.count ?? "?"}</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm text-[var(--text-primary)] tabular-nums font-mono">{f.price_dollars ? `$${f.price_dollars}` : "mkt"}</div>
+                    <div className="text-xs text-[var(--text-muted)]">{f.created_time ? new Date(f.created_time).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</div>
+                  </div>
                 </div>
-                <div className="text-[var(--muted)] tabular-nums">
-                  {f.count ?? "?"} @ {f.price_dollars ? `$${f.price_dollars}` : "mkt"}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+              ))
+            )}
+          </div>
+        )}
       </Card>
     </div>
   );

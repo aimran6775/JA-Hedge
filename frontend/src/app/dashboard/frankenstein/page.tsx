@@ -1,416 +1,258 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-
-/* ── Types ──────────────────────────────────────────────────────── */
-
-interface ChatMessage {
-  role: "user" | "frankenstein";
-  content: string;
-  timestamp: number;
-  time_human: string;
-  data?: Record<string, unknown> | null;
-}
-
-interface FrankensteinHealth {
-  alive: boolean;
-  trading: boolean;
-  paused: boolean;
-  generation: number;
-  model_version: string;
-  total_trades: number;
-}
-
-/* ── API ────────────────────────────────────────────────────────── */
+import { useEffect, useState, useRef, useCallback } from "react";
+import { Card } from "@/components/ui/Card";
+import { IconSend, IconRefresh, IconBrain, IconCircle, IconZap, IconTarget, IconShield, IconTrendUp, IconMarkets, IconRocket } from "@/components/ui/Icons";
+import { api } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function frankFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/frankenstein${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
-    ...options,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Error ${res.status}`);
-  }
-  return res.json();
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
 }
-
-/* ── Markdown-lite renderer ─────────────────────────────────────── */
-
-function renderMarkdown(text: string) {
-  // Split into lines and process
-  const lines = text.split("\n");
-  const elements: JSX.Element[] = [];
-  let key = 0;
-
-  for (const line of lines) {
-    key++;
-    if (line.trim() === "") {
-      elements.push(<div key={key} className="h-2" />);
-      continue;
-    }
-
-    // Headers
-    if (line.startsWith("##")) {
-      elements.push(
-        <h3 key={key} className="text-base font-bold text-white mt-3 mb-1">
-          {processInline(line.replace(/^##\s*/, ""))}
-        </h3>
-      );
-      continue;
-    }
-
-    // Bullet points
-    if (line.trimStart().startsWith("- ")) {
-      const indent = line.length - line.trimStart().length;
-      elements.push(
-        <div key={key} className="flex gap-2" style={{ paddingLeft: indent * 4 + 8 }}>
-          <span className="text-indigo-400 shrink-0">•</span>
-          <span className="text-gray-300 text-sm">{processInline(line.trimStart().slice(2))}</span>
-        </div>
-      );
-      continue;
-    }
-
-    // Numbered lists
-    const numMatch = line.trimStart().match(/^(\d+)\.\s+(.*)$/);
-    if (numMatch) {
-      elements.push(
-        <div key={key} className="flex gap-2 pl-2">
-          <span className="text-indigo-400 font-mono text-sm shrink-0">{numMatch[1]}.</span>
-          <span className="text-gray-300 text-sm">{processInline(numMatch[2])}</span>
-        </div>
-      );
-      continue;
-    }
-
-    // Regular text
-    elements.push(
-      <p key={key} className="text-gray-300 text-sm leading-relaxed">
-        {processInline(line)}
-      </p>
-    );
-  }
-
-  return <>{elements}</>;
-}
-
-function processInline(text: string) {
-  // Process bold, code, and inline formatting
-  const parts: (string | JSX.Element)[] = [];
-  let remaining = text;
-  let partKey = 0;
-
-  while (remaining.length > 0) {
-    // Bold: **text**
-    const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
-    // Code: `text`
-    const codeMatch = remaining.match(/`(.+?)`/);
-    // Math: $text$ (not $$)
-    const mathMatch = remaining.match(/(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)/);
-
-    // Find earliest match
-    const matches = [
-      boldMatch ? { type: "bold", match: boldMatch, index: boldMatch.index! } : null,
-      codeMatch ? { type: "code", match: codeMatch, index: codeMatch.index! } : null,
-      mathMatch ? { type: "math", match: mathMatch, index: mathMatch.index! } : null,
-    ].filter(Boolean).sort((a, b) => a!.index - b!.index);
-
-    if (matches.length === 0) {
-      parts.push(remaining);
-      break;
-    }
-
-    const earliest = matches[0]!;
-    const before = remaining.slice(0, earliest.index);
-    if (before) parts.push(before);
-
-    partKey++;
-    if (earliest.type === "bold") {
-      parts.push(
-        <span key={`b${partKey}`} className="font-semibold text-white">
-          {earliest.match![1]}
-        </span>
-      );
-    } else if (earliest.type === "code") {
-      parts.push(
-        <code key={`c${partKey}`} className="bg-white/10 px-1.5 py-0.5 rounded text-indigo-300 text-xs font-mono">
-          {earliest.match![1]}
-        </code>
-      );
-    } else if (earliest.type === "math") {
-      parts.push(
-        <span key={`m${partKey}`} className="font-mono text-amber-300 text-xs">
-          {earliest.match![1]}
-        </span>
-      );
-    }
-
-    remaining = remaining.slice(earliest.index + earliest.match![0].length);
-  }
-
-  return <>{parts}</>;
-}
-
-/* ── Quick Action Buttons ───────────────────────────────────────── */
 
 const QUICK_ACTIONS = [
-  { label: "📊 Performance", message: "How's my performance?" },
-  { label: "🎯 Strategy", message: "What's the current trading strategy?" },
-  { label: "🏛️ Markets", message: "What markets are you looking at?" },
-  { label: "🧬 Learning", message: "How is the model learning?" },
-  { label: "🛡️ Risk", message: "What's the risk assessment?" },
-  { label: "🌍 Regime", message: "What's the current market regime?" },
-  { label: "🧠 Memory", message: "Show me recent trades from memory" },
-  { label: "🏗️ Deployed", message: "What do we have deployed right now?" },
+  { label: "System Status", query: "How is the system doing?", icon: IconZap },
+  { label: "Portfolio Summary", query: "Show me my portfolio", icon: IconTarget },
+  { label: "Market Analysis", query: "What markets look promising right now?", icon: IconTrendUp },
+  { label: "Risk Report", query: "Give me a risk assessment", icon: IconShield },
+  { label: "Top Signals", query: "What are the top AI signals?", icon: IconBrain },
+  { label: "Agent Status", query: "What is the agent status?", icon: IconRocket },
 ];
 
-/* ── Main Page ──────────────────────────────────────────────────── */
+function processInline(text: string): string {
+  // Bold
+  text = text.replace(/\*\*(.*?)\*\*/g, '<strong class="text-[var(--text-primary)] font-semibold">$1</strong>');
+  // Inline code
+  text = text.replace(/`([^`]+)`/g, '<code class="rounded bg-white/[0.06] px-1.5 py-0.5 text-xs font-mono text-accent">$1</code>');
+  return text;
+}
+
+function renderMarkdown(text: string): string {
+  const lines = text.split("\n");
+  let html = "";
+  let inList = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("### ")) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += `<h3 class="text-sm font-bold text-[var(--text-primary)] mt-3 mb-1.5">${processInline(trimmed.slice(4))}</h3>`;
+    } else if (trimmed.startsWith("## ")) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += `<h2 class="text-base font-bold text-[var(--text-primary)] mt-3 mb-1.5">${processInline(trimmed.slice(3))}</h2>`;
+    } else if (trimmed.startsWith("# ")) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += `<h1 class="text-lg font-bold text-[var(--text-primary)] mt-3 mb-1.5">${processInline(trimmed.slice(2))}</h1>`;
+    } else if (/^[-*] /.test(trimmed)) {
+      if (!inList) { html += '<ul class="space-y-1 my-1.5">'; inList = true; }
+      html += `<li class="flex items-start gap-2 text-sm text-[var(--text-secondary)]"><span class="mt-1.5 h-1 w-1 rounded-full bg-accent/60 flex-shrink-0"></span><span>${processInline(trimmed.slice(2))}</span></li>`;
+    } else if (trimmed.startsWith("---")) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += '<hr class="border-white/[0.06] my-2" />';
+    } else if (trimmed === "") {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += "<br />";
+    } else {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += `<p class="text-sm text-[var(--text-secondary)] leading-relaxed">${processInline(trimmed)}</p>`;
+    }
+  }
+  if (inList) html += "</ul>";
+  return html;
+}
 
 export default function FrankensteinPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [health, setHealth] = useState<FrankensteinHealth | null>(null);
-  const [error, setError] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
-
+  // Check health
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
-
-  // Fetch health status
-  const fetchHealth = useCallback(async () => {
-    try {
-      const h = await frankFetch<FrankensteinHealth>("/health");
-      setHealth(h);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  // Load welcome message on mount
-  useEffect(() => {
-    async function init() {
+    const check = async () => {
       try {
-        const welcome = await frankFetch<ChatMessage>("/chat/welcome");
-        setMessages([welcome]);
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : "Failed to connect to Frankenstein");
+        const r = await fetch(`${API_BASE}/frankenstein/health`);
+        setConnected(r.ok);
+      } catch {
+        setConnected(false);
       }
-      fetchHealth();
-    }
-    init();
-    const iv = setInterval(fetchHealth, 10_000);
-    return () => clearInterval(iv);
-  }, [fetchHealth]);
-
-  // Send message
-  const sendMessage = async (text?: string) => {
-    const msg = (text || input).trim();
-    if (!msg || sending) return;
-
-    // Add user message locally
-    const userMsg: ChatMessage = {
-      role: "user",
-      content: msg,
-      timestamp: Date.now() / 1000,
-      time_human: new Date().toLocaleTimeString("en-US", {
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      }),
     };
-    setMessages((prev) => [...prev, userMsg]);
+    check();
+    const iv = setInterval(check, 20000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // Auto scroll
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, sending]);
+
+  const sendMessage = useCallback(async (text: string) => {
+    if (!text.trim() || sending) return;
+    const userMsg: ChatMessage = { role: "user", content: text.trim(), timestamp: new Date().toISOString() };
+    setMessages(prev => [...prev, userMsg]);
     setInput("");
     setSending(true);
-    setError("");
 
     try {
-      const response = await frankFetch<ChatMessage>("/chat", {
-        method: "POST",
-        body: JSON.stringify({ message: msg }),
-      });
-      setMessages((prev) => [...prev, response]);
+      const body: Record<string, unknown> = { message: text.trim() };
+      if (sessionId) body.session_id = sessionId;
 
-      // Refresh health after commands
-      if (msg.startsWith("/")) {
-        fetchHealth();
-      }
+      const res = await fetch(`${API_BASE}/frankenstein/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      if (data.session_id) setSessionId(data.session_id);
+
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: data.response || data.message || "No response received",
+        timestamp: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, assistantMsg]);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to send message");
+      setMessages(prev => [...prev, {
+        role: "assistant",
+        content: `Connection error: ${e instanceof Error ? e.message : "Unknown error"}. Check that the backend is running.`,
+        timestamp: new Date().toISOString(),
+      }]);
     } finally {
       setSending(false);
-      inputRef.current?.focus();
     }
-  };
+  }, [sending, sessionId]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+  const clearChat = () => {
+    setMessages([]);
+    setSessionId(null);
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7rem)]">
+    <div className="flex flex-col h-[calc(100vh-5rem)] animate-fade-in">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-[var(--card-border)] pb-4 mb-4">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="relative">
-            <span className="text-3xl">🧟</span>
-            {health && (
-              <span
-                className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[var(--background)] ${
-                  health.alive
-                    ? health.paused
-                      ? "bg-yellow-400"
-                      : "bg-green-400 animate-pulse"
-                    : "bg-gray-500"
-                }`}
-              />
-            )}
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-accent/20 to-accent/5 border border-accent/20">
+            <IconBrain size={20} className="text-accent" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-white">Frankenstein</h1>
-            <p className="text-xs text-[var(--muted)]">
-              {health
-                ? health.alive
-                  ? health.paused
-                    ? "⏸️ Paused"
-                    : `⚡ Gen ${health.generation} • ${health.total_trades} trades`
-                  : "💤 Sleeping"
-                : "Connecting..."}
-            </p>
-          </div>
-        </div>
-
-        {/* Status badges */}
-        <div className="flex items-center gap-2">
-          {health && (
-            <>
-              <span
-                className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                  health.alive
-                    ? "bg-green-500/10 text-green-400 ring-1 ring-green-500/20"
-                    : "bg-gray-500/10 text-gray-400 ring-1 ring-gray-500/20"
-                }`}
-              >
-                {health.alive ? "ALIVE" : "SLEEPING"}
-              </span>
-              {health.trading && (
-                <span className="rounded-full bg-indigo-500/10 px-2.5 py-1 text-xs font-medium text-indigo-400 ring-1 ring-indigo-500/20">
-                  TRADING
-                </span>
-              )}
-              <span className="rounded-full bg-[var(--card)] px-2.5 py-1 text-xs text-[var(--muted)] ring-1 ring-[var(--card-border)]">
-                v{health.model_version}
-              </span>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto space-y-4 pr-2 scrollbar-thin">
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            <div
-              className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                msg.role === "user"
-                  ? "bg-indigo-600 text-white rounded-br-sm"
-                  : "bg-[var(--card)] border border-[var(--card-border)] rounded-bl-sm"
-              }`}
-            >
-              {msg.role === "frankenstein" ? (
-                <div className="space-y-1">{renderMarkdown(msg.content)}</div>
-              ) : (
-                <p className="text-sm">{msg.content}</p>
-              )}
-              <p
-                className={`text-[10px] mt-1.5 ${
-                  msg.role === "user" ? "text-indigo-200/60" : "text-[var(--muted)]"
-                }`}
-              >
-                {msg.time_human}
-              </p>
+            <h1 className="text-xl font-bold text-[var(--text-primary)] tracking-tight">Frankenstein AI</h1>
+            <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+              <IconCircle size={6} className={connected ? "text-accent" : "text-loss"} />
+              {connected ? "Connected" : "Offline"}
+              {sessionId && <span className="ml-2 text-[var(--text-muted)]/50">Session: {sessionId.slice(0, 8)}</span>}
             </div>
           </div>
-        ))}
+        </div>
+        <button onClick={clearChat}
+          className="glass rounded-xl px-4 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all flex items-center gap-2">
+          <IconRefresh size={14} /> New Chat
+        </button>
+      </div>
 
-        {/* Typing indicator */}
-        {sending && (
-          <div className="flex justify-start">
-            <div className="bg-[var(--card)] border border-[var(--card-border)] rounded-2xl rounded-bl-sm px-4 py-3">
-              <div className="flex gap-1.5 items-center">
-                <span className="text-sm text-[var(--muted)]">🧟 Thinking</span>
-                <span className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                </span>
+      {/* Chat Body */}
+      <div className="flex-1 glass rounded-2xl flex flex-col overflow-hidden">
+        {/* Messages */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full space-y-6">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-accent/15 to-accent/5 border border-accent/15">
+                <IconBrain size={32} className="text-accent" />
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--text-primary)]">Frankenstein AI Brain</div>
+                <p className="text-sm text-[var(--text-muted)] mt-1 max-w-sm">
+                  Your unified AI trading assistant. Ask about markets, portfolio, signals, risk, or anything about the system.
+                </p>
+              </div>
+              {/* Quick Actions */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-w-lg">
+                {QUICK_ACTIONS.map((qa) => (
+                  <button key={qa.label} onClick={() => sendMessage(qa.query)}
+                    className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-3 py-2.5 text-left transition-all hover:bg-white/[0.05] hover:border-white/[0.08] group">
+                    <div className="flex items-center gap-2">
+                      <qa.icon size={14} className="text-accent/70 group-hover:text-accent transition-colors" />
+                      <span className="text-xs text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] transition-colors">{qa.label}</span>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
-          </div>
-        )}
+          ) : (
+            messages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[80%] ${msg.role === "user" ? "" : "w-full max-w-[80%]"}`}>
+                  {msg.role === "assistant" && (
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <IconBrain size={12} className="text-accent" />
+                      <span className="text-xs text-[var(--text-muted)] font-medium">Frankenstein</span>
+                    </div>
+                  )}
+                  <div className={`rounded-2xl px-4 py-3 ${
+                    msg.role === "user"
+                      ? "bg-accent/15 border border-accent/20 text-[var(--text-primary)]"
+                      : "bg-white/[0.03] border border-white/[0.06]"
+                  }`}>
+                    {msg.role === "user" ? (
+                      <p className="text-sm">{msg.content}</p>
+                    ) : (
+                      <div className="prose-chat" dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                    )}
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)]/50 mt-1 px-1">
+                    {new Date(msg.timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
 
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Quick actions */}
-      <div className="flex flex-wrap gap-2 py-3 border-t border-[var(--card-border)] mt-2">
-        {QUICK_ACTIONS.map((action) => (
-          <button
-            key={action.label}
-            onClick={() => sendMessage(action.message)}
-            disabled={sending}
-            className="rounded-full bg-[var(--card)] border border-[var(--card-border)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-white hover:border-indigo-500/30 hover:bg-indigo-500/5 transition-all disabled:opacity-50"
-          >
-            {action.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 text-xs text-red-400 mb-2">
-          {error}
+          {/* Typing indicator */}
+          {sending && (
+            <div className="flex justify-start">
+              <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <IconBrain size={12} className="text-accent animate-pulse" />
+                  <div className="flex gap-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent/60 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent/60 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent/60 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      )}
 
-      {/* Input */}
-      <div className="flex items-center gap-3 bg-[var(--card)] border border-[var(--card-border)] rounded-xl px-4 py-3">
-        <input
-          ref={inputRef}
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask Frankenstein anything... (try /status, /awaken, /retrain)"
-          disabled={sending}
-          className="flex-1 bg-transparent text-sm text-white placeholder:text-[var(--muted)] focus:outline-none disabled:opacity-50"
-        />
-        <button
-          onClick={() => sendMessage()}
-          disabled={!input.trim() || sending}
-          className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-indigo-500 disabled:opacity-30 disabled:hover:bg-indigo-600"
-        >
-          <span>Send</span>
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-            <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A1.5 1.5 0 005.135 9.25h6.115a.75.75 0 010 1.5H5.135a1.5 1.5 0 00-1.442 1.086l-1.414 4.926a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
-          </svg>
-        </button>
+        {/* Input */}
+        <div className="border-t border-white/[0.06] p-4">
+          <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }} className="flex items-center gap-3">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask Frankenstein anything..."
+              disabled={sending}
+              className="flex-1 rounded-xl bg-white/[0.03] border border-white/[0.06] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-accent/30 focus:ring-1 focus:ring-accent/10 transition-all disabled:opacity-50"
+            />
+            <button type="submit" disabled={sending || !input.trim()}
+              className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-white hover:bg-accent/90 transition-all disabled:opacity-30 disabled:cursor-not-allowed">
+              <IconSend size={16} />
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );

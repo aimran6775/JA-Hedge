@@ -5,20 +5,24 @@ interface CardProps {
   children: React.ReactNode;
   className?: string;
   action?: React.ReactNode;
+  glow?: boolean;
 }
 
-export function Card({ title, children, className, action }: CardProps) {
+export function Card({ title, children, className, action, glow }: CardProps) {
   return (
     <div
       className={cn(
-        "rounded-lg border border-[var(--card-border)] bg-[var(--card)] p-4",
+        "rounded-2xl glass p-5 transition-all duration-300",
+        glow && "glow-accent",
         className,
       )}
     >
       {(title || action) && (
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-4 flex items-center justify-between">
           {title && (
-            <h3 className="text-sm font-medium text-white">{title}</h3>
+            <h3 className="text-sm font-semibold tracking-wide text-[var(--text-secondary)] uppercase">
+              {title}
+            </h3>
           )}
           {action}
         </div>

@@ -3,213 +3,214 @@
 import { useEffect, useState, useCallback } from "react";
 import { Card } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
-import { api, type RiskSnapshot } from "@/lib/api";
+import { IconShield, IconAlertTriangle, IconTarget, IconStop, IconRefresh, IconCircle, IconCheck } from "@/components/ui/Icons";
+import { api, type RiskLimits, type RiskStatus } from "@/lib/api";
 
-function RiskGauge({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+function RiskGauge({ label, value, max, danger }: { label: string; value: number; max: number; danger: number }) {
   const pct = Math.min((value / max) * 100, 100);
-  const danger = pct > 80;
+  const isDanger = value >= danger;
+  const isWarn = value >= danger * 0.7;
+  const color = isDanger ? "from-loss to-loss/60" : isWarn ? "from-[var(--warning)] to-[var(--warning)]/60" : "from-accent to-accent/60";
+
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-[var(--muted)]">{label}</span>
-        <span className={`tabular-nums ${danger ? "text-red-400 font-medium" : "text-white"}`}>
-          ${value.toFixed(2)} / ${max.toFixed(2)}
+    <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm text-[var(--text-secondary)]">{label}</span>
+        <span className={`text-sm tabular-nums font-mono font-medium ${isDanger ? "text-loss" : isWarn ? "text-[var(--warning)]" : "text-accent"}`}>
+          {value} / {max}
         </span>
       </div>
-      <div className="h-2 rounded-full bg-white/10">
-        <div
-          className={`h-2 rounded-full transition-all ${danger ? "bg-red-500" : color}`}
-          style={{ width: `${pct}%` }}
-        />
+      <div className="h-2 rounded-full bg-white/[0.06] overflow-hidden">
+        <div className={`h-full rounded-full bg-gradient-to-r ${color} transition-all duration-500`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="flex justify-between mt-1.5 text-xs text-[var(--text-muted)]">
+        <span>0</span>
+        <span className="text-loss/60">{danger} limit</span>
+        <span>{max}</span>
       </div>
     </div>
   );
 }
 
 export default function RiskPage() {
-  const [snapshot, setSnapshot] = useState<RiskSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [toggling, setToggling] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState("");
+  const [limits, setLimits] = useState<RiskLimits | null>(null);
+  const [status, setStatus] = useState<RiskStatus | null>(null);
+  const [killActive, setKillActive] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   // Editable limits
-  const [dailyLossLimit, setDailyLossLimit] = useState(50);
-  const [maxPositionSize, setMaxPositionSize] = useState(25);
-  const [maxExposure, setMaxExposure] = useState(200);
-  const [maxOrderCost, setMaxOrderCost] = useState(25);
+  const [maxPositions, setMaxPositions] = useState(10);
+  const [maxExposure, setMaxExposure] = useState(5000);
+  const [maxLossDaily, setMaxLossDaily] = useState(500);
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState<string | null>(null);
 
-  const loadSnapshot = useCallback(async () => {
+  const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      const s = await api.risk.snapshot();
-      setSnapshot(s);
-    } catch {
-      // risk endpoint may fail
+      const [limRes, stRes] = await Promise.all([
+        api.risk.limits().catch(() => null),
+        api.risk.status().catch(() => null),
+      ]);
+      setLimits(limRes);
+      setStatus(stRes);
+      if (limRes) {
+        setMaxPositions(limRes.max_positions ?? 10);
+        setMaxExposure(limRes.max_exposure_cents ?? 5000);
+        setMaxLossDaily(limRes.max_daily_loss_cents ?? 500);
+      }
+      if (stRes) {
+        setKillActive(stRes.kill_switch_active ?? false);
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadSnapshot();
-    const interval = setInterval(loadSnapshot, 10000);
-    return () => clearInterval(interval);
-  }, [loadSnapshot]);
+    refresh();
+    const iv = setInterval(refresh, 10000);
+    return () => clearInterval(iv);
+  }, [refresh]);
 
   const toggleKillSwitch = async () => {
-    setToggling(true);
     try {
-      const newState = !(snapshot?.kill_switch_active ?? false);
-      const res = await api.risk.killSwitch(newState);
-      setSnapshot(prev => prev ? { ...prev, kill_switch_active: res.kill_switch_active } : prev);
-    } catch {
-      // ignore
-    } finally {
-      setToggling(false);
-    }
+      if (killActive) {
+        await api.risk.resetKillSwitch();
+        setKillActive(false);
+      } else {
+        await api.risk.activateKillSwitch();
+        setKillActive(true);
+      }
+    } catch { /* ignore */ }
   };
 
   const saveLimits = async () => {
     setSaving(true);
-    setSaveMsg("");
+    setSaveResult(null);
     try {
-      await api.risk.updateLimits({
-        daily_loss_limit: dailyLossLimit,
-        max_position_size: maxPositionSize,
-        max_exposure: maxExposure,
-        max_order_cost: maxOrderCost,
-      });
-      setSaveMsg("✅ Limits saved");
+      await api.risk.updateLimits({ max_positions: maxPositions, max_exposure_cents: maxExposure, max_daily_loss_cents: maxLossDaily });
+      setSaveResult("Limits saved");
+      refresh();
     } catch {
-      setSaveMsg("❌ Failed to save");
+      setSaveResult("Failed to save");
     } finally {
       setSaving(false);
-      setTimeout(() => setSaveMsg(""), 3000);
     }
   };
 
-  const killActive = snapshot?.kill_switch_active ?? false;
+  const openPositions = status?.open_positions ?? 0;
+  const currentExposure = status?.total_exposure_cents ?? 0;
+  const dailyLoss = status?.daily_pnl_cents ?? 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Risk Management</h1>
-          <p className="text-xs text-[var(--muted)] mt-1">
-            {loading ? "Loading..." : "Live risk monitoring from Kalshi demo account"}
-          </p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Risk Management</h1>
+          <p className="text-xs text-[var(--text-muted)] mt-1">Position limits, exposure controls, and kill switch</p>
         </div>
-        <button
-          onClick={toggleKillSwitch}
-          disabled={toggling}
-          className={`rounded-md px-6 py-2.5 text-sm font-bold uppercase tracking-wider transition-all ${
-            killActive
-              ? "animate-pulse bg-red-600 text-white shadow-lg shadow-red-600/30"
-              : "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-          } ${toggling ? "opacity-50" : ""}`}
-        >
-          {toggling ? "..." : killActive ? "⛔ KILL SWITCH ACTIVE" : "🔴 Kill Switch"}
+        <button onClick={refresh} disabled={loading}
+          className="glass rounded-xl px-4 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all flex items-center gap-2">
+          <IconRefresh size={14} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
       </div>
 
-      {killActive && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-          <strong>Kill switch is active.</strong> All trading has been halted. No new orders will be placed. Click again to deactivate.
-        </div>
-      )}
-
-      {/* Risk Stats */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Daily P&L" value={`$${(snapshot?.daily_pnl ?? 0).toFixed(2)}`} />
-        <StatCard label="Open Exposure" value={`$${(snapshot?.total_exposure ?? 0).toFixed(2)}`} />
-        <StatCard label="Positions" value={String(snapshot?.position_count ?? 0)} />
-        <StatCard label="Open Orders" value={String(snapshot?.open_orders ?? 0)} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Kill Switch" value={killActive ? "ACTIVE" : "OFF"} trend={killActive ? "down" : "up"} icon={<IconStop size={18} />} />
+        <StatCard label="Open Positions" value={String(openPositions)} icon={<IconTarget size={18} />} />
+        <StatCard label="Total Exposure" value={`$${(currentExposure / 100).toFixed(2)}`} icon={<IconShield size={18} />} />
+        <StatCard label="Daily P&L" value={`$${(dailyLoss / 100).toFixed(2)}`} trend={dailyLoss >= 0 ? "up" : "down"} icon={<IconAlertTriangle size={18} />} />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Risk Limits Editor */}
-        <Card title="Risk Limits" className="lg:col-span-1">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Kill Switch */}
+        <Card title="Emergency Kill Switch">
           <div className="space-y-4">
-            <div>
-              <label className="text-xs text-[var(--muted)]">Daily Loss Limit ($)</label>
-              <input
-                type="number"
-                value={dailyLossLimit}
-                onChange={(e) => setDailyLossLimit(Number(e.target.value))}
-                className="mt-1 w-full rounded-md border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-white focus:border-[var(--accent)] focus:outline-none"
-              />
+            <div className={`rounded-xl p-6 text-center border ${killActive ? "bg-loss/10 border-loss/25" : "bg-white/[0.02] border-white/[0.04]"}`}>
+              <div className={`mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl ${killActive ? "bg-loss/20" : "bg-accent/10"}`}>
+                {killActive ? <IconStop size={32} className="text-loss" /> : <IconShield size={32} className="text-accent" />}
+              </div>
+              <div className={`text-lg font-bold ${killActive ? "text-loss" : "text-accent"}`}>
+                {killActive ? "KILL SWITCH ACTIVE" : "System Normal"}
+              </div>
+              <p className="text-xs text-[var(--text-muted)] mt-1.5">
+                {killActive ? "All trading has been halted" : "Trading operations are running normally"}
+              </p>
             </div>
-
-            <div>
-              <label className="text-xs text-[var(--muted)]">Max Position Size (contracts)</label>
-              <input
-                type="number"
-                value={maxPositionSize}
-                onChange={(e) => setMaxPositionSize(Number(e.target.value))}
-                className="mt-1 w-full rounded-md border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-white focus:border-[var(--accent)] focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-[var(--muted)]">Max Portfolio Exposure ($)</label>
-              <input
-                type="number"
-                value={maxExposure}
-                onChange={(e) => setMaxExposure(Number(e.target.value))}
-                className="mt-1 w-full rounded-md border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-white focus:border-[var(--accent)] focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-[var(--muted)]">Max Single Order Cost ($)</label>
-              <input
-                type="number"
-                value={maxOrderCost}
-                onChange={(e) => setMaxOrderCost(Number(e.target.value))}
-                className="mt-1 w-full rounded-md border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-white focus:border-[var(--accent)] focus:outline-none"
-              />
-            </div>
-
-            <button
-              onClick={saveLimits}
-              disabled={saving}
-              className={`w-full rounded-md bg-[var(--accent)] py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 ${saving ? "opacity-50" : ""}`}
-            >
-              {saving ? "Saving..." : "Save Risk Limits"}
+            <button onClick={toggleKillSwitch}
+              className={`w-full rounded-xl py-3.5 text-sm font-bold tracking-wide transition-all ${
+                killActive ? "bg-accent text-white hover:bg-accent/90" : "bg-loss/90 text-white hover:bg-loss"
+              }`}>
+              {killActive ? "RESET KILL SWITCH" : "ACTIVATE KILL SWITCH"}
             </button>
-            {saveMsg && <p className="text-xs text-center">{saveMsg}</p>}
           </div>
         </Card>
 
-        {/* Gauges + Status */}
-        <div className="space-y-4 lg:col-span-2">
-          <Card title="Exposure Gauges">
-            <div className="space-y-4">
-              <RiskGauge label="Daily P&L" value={Math.abs(snapshot?.daily_pnl ?? 0)} max={dailyLossLimit} color="bg-yellow-400" />
-              <RiskGauge label="Portfolio Exposure" value={snapshot?.total_exposure ?? 0} max={maxExposure} color="bg-blue-400" />
-              <RiskGauge label="Daily Trades" value={snapshot?.daily_trades ?? 0} max={50} color="bg-[var(--accent)]" />
+        {/* Risk Limits Editor */}
+        <Card title="Risk Limits">
+          <div className="space-y-4">
+            <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-sm text-[var(--text-secondary)]">Max Positions</span>
+                <input type="number" value={maxPositions} onChange={(e) => setMaxPositions(Number(e.target.value))} min={1} max={50}
+                  className="w-20 rounded-lg bg-white/[0.03] border border-white/[0.06] px-3 py-1.5 text-sm text-[var(--text-primary)] tabular-nums text-right focus:border-accent/30 transition-all" />
+              </div>
             </div>
-          </Card>
-
-          <Card title="System Status">
-            <div className="space-y-2">
-              {[
-                { label: "Kill Switch", value: killActive ? "ACTIVE" : "Off", danger: killActive },
-                { label: "Positions Open", value: String(snapshot?.position_count ?? 0), danger: false },
-                { label: "Open Orders", value: String(snapshot?.open_orders ?? 0), danger: false },
-                { label: "Daily Trades", value: String(snapshot?.daily_trades ?? 0), danger: (snapshot?.daily_trades ?? 0) > 40 },
-              ].map((item) => (
-                <div key={item.label} className="flex items-center justify-between rounded-md bg-white/5 px-3 py-2 text-sm">
-                  <span className="text-[var(--muted)]">{item.label}</span>
-                  <span className={item.danger ? "text-red-400 font-medium" : "text-white"}>
-                    {item.value}
-                  </span>
-                </div>
-              ))}
+            <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-sm text-[var(--text-secondary)]">Max Exposure (cents)</span>
+                <input type="number" value={maxExposure} onChange={(e) => setMaxExposure(Number(e.target.value))} min={100} max={100000} step={100}
+                  className="w-24 rounded-lg bg-white/[0.03] border border-white/[0.06] px-3 py-1.5 text-sm text-[var(--text-primary)] tabular-nums text-right focus:border-accent/30 transition-all" />
+              </div>
             </div>
-          </Card>
-        </div>
+            <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-sm text-[var(--text-secondary)]">Max Daily Loss (cents)</span>
+                <input type="number" value={maxLossDaily} onChange={(e) => setMaxLossDaily(Number(e.target.value))} min={50} max={10000} step={50}
+                  className="w-24 rounded-lg bg-white/[0.03] border border-white/[0.06] px-3 py-1.5 text-sm text-[var(--text-primary)] tabular-nums text-right focus:border-accent/30 transition-all" />
+              </div>
+            </div>
+            <button onClick={saveLimits} disabled={saving}
+              className="w-full rounded-xl py-3 text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-all flex items-center justify-center gap-2">
+              <IconCheck size={14} /> {saving ? "Saving..." : "Save Limits"}
+            </button>
+            {saveResult && (
+              <div className={`rounded-xl p-3 text-sm text-center ${saveResult.includes("saved") ? "bg-accent/10 text-accent border border-accent/20" : "bg-loss/10 text-loss border border-loss/20"}`}>
+                {saveResult}
+              </div>
+            )}
+          </div>
+        </Card>
       </div>
+
+      {/* Risk Gauges */}
+      <Card title="Exposure Gauges">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <RiskGauge label="Open Positions" value={openPositions} max={maxPositions * 2} danger={maxPositions} />
+          <RiskGauge label="Total Exposure" value={currentExposure} max={maxExposure * 2} danger={maxExposure} />
+          <RiskGauge label="Daily Loss" value={Math.abs(dailyLoss)} max={maxLossDaily * 2} danger={maxLossDaily} />
+        </div>
+      </Card>
+
+      {/* Violations Log */}
+      <Card title="Recent Violations">
+        <div className="space-y-1.5">
+          {(status?.recent_violations ?? []).length === 0 ? (
+            <div className="py-6 text-center">
+              <IconCheck size={20} className="mx-auto text-accent mb-2" />
+              <div className="text-sm text-[var(--text-muted)]">No violations recorded</div>
+            </div>
+          ) : (
+            (status?.recent_violations ?? []).map((v: string, i: number) => (
+              <div key={i} className="flex items-center gap-3 rounded-xl bg-loss/[0.04] border border-loss/10 px-4 py-3">
+                <IconAlertTriangle size={14} className="text-loss flex-shrink-0" />
+                <span className="text-sm text-[var(--text-secondary)]">{v}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
     </div>
   );
 }

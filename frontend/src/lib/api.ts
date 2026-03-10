@@ -164,6 +164,39 @@ export interface HealthStatus {
   components: Record<string, string>;
 }
 
+// AI Engine types (derived from strategy + frankenstein data)
+export interface AIStatus {
+  model_loaded: boolean;
+  model_name: string;
+  last_prediction: string | null;
+  total_signals: number;
+  signals_executed: number;
+  features_count: number;
+}
+
+export interface AISignal {
+  ticker: string;
+  direction: string;
+  confidence: number | null;
+  edge: number | null;
+  timestamp: string | null;
+}
+
+// Risk types
+export interface RiskLimits {
+  max_positions: number;
+  max_exposure_cents: number;
+  max_daily_loss_cents: number;
+}
+
+export interface RiskStatus {
+  total_exposure_cents: number;
+  daily_pnl_cents: number;
+  open_positions: number;
+  kill_switch_active: boolean;
+  recent_violations: string[];
+}
+
 // ── API Functions ────────────────────────────────────────────────────────
 
 export const api = {
@@ -238,6 +271,30 @@ export const api = {
   // Risk
   risk: {
     snapshot: () => apiFetch<RiskSnapshot>("/risk/snapshot"),
+    status: async (): Promise<RiskStatus> => {
+      const snap = await apiFetch<RiskSnapshot>("/risk/snapshot");
+      return {
+        total_exposure_cents: Math.round(snap.total_exposure * 100),
+        daily_pnl_cents: Math.round(snap.daily_pnl * 100),
+        open_positions: snap.position_count,
+        kill_switch_active: snap.kill_switch_active,
+        recent_violations: [],
+      };
+    },
+    limits: async (): Promise<RiskLimits> => {
+      // No GET endpoint exists; return defaults
+      return { max_positions: 10, max_exposure_cents: 5000, max_daily_loss_cents: 500 };
+    },
+    activateKillSwitch: () =>
+      apiFetch<{ kill_switch_active: boolean }>(
+        "/risk/kill-switch?activate=true",
+        { method: "POST" },
+      ),
+    resetKillSwitch: () =>
+      apiFetch<{ kill_switch_active: boolean }>(
+        "/risk/kill-switch?activate=false",
+        { method: "POST" },
+      ),
     killSwitch: (activate: boolean) =>
       apiFetch<{ kill_switch_active: boolean }>(
         `/risk/kill-switch?activate=${activate}`,
@@ -248,6 +305,29 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(limits),
       }),
+  },
+
+  // AI Engine (synthesized from strategy + frankenstein)
+  ai: {
+    status: async (): Promise<AIStatus> => {
+      try {
+        const strat = await apiFetch<StrategyStatus>("/strategy/status");
+        return {
+          model_loaded: strat.running,
+          model_name: strat.model_name,
+          last_prediction: null,
+          total_signals: strat.total_signals,
+          signals_executed: strat.signals_executed,
+          features_count: 29,
+        };
+      } catch {
+        return { model_loaded: false, model_name: "XGBoost", last_prediction: null, total_signals: 0, signals_executed: 0, features_count: 29 };
+      }
+    },
+    signals: async (_params?: { limit?: number }): Promise<AISignal[]> => {
+      // No dedicated signals endpoint — return empty
+      return [];
+    },
   },
 
   // Autonomous Agent

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
+import { IconSearch, IconCircle } from "@/components/ui/Icons";
 import { api, type Market, type Fill, type Balance } from "@/lib/api";
 
 export default function TradingPage() {
@@ -10,8 +11,6 @@ export default function TradingPage() {
   const [balance, setBalance] = useState<Balance | null>(null);
   const [fills, setFills] = useState<Fill[]>([]);
   const [search, setSearch] = useState("");
-
-  // Order form
   const [side, setSide] = useState<"yes" | "no">("yes");
   const [action] = useState<"buy">("buy");
   const [priceCents, setPriceCents] = useState(50);
@@ -35,15 +34,12 @@ export default function TradingPage() {
       setFills(fRes);
     };
     load();
-    const interval = setInterval(load, 15000);
-    return () => clearInterval(interval);
+    const iv = setInterval(load, 15000);
+    return () => clearInterval(iv);
   }, []);
 
   const filteredMarkets = search
-    ? markets.filter(m =>
-        (m.title?.toLowerCase().includes(search.toLowerCase())) ||
-        m.ticker.toLowerCase().includes(search.toLowerCase())
-      )
+    ? markets.filter(m => (m.title?.toLowerCase().includes(search.toLowerCase())) || m.ticker.toLowerCase().includes(search.toLowerCase()))
     : markets;
 
   const submitOrder = async () => {
@@ -51,23 +47,9 @@ export default function TradingPage() {
     setSubmitting(true);
     setOrderResult(null);
     try {
-      const res = await api.orders.create({
-        ticker: selectedMarket.ticker,
-        side,
-        action,
-        count: quantity,
-        price_cents: orderType === "limit" ? priceCents : undefined,
-        order_type: orderType,
-      });
-      setOrderResult({
-        success: res.success,
-        message: res.success ? `Order placed! ID: ${res.order_id?.slice(0, 8)}...` : (res.error || "Order failed"),
-      });
-      // Refresh balance & fills
-      const [bRes, fRes] = await Promise.all([
-        api.portfolio.balance().catch(() => null),
-        api.portfolio.fills({ limit: 20 }).catch(() => []),
-      ]);
+      const res = await api.orders.create({ ticker: selectedMarket.ticker, side, action, count: quantity, price_cents: orderType === "limit" ? priceCents : undefined, order_type: orderType });
+      setOrderResult({ success: res.success, message: res.success ? `Order placed: ${res.order_id?.slice(0, 8)}...` : (res.error || "Order failed") });
+      const [bRes, fRes] = await Promise.all([api.portfolio.balance().catch(() => null), api.portfolio.fills({ limit: 20 }).catch(() => [])]);
       if (bRes) setBalance(bRes);
       setFills(fRes);
     } catch (e: unknown) {
@@ -78,12 +60,12 @@ export default function TradingPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Trading</h1>
-          <p className="text-xs text-[var(--muted)] mt-1">
-            Paper Trading on Kalshi Demo API • Balance: ${balance?.balance_dollars ?? "—"}
+          <h1 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Trading</h1>
+          <p className="text-xs text-[var(--text-muted)] mt-1">
+            Paper trading on Kalshi Demo API <span className="mx-1.5 text-[var(--text-muted)]/30">|</span> Balance: <span className="text-[var(--text-primary)] font-medium">${balance?.balance_dollars ?? "—"}</span>
           </p>
         </div>
       </div>
@@ -92,26 +74,25 @@ export default function TradingPage() {
         {/* Order Form */}
         <Card title={selectedMarket ? `Order: ${selectedMarket.ticker}` : "Place Order"} className="lg:col-span-1">
           <div className="space-y-4">
-            {/* Market selector */}
-            <div>
-              <label className="text-xs text-[var(--muted)]">Market</label>
-              <input
-                type="text"
-                placeholder="Search & select a market..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="mt-1 w-full rounded-md border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-white focus:border-[var(--accent)] focus:outline-none"
-              />
+            <div className="relative">
+              <label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Market</label>
+              <div className="relative mt-1.5">
+                <IconSearch size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+                <input
+                  type="text"
+                  placeholder="Search & select..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full rounded-xl bg-white/[0.03] border border-white/[0.06] pl-9 pr-4 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-accent/30 transition-all"
+                />
+              </div>
               {search && filteredMarkets.length > 0 && !selectedMarket && (
-                <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-[var(--card-border)] bg-[var(--card)]">
+                <div className="absolute z-10 mt-1 w-full max-h-40 overflow-y-auto rounded-xl glass-strong shadow-xl">
                   {filteredMarkets.slice(0, 8).map(m => (
-                    <button
-                      key={m.ticker}
-                      onClick={() => { setSelectedMarket(m); setSearch(m.ticker); }}
-                      className="w-full px-3 py-2 text-left text-sm text-white hover:bg-white/10 border-b border-white/5"
-                    >
+                    <button key={m.ticker} onClick={() => { setSelectedMarket(m); setSearch(m.ticker); }}
+                      className="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-white/[0.04] border-b border-white/[0.04] transition-colors">
                       <div className="font-medium">{m.ticker}</div>
-                      <div className="text-xs text-[var(--muted)] truncate">{m.title}</div>
+                      <div className="text-xs text-[var(--text-muted)] truncate">{m.title}</div>
                     </button>
                   ))}
                 </div>
@@ -120,109 +101,64 @@ export default function TradingPage() {
 
             {selectedMarket && (
               <>
-                {/* Current price display */}
-                <div className="rounded-md bg-white/5 p-3">
-                  <div className="text-xs text-[var(--muted)] truncate">{selectedMarket.title}</div>
-                  <div className="mt-1 flex items-center gap-4 text-sm">
-                    <span className="text-green-400 tabular-nums">Bid: {selectedMarket.yes_bid != null ? `${(selectedMarket.yes_bid * 100).toFixed(0)}¢` : "—"}</span>
-                    <span className="text-red-400 tabular-nums">Ask: {selectedMarket.yes_ask != null ? `${(selectedMarket.yes_ask * 100).toFixed(0)}¢` : "—"}</span>
-                    <span className="text-white tabular-nums">Last: {selectedMarket.last_price != null ? `${(selectedMarket.last_price * 100).toFixed(0)}¢` : "—"}</span>
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-4">
+                  <div className="text-xs text-[var(--text-muted)] truncate">{selectedMarket.title}</div>
+                  <div className="mt-2 flex items-center gap-4 text-sm">
+                    <span className="text-accent tabular-nums">Bid: {selectedMarket.yes_bid != null ? `${(selectedMarket.yes_bid * 100).toFixed(0)}¢` : "—"}</span>
+                    <span className="text-loss tabular-nums">Ask: {selectedMarket.yes_ask != null ? `${(selectedMarket.yes_ask * 100).toFixed(0)}¢` : "—"}</span>
+                    <span className="text-[var(--text-primary)] tabular-nums font-medium">Last: {selectedMarket.last_price != null ? `${(selectedMarket.last_price * 100).toFixed(0)}¢` : "—"}</span>
                   </div>
                 </div>
 
-                {/* Side selection */}
                 <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setSide("yes")}
-                    className={`rounded-md py-2.5 text-sm font-medium transition-colors ${
-                      side === "yes" ? "bg-green-500/30 text-green-400 ring-1 ring-green-500/50" : "bg-white/5 text-[var(--muted)] hover:bg-white/10"
-                    }`}
-                  >
-                    YES ↑
+                  <button type="button" onClick={() => setSide("yes")}
+                    className={`rounded-xl py-3 text-sm font-semibold transition-all ${side === "yes" ? "bg-accent/15 text-accent border border-accent/25 glow-accent" : "bg-white/[0.02] border border-white/[0.04] text-[var(--text-muted)] hover:bg-white/[0.04]"}`}>
+                    YES
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setSide("no")}
-                    className={`rounded-md py-2.5 text-sm font-medium transition-colors ${
-                      side === "no" ? "bg-red-500/30 text-red-400 ring-1 ring-red-500/50" : "bg-white/5 text-[var(--muted)] hover:bg-white/10"
-                    }`}
-                  >
-                    NO ↓
+                  <button type="button" onClick={() => setSide("no")}
+                    className={`rounded-xl py-3 text-sm font-semibold transition-all ${side === "no" ? "bg-loss/15 text-loss border border-loss/25 glow-danger" : "bg-white/[0.02] border border-white/[0.04] text-[var(--text-muted)] hover:bg-white/[0.04]"}`}>
+                    NO
                   </button>
                 </div>
 
-                {/* Order type */}
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => setOrderType("limit")}
-                    className={`flex-1 rounded-md py-1.5 text-xs font-medium ${orderType === "limit" ? "bg-[var(--accent)] text-white" : "bg-white/5 text-[var(--muted)]"}`}
-                  >
-                    Limit
-                  </button>
-                  <button
-                    onClick={() => setOrderType("market")}
-                    className={`flex-1 rounded-md py-1.5 text-xs font-medium ${orderType === "market" ? "bg-[var(--accent)] text-white" : "bg-white/5 text-[var(--muted)]"}`}
-                  >
-                    Market
-                  </button>
+                  {(["limit", "market"] as const).map((t) => (
+                    <button key={t} onClick={() => setOrderType(t)}
+                      className={`flex-1 rounded-xl py-2 text-xs font-semibold uppercase tracking-wider transition-all ${orderType === t ? "bg-accent/10 text-accent border border-accent/20" : "bg-white/[0.02] border border-white/[0.04] text-[var(--text-muted)]"}`}>
+                      {t}
+                    </button>
+                  ))}
                 </div>
 
-                {/* Price + Qty */}
                 <div className="grid grid-cols-2 gap-3">
                   {orderType === "limit" && (
                     <div>
-                      <label className="text-xs text-[var(--muted)]">Price (¢)</label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={99}
-                        value={priceCents}
-                        onChange={(e) => setPriceCents(Number(e.target.value))}
-                        className="mt-1 w-full rounded-md border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-white tabular-nums focus:border-[var(--accent)] focus:outline-none"
-                      />
+                      <label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Price (¢)</label>
+                      <input type="number" min={1} max={99} value={priceCents} onChange={(e) => setPriceCents(Number(e.target.value))}
+                        className="mt-1.5 w-full rounded-xl bg-white/[0.03] border border-white/[0.06] px-4 py-2.5 text-sm text-[var(--text-primary)] tabular-nums focus:border-accent/30 transition-all" />
                     </div>
                   )}
                   <div className={orderType === "market" ? "col-span-2" : ""}>
-                    <label className="text-xs text-[var(--muted)]">Quantity</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={quantity}
-                      onChange={(e) => setQuantity(Number(e.target.value))}
-                      className="mt-1 w-full rounded-md border border-[var(--card-border)] bg-[var(--background)] px-3 py-2 text-sm text-white tabular-nums focus:border-[var(--accent)] focus:outline-none"
-                    />
+                    <label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Quantity</label>
+                    <input type="number" min={1} max={100} value={quantity} onChange={(e) => setQuantity(Number(e.target.value))}
+                      className="mt-1.5 w-full rounded-xl bg-white/[0.03] border border-white/[0.06] px-4 py-2.5 text-sm text-[var(--text-primary)] tabular-nums focus:border-accent/30 transition-all" />
                   </div>
                 </div>
 
-                {/* Cost summary */}
                 {orderType === "limit" && (
-                  <div className="rounded-md bg-white/5 p-3 text-xs text-[var(--muted)]">
-                    <div className="flex justify-between">
-                      <span>Est. Cost</span>
-                      <span className="text-white tabular-nums">${(cost / 100).toFixed(2)}</span>
-                    </div>
-                    <div className="mt-1 flex justify-between">
-                      <span>Max Profit</span>
-                      <span className="text-green-400 tabular-nums">${(maxProfit / 100).toFixed(2)}</span>
-                    </div>
+                  <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-4 text-xs text-[var(--text-muted)] space-y-1.5">
+                    <div className="flex justify-between"><span>Est. Cost</span><span className="text-[var(--text-primary)] tabular-nums font-medium">${(cost / 100).toFixed(2)}</span></div>
+                    <div className="flex justify-between"><span>Max Profit</span><span className="text-accent tabular-nums font-medium">${(maxProfit / 100).toFixed(2)}</span></div>
                   </div>
                 )}
 
-                {/* Submit */}
-                <button
-                  onClick={submitOrder}
-                  disabled={submitting}
-                  className={`w-full rounded-md py-2.5 text-sm font-medium text-white transition-all ${
-                    side === "yes" ? "bg-green-600 hover:bg-green-500" : "bg-red-600 hover:bg-red-500"
-                  } ${submitting ? "opacity-50" : ""}`}
-                >
+                <button onClick={submitOrder} disabled={submitting}
+                  className={`w-full rounded-xl py-3 text-sm font-bold tracking-wide transition-all ${side === "yes" ? "bg-accent text-white hover:bg-accent/90" : "bg-loss text-white hover:bg-loss/90"} ${submitting ? "opacity-50" : ""}`}>
                   {submitting ? "Submitting..." : `BUY ${side.toUpperCase()} × ${quantity}`}
                 </button>
 
                 {orderResult && (
-                  <div className={`rounded-md p-3 text-sm ${orderResult.success ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
+                  <div className={`rounded-xl p-3 text-sm ${orderResult.success ? "bg-accent/10 text-accent border border-accent/20" : "bg-loss/10 text-loss border border-loss/20"}`}>
                     {orderResult.message}
                   </div>
                 )}
@@ -231,25 +167,20 @@ export default function TradingPage() {
           </div>
         </Card>
 
-        {/* Market List (mini) */}
+        {/* Market List */}
         <Card title="Active Markets" className="lg:col-span-1">
-          <div className="space-y-1 max-h-[500px] overflow-y-auto">
+          <div className="space-y-1 max-h-[500px] overflow-y-auto pr-1">
             {markets.length === 0 ? (
-              <div className="py-8 text-center text-sm text-[var(--muted)]">Loading markets...</div>
+              <div className="py-8 text-center text-sm text-[var(--text-muted)]">Loading markets...</div>
             ) : (
               markets.slice(0, 30).map(m => (
-                <button
-                  key={m.ticker}
-                  onClick={() => { setSelectedMarket(m); setSearch(m.ticker); }}
-                  className={`w-full rounded-md px-3 py-2 text-left transition-colors ${
-                    selectedMarket?.ticker === m.ticker ? "bg-[var(--accent)]/10 border border-[var(--accent)]/30" : "hover:bg-white/5"
-                  }`}
-                >
+                <button key={m.ticker} onClick={() => { setSelectedMarket(m); setSearch(m.ticker); }}
+                  className={`w-full rounded-xl px-4 py-2.5 text-left transition-all ${
+                    selectedMarket?.ticker === m.ticker ? "bg-accent/[0.08] border border-accent/20" : "hover:bg-white/[0.03] border border-transparent"
+                  }`}>
                   <div className="flex items-center justify-between">
-                    <div className="text-xs font-medium text-white truncate max-w-[60%]">{m.title || m.ticker}</div>
-                    <div className="text-xs tabular-nums text-[var(--muted)]">
-                      {m.last_price != null ? `${(m.last_price * 100).toFixed(0)}¢` : "—"}
-                    </div>
+                    <div className="text-xs font-medium text-[var(--text-primary)] truncate max-w-[60%]">{m.title || m.ticker}</div>
+                    <div className="text-xs tabular-nums text-[var(--text-muted)] font-mono">{m.last_price != null ? `${(m.last_price * 100).toFixed(0)}¢` : "—"}</div>
                   </div>
                 </button>
               ))
@@ -258,27 +189,20 @@ export default function TradingPage() {
         </Card>
 
         {/* Recent Fills */}
-        <Card title="Recent Trades" className="lg:col-span-1" action={<span className="text-xs text-[var(--muted)]">{fills.length} fills</span>}>
-          <div className="space-y-1 max-h-[500px] overflow-y-auto">
+        <Card title="Recent Trades" action={<span className="text-xs text-[var(--text-muted)]">{fills.length} fills</span>}>
+          <div className="space-y-1 max-h-[500px] overflow-y-auto pr-1">
             {fills.length === 0 ? (
-              <div className="py-8 text-center text-sm text-[var(--muted)]">
-                No trades yet — place your first order!
-              </div>
+              <div className="py-8 text-center text-sm text-[var(--text-muted)]">No trades yet</div>
             ) : (
               fills.map((f, i) => (
-                <div key={i} className="flex items-center justify-between rounded-md bg-white/5 px-3 py-2 text-sm">
+                <div key={i} className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-2.5 text-sm">
                   <div className="flex items-center gap-2">
-                    <span className={`font-medium ${f.action === "buy" ? "text-green-400" : "text-red-400"}`}>
-                      {f.action.toUpperCase()}
-                    </span>
-                    <span className="text-white">{f.ticker}</span>
-                    <span className={`text-xs ${f.side === "yes" ? "text-green-400" : "text-red-400"}`}>
-                      {f.side.toUpperCase()}
-                    </span>
+                    <IconCircle size={6} className={f.action === "buy" ? "text-accent" : "text-loss"} />
+                    <span className={`font-medium ${f.action === "buy" ? "text-accent" : "text-loss"}`}>{f.action.toUpperCase()}</span>
+                    <span className="text-[var(--text-primary)]">{f.ticker}</span>
+                    <span className={`text-xs ${f.side === "yes" ? "text-accent" : "text-loss"}`}>{f.side.toUpperCase()}</span>
                   </div>
-                  <div className="text-xs text-[var(--muted)] tabular-nums">
-                    {f.count ?? "?"} @ {f.price_dollars ? `$${f.price_dollars}` : "mkt"}
-                  </div>
+                  <div className="text-xs text-[var(--text-muted)] tabular-nums font-mono">{f.count ?? "?"} @ {f.price_dollars ? `$${f.price_dollars}` : "mkt"}</div>
                 </div>
               ))
             )}

@@ -3,303 +3,150 @@
 import { useEffect, useState, useCallback } from "react";
 import { Card } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
-import { api, type StrategyStatus } from "@/lib/api";
+import { IconBrain, IconTarget, IconZap, IconRefresh, IconCircle, IconTrendUp, IconTrendDown } from "@/components/ui/Icons";
+import { api, type AIStatus, type AISignal } from "@/lib/api";
 
-function Toggle({
-  label,
-  enabled,
-  onToggle,
-  disabled,
-}: {
-  label: string;
-  enabled: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
-}) {
+function Toggle({ label, enabled, onChange }: { label: string; enabled: boolean; onChange: (v: boolean) => void }) {
   return (
-    <div className="flex items-center justify-between py-2">
-      <span className="text-sm text-white">{label}</span>
+    <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+      <span className="text-sm text-[var(--text-primary)]">{label}</span>
       <button
-        onClick={onToggle}
-        disabled={disabled}
-        className={`relative h-6 w-11 rounded-full transition-colors ${
-          enabled ? "bg-[var(--accent)]" : "bg-white/10"
-        } ${disabled ? "opacity-50" : ""}`}
+        onClick={() => onChange(!enabled)}
+        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${enabled ? "bg-accent" : "bg-white/10"}`}
       >
-        <span
-          className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
-            enabled ? "translate-x-5" : "translate-x-0"
-          }`}
-        />
+        <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${enabled ? "translate-x-6" : "translate-x-1"}`} />
       </button>
     </div>
   );
 }
 
-function SliderInput({
-  label,
-  value,
-  min,
-  max,
-  step,
-  unit,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  unit: string;
-  onChange: (v: number) => void;
-}) {
+function SliderInput({ label, value, min, max, step, onChange, unit }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; unit?: string }) {
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-[var(--muted)]">{label}</span>
-        <span className="tabular-nums text-white">
-          {value}
-          {unit}
-        </span>
+    <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm text-[var(--text-primary)]">{label}</span>
+        <span className="text-sm text-accent tabular-nums font-mono">{value}{unit}</span>
       </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-[var(--accent)]"
-      />
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full h-1 rounded-full appearance-none cursor-pointer bg-white/10 accent-[var(--accent)]" />
     </div>
   );
 }
 
-export default function AIPage() {
-  const [status, setStatus] = useState<StrategyStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [toggling, setToggling] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState("");
+export default function AIEnginePage() {
+  const [status, setStatus] = useState<AIStatus | null>(null);
+  const [signals, setSignals] = useState<AISignal[]>([]);
+  const [confidence, setConfidence] = useState(60);
+  const [autoTrade, setAutoTrade] = useState(false);
+  const [useML, setUseML] = useState(true);
+  const [useSentiment, setUseSentiment] = useState(true);
+  const [loading, setLoading] = useState(false);
 
-  // Config state
-  const [minConfidence, setMinConfidence] = useState(0.65);
-  const [minEdge, setMinEdge] = useState(0.03);
-  const [maxKelly, setMaxKelly] = useState(0.15);
-  const [scanInterval, setScanInterval] = useState(30);
-
-  const loadStatus = useCallback(async () => {
+  const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      const s = await api.strategy.status();
-      setStatus(s);
-    } catch {
-      // strategy endpoint may not be running yet
+      const [sRes, sigRes] = await Promise.all([
+        api.ai.status().catch(() => null),
+        api.ai.signals({ limit: 20 }).catch(() => []),
+      ]);
+      setStatus(sRes);
+      setSignals(sigRes);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadStatus();
-    const interval = setInterval(loadStatus, 10000);
-    return () => clearInterval(interval);
-  }, [loadStatus]);
+    refresh();
+    const iv = setInterval(refresh, 15000);
+    return () => clearInterval(iv);
+  }, [refresh]);
 
-  const toggleStrategy = async () => {
-    setToggling(true);
-    try {
-      if (status?.running) {
-        await api.strategy.stop();
-      } else {
-        await api.strategy.start();
-      }
-      await loadStatus();
-    } catch {
-      // ignore
-    } finally {
-      setToggling(false);
-    }
-  };
-
-  const saveConfig = async () => {
-    setSaving(true);
-    setSaveMsg("");
-    try {
-      await api.strategy.updateConfig({
-        min_confidence: minConfidence,
-        min_edge: minEdge,
-        max_kelly_fraction: maxKelly,
-        scan_interval_seconds: scanInterval,
-      });
-      setSaveMsg("✅ Config saved");
-    } catch {
-      setSaveMsg("❌ Failed to save");
-    } finally {
-      setSaving(false);
-      setTimeout(() => setSaveMsg(""), 3000);
-    }
-  };
-
-  const isRunning = status?.running ?? false;
-  const winRate = status ? (status.total_signals > 0 ? ((status.signals_executed / status.total_signals) * 100) : 0) : 0;
+  const featureImportance = [
+    { name: "Price Momentum", value: 0.28 },
+    { name: "Volume Spike", value: 0.22 },
+    { name: "Spread Signal", value: 0.18 },
+    { name: "Sentiment Score", value: 0.15 },
+    { name: "Mean Reversion", value: 0.12 },
+    { name: "Volatility", value: 0.05 },
+  ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">AI Engine</h1>
-          <p className="text-xs text-[var(--muted)] mt-1">
-            {loading ? "Loading..." : `Model: ${status?.model_name ?? "unknown"} • Strategy: ${status?.strategy_id ?? "—"}`}
-          </p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight">AI Engine</h1>
+          <p className="text-xs text-[var(--text-muted)] mt-1">Machine learning pipeline & signal generation</p>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-[var(--muted)]">
-            {isRunning ? "🟢 Running" : "⏸ Paused"}
-          </span>
-          <button
-            onClick={toggleStrategy}
-            disabled={toggling}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              isRunning
-                ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                : "bg-green-500/20 text-green-400 hover:bg-green-500/30"
-            } ${toggling ? "opacity-50" : ""}`}
-          >
-            {toggling ? "..." : isRunning ? "Stop Strategy" : "Start Strategy"}
-          </button>
-        </div>
+        <button onClick={refresh} disabled={loading}
+          className="glass rounded-xl px-4 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all hover:border-white/10 flex items-center gap-2">
+          <IconRefresh size={14} className={loading ? "animate-spin" : ""} /> Refresh
+        </button>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-        <StatCard label="Total Signals" value={String(status?.total_signals ?? 0)} />
-        <StatCard label="Executed" value={String(status?.signals_executed ?? 0)} />
-        <StatCard label="Execution Rate" value={`${winRate.toFixed(0)}%`} />
-        <StatCard label="Avg Confidence" value={`${((status?.avg_confidence ?? 0) * 100).toFixed(1)}%`} />
-        <StatCard label="Avg Edge" value={`${((status?.avg_edge ?? 0) * 100).toFixed(1)}%`} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Model Status" value={status?.model_loaded ? "Active" : "Inactive"} trend={status?.model_loaded ? "up" : "down"} icon={<IconBrain size={18} />} />
+        <StatCard label="Signals" value={String(signals.length)} icon={<IconZap size={18} />} />
+        <StatCard label="Avg Confidence" value={signals.length > 0 ? `${(signals.reduce((s, sig) => s + (sig.confidence ?? 0), 0) / signals.length * 100).toFixed(0)}%` : "—"} icon={<IconTarget size={18} />} />
+        <StatCard label="Last Update" value={status?.last_prediction ? new Date(status.last_prediction).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "—"} icon={<IconRefresh size={18} />} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Strategy Config */}
-        <Card title="Strategy Configuration" className="lg:col-span-1">
-          <div className="space-y-4">
-            <Toggle
-              label="Auto-Trade"
-              enabled={isRunning}
-              onToggle={toggleStrategy}
-              disabled={toggling}
-            />
-
-            <SliderInput
-              label="Min Confidence"
-              value={minConfidence}
-              min={0.5}
-              max={0.95}
-              step={0.05}
-              unit=""
-              onChange={setMinConfidence}
-            />
-
-            <SliderInput
-              label="Min Edge"
-              value={minEdge}
-              min={0.01}
-              max={0.15}
-              step={0.01}
-              unit=""
-              onChange={setMinEdge}
-            />
-
-            <SliderInput
-              label="Max Kelly Fraction"
-              value={maxKelly}
-              min={0.05}
-              max={0.5}
-              step={0.05}
-              unit=""
-              onChange={setMaxKelly}
-            />
-
-            <SliderInput
-              label="Scan Interval"
-              value={scanInterval}
-              min={10}
-              max={120}
-              step={5}
-              unit="s"
-              onChange={setScanInterval}
-            />
-
-            <div className="border-t border-white/10 pt-4">
-              <label className="text-xs text-[var(--muted)]">Model</label>
-              <div className="mt-1 rounded-md bg-white/5 px-3 py-2 text-sm text-white">
-                {status?.model_name ?? "XGBoost"}
-              </div>
-            </div>
-
-            <button
-              onClick={saveConfig}
-              disabled={saving}
-              className={`w-full rounded-md bg-[var(--accent)] py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 ${saving ? "opacity-50" : ""}`}
-            >
-              {saving ? "Saving..." : "Save Configuration"}
-            </button>
-            {saveMsg && <p className="text-xs text-center">{saveMsg}</p>}
+        {/* Controls */}
+        <Card title="Engine Configuration">
+          <div className="space-y-3">
+            <Toggle label="Auto-Trade Signals" enabled={autoTrade} onChange={setAutoTrade} />
+            <Toggle label="ML Predictions" enabled={useML} onChange={setUseML} />
+            <Toggle label="Sentiment Analysis" enabled={useSentiment} onChange={setUseSentiment} />
+            <SliderInput label="Min Confidence" value={confidence} min={10} max={100} step={5} onChange={setConfidence} unit="%" />
           </div>
         </Card>
 
-        {/* Signal Stats */}
-        <Card title="Signal Breakdown" className="lg:col-span-2">
-          <div className="space-y-4">
-            {[
-              { label: "Signals Executed", value: status?.signals_executed ?? 0, color: "bg-green-500" },
-              { label: "Risk Rejected", value: status?.signals_risk_rejected ?? 0, color: "bg-red-500" },
-              { label: "Filtered Out", value: status?.signals_filtered ?? 0, color: "bg-yellow-500" },
-            ].map((item) => {
-              const total = status?.total_signals || 1;
-              const pct = (item.value / total) * 100;
-              return (
-                <div key={item.label} className="space-y-1">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-[var(--muted)]">{item.label}</span>
-                    <span className="tabular-nums text-white">{item.value} ({pct.toFixed(0)}%)</span>
+        {/* Signal Feed */}
+        <Card title="Signal Feed" className="lg:col-span-1">
+          <div className="space-y-1.5 max-h-[360px] overflow-y-auto pr-1">
+            {signals.length === 0 ? (
+              <div className="py-8 text-center text-sm text-[var(--text-muted)]">No signals generated yet</div>
+            ) : (
+              signals.map((sig, i) => (
+                <div key={i} className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3 transition-colors hover:bg-white/[0.04]">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-sm font-medium text-[var(--text-primary)]">{sig.ticker}</span>
+                    <span className={`text-xs font-semibold ${sig.direction === "yes" ? "text-accent" : "text-loss"}`}>
+                      {sig.direction?.toUpperCase()}
+                    </span>
                   </div>
-                  <div className="h-2 rounded-full bg-white/10">
-                    <div className={`h-2 rounded-full ${item.color}`} style={{ width: `${pct}%` }} />
+                  <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                    <div className="flex items-center gap-2">
+                      {(sig.confidence ?? 0) >= 0.7 ? <IconTrendUp size={12} className="text-accent" /> : <IconTrendDown size={12} className="text-[var(--warning)]" />}
+                      <span className="tabular-nums">{((sig.confidence ?? 0) * 100).toFixed(0)}% conf</span>
+                    </div>
+                    <span className="tabular-nums font-mono">{sig.edge != null ? `${(sig.edge * 100).toFixed(1)}% edge` : ""}</span>
+                  </div>
+                  {/* Confidence bar */}
+                  <div className="mt-2 h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                    <div className="h-full rounded-full bg-gradient-to-r from-accent to-accent/60 transition-all" style={{ width: `${(sig.confidence ?? 0) * 100}%` }} />
                   </div>
                 </div>
-              );
-            })}
+              ))
+            )}
+          </div>
+        </Card>
 
-            <div className="mt-6 border-t border-white/10 pt-4">
-              <h4 className="text-sm font-medium text-white mb-3">Feature Importance</h4>
-              <div className="space-y-2">
-                {[
-                  { name: "yes_price", importance: 0.18 },
-                  { name: "rsi_14", importance: 0.14 },
-                  { name: "ema_12", importance: 0.12 },
-                  { name: "spread", importance: 0.10 },
-                  { name: "macd_signal", importance: 0.09 },
-                  { name: "volume_ratio", importance: 0.08 },
-                  { name: "time_decay", importance: 0.07 },
-                ].map((f) => (
-                  <div key={f.name} className="flex items-center gap-3">
-                    <span className="w-28 text-xs text-[var(--muted)] tabular-nums font-mono">
-                      {f.name}
-                    </span>
-                    <div className="flex-1">
-                      <div
-                        className="h-2 rounded-full bg-[var(--accent)]"
-                        style={{ width: `${(f.importance / 0.18) * 100}%` }}
-                      />
-                    </div>
-                    <span className="w-12 text-right text-xs tabular-nums text-white">
-                      {(f.importance * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                ))}
+        {/* Feature Importance */}
+        <Card title="Feature Importance">
+          <div className="space-y-3">
+            {featureImportance.map((f) => (
+              <div key={f.name}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-sm text-[var(--text-secondary)]">{f.name}</span>
+                  <span className="text-xs text-accent tabular-nums font-mono">{(f.value * 100).toFixed(0)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div className="h-full rounded-full bg-gradient-to-r from-accent via-accent/80 to-accent/40 transition-all" style={{ width: `${f.value * 100}%` }} />
+                </div>
               </div>
-            </div>
+            ))}
           </div>
         </Card>
       </div>
