@@ -42,7 +42,7 @@ export default function AgentPage() {
   const startAgent = async () => {
     setActionMsg(null);
     try {
-      await api.agent.start({ profit_target_dollars: profitTarget, aggressiveness });
+      await api.agent.start(profitTarget, aggressiveness);
       setActionMsg("Agent started");
       refresh();
     } catch {
@@ -61,10 +61,10 @@ export default function AgentPage() {
     }
   };
 
-  const isRunning = status?.running ?? false;
-  const sessionPnl = status?.session_pnl_cents ?? 0;
+  const isRunning = status?.status === "running";
+  const sessionPnl = status?.stats?.current_pnl ?? 0;
   const targetCents = (profitTarget * 100);
-  const progress = targetCents > 0 ? Math.min(Math.max(sessionPnl / targetCents, 0), 1) : 0;
+  const progress = targetCents > 0 ? Math.min(Math.max((sessionPnl * 100) / targetCents, 0), 1) : 0;
 
   // SVG Progress Ring
   const ringSize = 160;
@@ -88,9 +88,9 @@ export default function AgentPage() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Status" value={isRunning ? "Running" : "Stopped"} trend={isRunning ? "up" : "down"} icon={<IconRocket size={18} />} />
-        <StatCard label="Session P&L" value={`$${(sessionPnl / 100).toFixed(2)}`} trend={sessionPnl >= 0 ? "up" : "down"} icon={<IconTrendUp size={18} />} />
-        <StatCard label="Trades" value={String(status?.trades_count ?? 0)} icon={<IconZap size={18} />} />
-        <StatCard label="Win Rate" value={status?.win_rate != null ? `${(status.win_rate * 100).toFixed(0)}%` : "—"} icon={<IconTarget size={18} />} />
+        <StatCard label="Session P&L" value={`$${(sessionPnl).toFixed(2)}`} trend={sessionPnl >= 0 ? "up" : "down"} icon={<IconTrendUp size={18} />} />
+        <StatCard label="Trades" value={String(status?.stats?.orders_placed ?? 0)} icon={<IconZap size={18} />} />
+        <StatCard label="Win Rate" value={status?.stats?.win_rate != null ? `${(status.stats.win_rate * 100).toFixed(0)}%` : "—"} icon={<IconTarget size={18} />} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -112,12 +112,12 @@ export default function AgentPage() {
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center">
               <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">{(progress * 100).toFixed(0)}%</div>
-              <div className="text-xs text-[var(--text-muted)]">${(sessionPnl / 100).toFixed(2)} / ${profitTarget.toFixed(2)}</div>
+              <div className="text-xs text-[var(--text-muted)]">${(sessionPnl).toFixed(2)} / ${profitTarget.toFixed(2)}</div>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3 w-full mt-2">
-            <MetricCard label="Elapsed" value={status?.elapsed_minutes != null ? `${status.elapsed_minutes.toFixed(0)}m` : "—"} />
-            <MetricCard label="Avg Trade" value={status?.avg_trade_pnl_cents != null ? `${(status.avg_trade_pnl_cents / 100).toFixed(2)}$` : "—"} />
+            <MetricCard label="Elapsed" value={status?.stats?.elapsed_seconds != null ? `${Math.round(status.stats.elapsed_seconds / 60)}m` : "—"} />
+            <MetricCard label="Scans" value={String(status?.stats?.scan_count ?? 0)} />
           </div>
         </Card>
 
@@ -179,7 +179,7 @@ export default function AgentPage() {
             {(status?.recent_trades ?? []).length === 0 ? (
               <div className="py-8 text-center text-sm text-[var(--text-muted)]">No trades in this session</div>
             ) : (
-              (status?.recent_trades ?? []).map((t: { ticker: string; side: string; action: string; pnl_cents?: number; time?: string }, i: number) => (
+              (status?.recent_trades ?? []).map((t, i: number) => (
                 <div key={i} className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-2.5 transition-colors hover:bg-white/[0.04]">
                   <div className="flex items-center gap-2.5">
                     <IconCircle size={6} className={t.action === "buy" ? "text-accent" : "text-loss"} />
@@ -189,12 +189,12 @@ export default function AgentPage() {
                     </div>
                   </div>
                   <div className="text-right">
-                    {t.pnl_cents != null && (
-                      <div className={`text-sm tabular-nums font-mono ${t.pnl_cents >= 0 ? "text-accent" : "text-loss"}`}>
-                        {t.pnl_cents >= 0 ? "+" : ""}${(t.pnl_cents / 100).toFixed(2)}
+                    {t.fill_pnl != null && (
+                      <div className={`text-sm tabular-nums font-mono ${t.fill_pnl >= 0 ? "text-accent" : "text-loss"}`}>
+                        {t.fill_pnl >= 0 ? "+" : ""}${(t.fill_pnl / 100).toFixed(2)}
                       </div>
                     )}
-                    {t.time && <div className="text-xs text-[var(--text-muted)]">{new Date(t.time).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</div>}
+                    {t.timestamp && <div className="text-xs text-[var(--text-muted)]">{new Date(t.timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</div>}
                   </div>
                 </div>
               ))

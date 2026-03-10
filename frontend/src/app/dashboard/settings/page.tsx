@@ -22,7 +22,7 @@ export default function SettingsPage() {
   useEffect(() => {
     const check = async () => {
       const backendOk = await fetch(`${API_BASE}/health`).then(r => r.ok).catch(() => false);
-      const frankOk = await fetch(`${API_BASE}/frankenstein/health`).then(r => r.ok).catch(() => false);
+      const frankOk = await fetch(`${API_BASE}/api/frankenstein/health`).then(r => r.ok).catch(() => false);
       setSysInfo({ backend: backendOk, frankenstein: frankOk });
     };
     check();
@@ -35,7 +35,7 @@ export default function SettingsPage() {
     setCancelResult(null);
     try {
       const res = await api.orders.cancelAll();
-      setCancelResult(res.success ? `Cancelled ${res.cancelled_count ?? 0} orders` : (res.error || "Failed to cancel"));
+      setCancelResult(`Orders cancelled (${res.status})`);
     } catch {
       setCancelResult("Failed to cancel orders");
     } finally {

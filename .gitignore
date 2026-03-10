@@ -69,3 +69,5 @@ mlruns/
 
 # Frankenstein runtime data
 backend/data/
+backend/data/
+frontend/tsconfig.tsbuildinfo
