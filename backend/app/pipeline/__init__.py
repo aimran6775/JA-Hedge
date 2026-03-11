@@ -90,11 +90,13 @@ class MarketDataPipeline:
         *,
         poll_interval: float = 15.0,
         snapshot_interval: float = 60.0,
+        on_refresh_callback: Any | None = None,
     ):
         self._api = api
         self._ws = ws
         self._poll_interval = poll_interval
         self._snapshot_interval = snapshot_interval
+        self._on_refresh_callback = on_refresh_callback
         self._running = False
         self._poll_task: asyncio.Task | None = None
         self._snapshot_task: asyncio.Task | None = None
@@ -145,6 +147,14 @@ class MarketDataPipeline:
             )
             market_cache.upsert_many(markets)
             await self._upsert_markets_to_db(markets)
+
+            # Feed FeatureEngine with fresh price data
+            if self._on_refresh_callback:
+                try:
+                    self._on_refresh_callback(markets)
+                except Exception as cb_err:
+                    log.debug("refresh_callback_error", error=str(cb_err))
+
             log.info("market_full_refresh", count=len(markets))
         except Exception as e:
             log.error("market_refresh_failed", error=str(e))

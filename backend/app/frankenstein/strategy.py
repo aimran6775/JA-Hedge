@@ -28,9 +28,9 @@ log = get_logger("frankenstein.strategy")
 class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
-    # Signal filters
-    min_confidence: float = 0.60
-    min_edge: float = 0.05
+    # Signal filters (lowered for heuristic/untrained model to generate trades)
+    min_confidence: float = 0.52
+    min_edge: float = 0.02
 
     # Position sizing
     kelly_fraction: float = 0.25
@@ -46,9 +46,9 @@ class StrategyParams:
     take_profit_pct: float = 0.30
 
     # Model thresholds
-    max_spread_cents: int = 10   # Skip wide spreads
-    min_volume: float = 100.0    # Skip illiquid markets
-    min_hours_to_expiry: float = 1.0
+    max_spread_cents: int = 15   # Allow wider spreads in paper mode
+    min_volume: float = 10.0     # Allow lower-volume markets too
+    min_hours_to_expiry: float = 0.5
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)
     aggression: float = 0.5

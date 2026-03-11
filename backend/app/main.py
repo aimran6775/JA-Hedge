@@ -135,17 +135,56 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.frankenstein = frankenstein
     log.info("🧟 frankenstein_created", generation=0)
 
-    # Market data pipeline
+    # Market data pipeline (with feature engine callback)
     from app.pipeline import MarketDataPipeline
 
-    pipeline = MarketDataPipeline(api=kalshi)
+    def _feed_features(markets):
+        """Callback: feed every refreshed market into FeatureEngine."""
+        for m in markets:
+            mid = float(m.midpoint or m.last_price or 0)
+            vol = float(m.volume or 0)
+            oi = float(m.open_interest or 0)
+            if mid > 0:
+                feat_engine.update(m.ticker, mid, vol, oi)
+
+    pipeline = MarketDataPipeline(api=kalshi, on_refresh_callback=_feed_features)
     state.market_pipeline = pipeline
 
-    # Portfolio tracker
+    # Portfolio tracker (uses paper wrapper if paper trading)
     from app.pipeline.portfolio_tracker import PortfolioTracker
 
-    tracker = PortfolioTracker(api=kalshi)
+    tracker = PortfolioTracker(api=api_for_engine)
     state.portfolio_tracker = tracker
+
+    # ── Start live data feeds ─────────────────────────────
+    try:
+        await pipeline.start()
+        log.info("market_pipeline_started")
+    except Exception as e:
+        log.error("market_pipeline_start_failed", error=str(e))
+
+    try:
+        await tracker.start()
+        log.info("portfolio_tracker_started")
+    except Exception as e:
+        log.error("portfolio_tracker_start_failed", error=str(e))
+
+    # Feed FeatureEngine with initial market data so technical indicators populate
+    from app.pipeline import market_cache as _mc
+    for _m in _mc.get_active():
+        _mid = float(_m.midpoint or _m.last_price or 0)
+        _vol = float(_m.volume or 0)
+        _oi = float(_m.open_interest or 0)
+        if _mid > 0:
+            feat_engine.update(_m.ticker, _mid, _vol, _oi)
+    log.info("feature_engine_seeded", markets=len(_mc.get_active()))
+
+    # ── Auto-awaken Frankenstein (AI brain) ───────────────
+    try:
+        await frankenstein.awaken()
+        log.info("🧟⚡ frankenstein_auto_awakened")
+    except Exception as e:
+        log.error("frankenstein_awaken_failed", error=str(e))
 
     state.ready = True
     log.info("jahedge_ready", port=settings.backend_port)
@@ -159,6 +198,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if state.frankenstein:
         try:
             await state.frankenstein.sleep()
+        except Exception:
+            pass
+
+    # Stop market data pipeline
+    if state.market_pipeline:
+        try:
+            await state.market_pipeline.stop()
+        except Exception:
+            pass
+
+    # Stop portfolio tracker
+    if state.portfolio_tracker:
+        try:
+            await state.portfolio_tracker.stop()
         except Exception:
             pass
 

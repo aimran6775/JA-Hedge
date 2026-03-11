@@ -249,37 +249,76 @@ class XGBoostPredictor(PredictionModel):
 
     def _heuristic_predict(self, features: MarketFeatures) -> Prediction:
         """
-        Simple heuristic predictor when no trained model is available.
+        Smart heuristic predictor when no trained model is available.
 
-        Uses mean-reversion + momentum signals.
+        Uses weighted mean-reversion + momentum + RSI + time-decay signals.
+        Designed to generate actionable signals even with limited history.
         """
         mid = features.midpoint
-        signals: list[float] = []
+        if mid <= 0 or mid >= 1:
+            mid = 0.5
 
-        # Mean reversion: extreme prices tend to revert
-        if mid < 0.15:
-            signals.append(0.6)  # slight YES bias
-        elif mid > 0.85:
-            signals.append(0.4)  # slight NO bias
+        # ── Signal 1: Mean reversion (strongest weight) ─────────
+        # Extreme prices revert. Stronger signal the further from 0.5.
+        distance_from_50 = abs(mid - 0.5)
+        if mid < 0.20:
+            # Very low price → YES bias (expect reversion up)
+            reversion = 0.5 + distance_from_50 * 0.6  # e.g. mid=0.10 → 0.74
+        elif mid > 0.80:
+            # Very high price → NO bias (expect reversion down)
+            reversion = 0.5 - distance_from_50 * 0.6  # e.g. mid=0.90 → 0.26
+        elif mid < 0.35:
+            # Low → slight YES bias
+            reversion = 0.5 + distance_from_50 * 0.3
+        elif mid > 0.65:
+            # High → slight NO bias
+            reversion = 0.5 - distance_from_50 * 0.3
         else:
-            signals.append(mid)
+            # Mid-range → no strong view
+            reversion = 0.5
 
-        # Momentum: recent price direction continues
+        # ── Signal 2: Momentum (uses history if available) ──────
+        momentum = 0.5  # neutral default
         if features.price_change_5m > 0.02:
-            signals.append(min(mid + 0.05, 0.95))
+            momentum = min(mid + 0.08, 0.90)
         elif features.price_change_5m < -0.02:
-            signals.append(max(mid - 0.05, 0.05))
-        else:
-            signals.append(mid)
+            momentum = max(mid - 0.08, 0.10)
+        elif features.price_change_1m > 0.01:
+            momentum = min(mid + 0.04, 0.85)
+        elif features.price_change_1m < -0.01:
+            momentum = max(mid - 0.04, 0.15)
 
-        # RSI: overbought/oversold
-        if features.rsi_14 > 70:
-            signals.append(max(mid - 0.03, 0.05))
-        elif features.rsi_14 < 30:
-            signals.append(min(mid + 0.03, 0.95))
-        else:
-            signals.append(mid)
+        # ── Signal 3: RSI (uses history if available) ───────────
+        rsi_signal = 0.5  # neutral default
+        if features.rsi_14 > 75:
+            rsi_signal = max(0.5 - (features.rsi_14 - 50) / 100, 0.15)
+        elif features.rsi_14 < 25:
+            rsi_signal = min(0.5 + (50 - features.rsi_14) / 100, 0.85)
 
-        # Average signals
-        prob_yes = sum(signals) / len(signals)
+        # ── Signal 4: Time decay ────────────────────────────────
+        # Markets near expiry with extreme prices tend to resolve
+        time_signal = 0.5
+        if features.hours_to_expiry < 12 and distance_from_50 > 0.2:
+            # Near expiry + extreme → lean toward the dominant side
+            if mid > 0.7:
+                time_signal = min(mid + 0.05, 0.95)  # likely YES resolves
+            elif mid < 0.3:
+                time_signal = max(mid - 0.05, 0.05)  # likely NO resolves
+
+        # ── Weighted combination ────────────────────────────────
+        has_history = features.price_change_5m != 0 or features.rsi_14 != 50.0
+        if has_history:
+            # With price history, balance all signals
+            weights = [0.35, 0.25, 0.20, 0.20]  # reversion, momentum, rsi, time
+            prob_yes = (
+                weights[0] * reversion
+                + weights[1] * momentum
+                + weights[2] * rsi_signal
+                + weights[3] * time_signal
+            )
+        else:
+            # No history — rely on mean reversion + time decay
+            prob_yes = 0.6 * reversion + 0.4 * time_signal
+
+        prob_yes = max(0.05, min(0.95, prob_yes))
         return self._build_prediction(prob_yes, features)

@@ -141,7 +141,6 @@ class PortfolioTracker:
             # Positions
             positions = await self._api.portfolio.get_all_positions(
                 settlement_status="unsettled",
-                count_filter="non_zero",
             )
             portfolio_state.positions = {p.ticker: p for p in positions}
 

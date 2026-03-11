@@ -85,7 +85,12 @@ class MarketsAPI:
         if series_ticker:
             params["series_ticker"] = series_ticker
         if status:
-            params["status"] = status.value
+            # Kalshi API filter uses "open"/"closed"/"settled"
+            # but MarketStatus.ACTIVE is a response-only alias for "open"
+            api_val = status.value
+            if api_val == "active":
+                api_val = "open"
+            params["status"] = api_val
         if category:
             params["category"] = category
 
