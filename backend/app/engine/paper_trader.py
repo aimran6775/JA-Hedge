@@ -189,14 +189,16 @@ class PaperTradingSimulator:
         starting_balance_cents: int = 1_000_000,  # $10,000
         *,
         fee_rate_cents: int = 7,  # taker fee per contract
-        slippage_cents: int = 0,  # additional slippage per fill
+        slippage_cents: int = 1,  # realistic slippage per fill
         instant_fill: bool = True,  # fill limit orders immediately (simulates aggressing)
+        spread_simulation: bool = True,  # Phase 6: simulate spread impact
     ):
         self.starting_balance_cents = starting_balance_cents
         self.balance_cents = starting_balance_cents
         self.fee_rate_cents = fee_rate_cents
         self.slippage_cents = slippage_cents
         self.instant_fill = instant_fill
+        self.spread_simulation = spread_simulation
 
         # State
         self._orders: dict[str, SimulatedOrder] = {}

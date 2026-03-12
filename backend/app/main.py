@@ -85,6 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # AI components
     from app.ai.features import FeatureEngine
+    from app.ai.ensemble import EnsemblePredictor
     from app.ai.models import XGBoostPredictor
     from app.ai.strategy import TradingStrategy
     from app.ai.agent import AutonomousAgent
@@ -92,7 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.frankenstein.brain import FrankensteinConfig
 
     feat_engine = FeatureEngine()
-    model = XGBoostPredictor()
+    model = EnsemblePredictor()  # Phase 4: XGBoost + LR + calibration
     strategy = TradingStrategy(
         model=model,
         feature_engine=feat_engine,
@@ -179,6 +180,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             feat_engine.update(_m.ticker, _mid, _vol, _oi)
     log.info("feature_engine_seeded", markets=len(_mc.get_active()))
 
+    # ── Phase 5: WebSocket real-time data feed ────────────
+    ws_client = None
+    ws_feeder = None
+    try:
+        from app.kalshi.websocket import KalshiWebSocket, WSDataFeeder
+
+        ws_url = settings.kalshi_ws_url
+
+        # Get auth token from Kalshi API if available (WS needs session token)
+        ws_auth_token = None
+        if hasattr(kalshi, '_auth') and kalshi._auth and hasattr(kalshi._auth, 'token'):
+            ws_auth_token = kalshi._auth.token
+
+        ws_client = KalshiWebSocket(ws_url=ws_url, auth_token=ws_auth_token)
+        ws_feeder = WSDataFeeder(feature_engine=feat_engine)
+
+        # Register data handlers
+        ws_client.on_ticker(ws_feeder.handle_ticker)
+        ws_client.on_trade(ws_feeder.handle_trade)
+        ws_client.on_fill(ws_feeder.handle_fill)
+
+        await ws_client.connect()
+
+        # Subscribe to active market tickers (top 200 by volume)
+        active_tickers = [m.ticker for m in _mc.get_active()[:200]]
+        if active_tickers:
+            await ws_client.subscribe_tickers(active_tickers)
+
+        log.info("ws_feeds_started", tickers=len(active_tickers), auth=bool(ws_auth_token))
+    except ImportError:
+        log.warning("websockets_not_installed", hint="pip install websockets for real-time feeds")
+    except Exception as e:
+        log.warning("ws_feeds_skipped", error=str(e), hint="Falling back to REST polling — this is normal")
+        # Disconnect to stop reconnect loop if connect failed
+        if ws_client:
+            try:
+                await ws_client.disconnect()
+            except Exception:
+                pass
+            ws_client = None
+
     # ── Auto-awaken Frankenstein (AI brain) ───────────────
     try:
         await frankenstein.awaken()
@@ -198,6 +240,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if state.frankenstein:
         try:
             await state.frankenstein.sleep()
+        except Exception:
+            pass
+
+    # Stop WebSocket feeds
+    if ws_client:
+        try:
+            await ws_client.disconnect()
         except Exception:
             pass
 

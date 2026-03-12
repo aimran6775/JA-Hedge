@@ -167,10 +167,11 @@ class XGBoostPredictor(PredictionModel):
         """
         import xgboost as xgb
 
-        # Split data
-        n_val = int(len(X) * eval_split)
-        X_train, X_val = X[n_val:], X[:n_val]
-        y_train, y_val = y[n_val:], y[:n_val]
+        # Temporal split: train on older data, validate on most recent
+        # (prevents look-ahead bias — never train on future data)
+        n_val = max(int(len(X) * eval_split), 1)
+        X_train, X_val = X[:-n_val], X[-n_val:]
+        y_train, y_val = y[:-n_val], y[-n_val:]
 
         dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=self._feature_names)
         dval = xgb.DMatrix(X_val, label=y_val, feature_names=self._feature_names)
@@ -249,76 +250,74 @@ class XGBoostPredictor(PredictionModel):
 
     def _heuristic_predict(self, features: MarketFeatures) -> Prediction:
         """
-        Smart heuristic predictor when no trained model is available.
+        Prediction-market-aware heuristic for when no trained model is available.
 
-        Uses weighted mean-reversion + momentum + RSI + time-decay signals.
-        Designed to generate actionable signals even with limited history.
+        Key insight: prediction markets CONVERGE toward 0 or 100 as
+        information arrives (opposite of stock mean-reversion).
+        Near expiry, extreme prices are INFORMATIVE, not anomalies.
+
+        Signals used:
+          1. Time-weighted convergence (near expiry → trust the price)
+          2. Momentum (recent price movement direction)
+          3. Volume confirmation (high volume validates price direction)
+          4. Spread penalty (wide spread → less confident)
         """
         mid = features.midpoint
         if mid <= 0 or mid >= 1:
             mid = 0.5
 
-        # ── Signal 1: Mean reversion (strongest weight) ─────────
-        # Extreme prices revert. Stronger signal the further from 0.5.
-        distance_from_50 = abs(mid - 0.5)
-        if mid < 0.20:
-            # Very low price → YES bias (expect reversion up)
-            reversion = 0.5 + distance_from_50 * 0.6  # e.g. mid=0.10 → 0.74
-        elif mid > 0.80:
-            # Very high price → NO bias (expect reversion down)
-            reversion = 0.5 - distance_from_50 * 0.6  # e.g. mid=0.90 → 0.26
-        elif mid < 0.35:
-            # Low → slight YES bias
-            reversion = 0.5 + distance_from_50 * 0.3
-        elif mid > 0.65:
-            # High → slight NO bias
-            reversion = 0.5 - distance_from_50 * 0.3
+        # ── Signal 1: Time-weighted market trust ────────────
+        # Near expiry, the market price IS the best estimate.
+        # Far from expiry, there's more room for the model to disagree.
+        if features.hours_to_expiry > 0:
+            # Decaying disagreement factor: 1.0 far from expiry → 0.0 at expiry
+            time_trust = 1.0 / (1.0 + 0.1 * features.hours_to_expiry)
+            # time_trust ≈ 0.01 at 1000h, ≈ 0.50 at 10h, ≈ 0.91 at 1h
         else:
-            # Mid-range → no strong view
-            reversion = 0.5
+            time_trust = 0.95  # very near expiry: trust market almost fully
 
-        # ── Signal 2: Momentum (uses history if available) ──────
-        momentum = 0.5  # neutral default
+        # Base estimate: weighted average of market price and our model
+        # For the heuristic, lean toward the market price
+        base_prob = mid
+
+        # ── Signal 2: Momentum ──────────────────────────────
+        # If price is moving, follow it (prediction markets trend toward truth)
+        momentum_adj = 0.0
         if features.price_change_5m > 0.02:
-            momentum = min(mid + 0.08, 0.90)
+            momentum_adj = min(features.price_change_5m * 2.0, 0.10)
         elif features.price_change_5m < -0.02:
-            momentum = max(mid - 0.08, 0.10)
+            momentum_adj = max(features.price_change_5m * 2.0, -0.10)
         elif features.price_change_1m > 0.01:
-            momentum = min(mid + 0.04, 0.85)
+            momentum_adj = min(features.price_change_1m * 1.5, 0.05)
         elif features.price_change_1m < -0.01:
-            momentum = max(mid - 0.04, 0.15)
+            momentum_adj = max(features.price_change_1m * 1.5, -0.05)
 
-        # ── Signal 3: RSI (uses history if available) ───────────
-        rsi_signal = 0.5  # neutral default
-        if features.rsi_14 > 75:
-            rsi_signal = max(0.5 - (features.rsi_14 - 50) / 100, 0.15)
-        elif features.rsi_14 < 25:
-            rsi_signal = min(0.5 + (50 - features.rsi_14) / 100, 0.85)
+        # ── Signal 3: Convergence boost near expiry ─────────
+        # Near expiry, extreme prices are highly informative
+        convergence_adj = 0.0
+        if features.hours_to_expiry < 24:
+            dist = abs(mid - 0.5)
+            if dist > 0.3:
+                # Price is extreme AND near expiry → boost toward dominant side
+                direction = 1.0 if mid > 0.5 else -1.0
+                convergence_adj = direction * dist * time_trust * 0.15
 
-        # ── Signal 4: Time decay ────────────────────────────────
-        # Markets near expiry with extreme prices tend to resolve
-        time_signal = 0.5
-        if features.hours_to_expiry < 12 and distance_from_50 > 0.2:
-            # Near expiry + extreme → lean toward the dominant side
-            if mid > 0.7:
-                time_signal = min(mid + 0.05, 0.95)  # likely YES resolves
-            elif mid < 0.3:
-                time_signal = max(mid - 0.05, 0.05)  # likely NO resolves
+        # ── Signal 4: Volume confirmation ───────────────────
+        volume_adj = 0.0
+        if features.volume_ratio > 1.5 and abs(features.price_change_5m) > 0.01:
+            # High relative volume + price movement = confirmed move
+            volume_adj = features.price_change_5m * 0.5 * min(features.volume_ratio / 3.0, 1.0)
 
-        # ── Weighted combination ────────────────────────────────
-        has_history = features.price_change_5m != 0 or features.rsi_14 != 50.0
-        if has_history:
-            # With price history, balance all signals
-            weights = [0.35, 0.25, 0.20, 0.20]  # reversion, momentum, rsi, time
-            prob_yes = (
-                weights[0] * reversion
-                + weights[1] * momentum
-                + weights[2] * rsi_signal
-                + weights[3] * time_signal
-            )
-        else:
-            # No history — rely on mean reversion + time decay
-            prob_yes = 0.6 * reversion + 0.4 * time_signal
+        # ── Combine signals ─────────────────────────────────
+        # Weight momentum/volume less near expiry (market is already efficient)
+        signal_weight = max(0.05, 1.0 - time_trust)
+        prob_yes = base_prob + signal_weight * (momentum_adj + volume_adj) + convergence_adj
+
+        # ── Spread penalty ──────────────────────────────────
+        # Wide spread = uncertainty → push confidence toward 0.5
+        if features.spread_pct > 0.10:
+            spread_penalty = min(features.spread_pct * 0.3, 0.15)
+            prob_yes = prob_yes * (1.0 - spread_penalty) + 0.5 * spread_penalty
 
         prob_yes = max(0.05, min(0.95, prob_yes))
         return self._build_prediction(prob_yes, features)

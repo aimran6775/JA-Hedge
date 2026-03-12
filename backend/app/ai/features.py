@@ -81,6 +81,24 @@ class MarketFeatures:
     prob_distance_from_50: float = 0.0  # abs(prob - 0.5)
     extreme_prob: bool = False  # prob < 0.1 or > 0.9
 
+    # ── Prediction-Market-Native Features (Phase 3) ─────────
+    # Time convergence: how fast price is approaching 0 or 100
+    convergence_rate: float = 0.0
+    # Normalized time: 0.0 = just opened, 1.0 = expiry
+    normalized_time: float = 0.0
+    # Price × time interaction: extreme prices near expiry = very informative
+    price_time_signal: float = 0.0
+    # Information arrival rate (price moves per unit time)
+    info_rate: float = 0.0
+    # Bid-ask spread relative to time-to-expiry (tighter near expiry = more certain)
+    spread_time_ratio: float = 0.0
+    # Log-odds of current price: ln(p / (1-p))  — linearizes probability space
+    log_odds: float = 0.0
+    # Overround (market efficiency): how much the yes+no prices exceed $1
+    overround: float = 0.0
+    # Price acceleration: is convergence speeding up?
+    price_acceleration: float = 0.0
+
     def to_array(self) -> np.ndarray:
         """Convert to numpy array for ML model input."""
         return np.array(
@@ -114,6 +132,15 @@ class MarketFeatures:
                 self.implied_prob,
                 self.prob_distance_from_50,
                 float(self.extreme_prob),
+                # Phase 3: prediction-market-native features
+                self.convergence_rate,
+                self.normalized_time,
+                self.price_time_signal,
+                self.info_rate,
+                self.spread_time_ratio,
+                self.log_odds,
+                self.overround,
+                self.price_acceleration,
             ],
             dtype=np.float32,
         )
@@ -137,6 +164,10 @@ class MarketFeatures:
             "oi_change", "book_imbalance", "hours_to_expiry",
             "time_decay_factor", "hour_of_day", "day_of_week",
             "implied_prob", "prob_distance_from_50", "extreme_prob",
+            # Phase 3: prediction-market-native features
+            "convergence_rate", "normalized_time", "price_time_signal",
+            "info_rate", "spread_time_ratio", "log_odds",
+            "overround", "price_acceleration",
         ]
 
 
@@ -273,6 +304,49 @@ class FeatureEngine:
         features.implied_prob = mid
         features.prob_distance_from_50 = abs(mid - 0.5)
         features.extreme_prob = mid < 0.1 or mid > 0.9
+
+        # ── Phase 3: Prediction-Market-Native Features ────────
+        # Log-odds: linearizes probability space (key for ML)
+        clamped = max(0.01, min(0.99, mid))
+        features.log_odds = math.log(clamped / (1.0 - clamped))
+
+        # Convergence rate: how fast price is moving toward 0 or 100
+        if hist and len(hist.prices) >= 10:
+            recent = hist.get_prices(10)
+            dist_now = abs(recent[-1] - 0.5) if recent else 0
+            dist_old = abs(recent[0] - 0.5) if recent else 0
+            features.convergence_rate = dist_now - dist_old  # positive = converging faster
+
+        # Normalized time: 0 = opened, 1 = expiry
+        if market.open_time and market.expiration_time:
+            total = (market.expiration_time - market.open_time).total_seconds()
+            elapsed = (now - market.open_time).total_seconds()
+            features.normalized_time = max(0.0, min(1.0, elapsed / total)) if total > 0 else 0.5
+
+        # Price × time interaction: extreme prices near expiry are very informative
+        features.price_time_signal = features.prob_distance_from_50 * features.normalized_time
+
+        # Information arrival rate: absolute price changes per time period
+        if hist and len(hist.prices) >= 5:
+            prices_5 = hist.get_prices(5)
+            abs_changes = [abs(prices_5[i] - prices_5[i-1]) for i in range(1, len(prices_5))]
+            features.info_rate = sum(abs_changes) / max(len(abs_changes), 1)
+
+        # Spread × time ratio: tighter spread near expiry = more certainty
+        if features.hours_to_expiry > 0:
+            features.spread_time_ratio = features.spread / max(features.hours_to_expiry, 0.01)
+
+        # Overround: sum of yes_ask + no_ask - 1 (market efficiency)
+        if market.yes_ask is not None and market.no_ask is not None:
+            features.overround = float(market.yes_ask) + float(market.no_ask) - 1.0
+
+        # Price acceleration: 2nd derivative of price
+        if hist and len(hist.prices) >= 20:
+            recent_20 = hist.get_prices(20)
+            mid_idx = len(recent_20) // 2
+            vel_recent = recent_20[-1] - recent_20[mid_idx] if mid_idx > 0 else 0
+            vel_old = recent_20[mid_idx] - recent_20[0] if mid_idx > 0 else 0
+            features.price_acceleration = vel_recent - vel_old
 
         return features
 

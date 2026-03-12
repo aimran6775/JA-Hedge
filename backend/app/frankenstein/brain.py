@@ -38,9 +38,12 @@ from app.frankenstein.memory import TradeMemory, TradeOutcome, TradeRecord
 from app.frankenstein.performance import PerformanceTracker, PerformanceSnapshot
 from app.frankenstein.scheduler import FrankensteinScheduler
 from app.frankenstein.strategy import AdaptiveStrategy, StrategyParams
+from app.frankenstein.categories import CategoryStrategyRegistry
 from app.kalshi.models import Market, MarketStatus, OrderAction, OrderSide, OrderType
 from app.logging_config import get_logger
 from app.pipeline import market_cache
+from app.engine.advanced_risk import AdvancedRiskManager
+from app.production import SQLiteStore, ExchangeSchedule, HealthMonitor
 
 log = get_logger("frankenstein.brain")
 
@@ -148,7 +151,16 @@ class Frankenstein:
             performance=self.performance,
             adaptation_interval=self.config.strategy_adaptation_interval,
         )
+        self.categories = CategoryStrategyRegistry()
         self.scheduler = FrankensteinScheduler()
+
+        # Phase 10: Production hardening
+        self._sqlite = SQLiteStore(db_path="data/frankenstein.db")
+        self._health = HealthMonitor()
+        self._schedule = ExchangeSchedule()
+
+        # Phase 7: Advanced portfolio risk manager
+        self._adv_risk = AdvancedRiskManager()
 
         # State
         self._state = FrankensteinState()
@@ -269,14 +281,26 @@ class Frankenstein:
             return
 
     async def _scan_and_trade(self) -> None:
-        """One full scan cycle: find opportunities → trade."""
+        """One full scan cycle: manage positions → find opportunities → trade."""
         start = time.monotonic()
         self._state.total_scans += 1
+
+        # Phase 10: Exchange schedule check — skip during overnight/low-liquidity
+        should_trade, session = ExchangeSchedule.should_trade()
+        if not should_trade:
+            log.debug("scan_skipped_schedule", reason=session)
+            return
+
+        # Liquidity factor for position sizing adjustment
+        liquidity = ExchangeSchedule.liquidity_factor()
 
         # 1. Get active markets
         markets = market_cache.get_active()
         if not markets:
             return
+
+        # ── PHASE 2: Manage existing positions (exits) ────
+        await self._manage_positions(markets)
 
         # 2. Filter candidates
         candidates = self._filter_candidates(markets)
@@ -290,12 +314,21 @@ class Frankenstein:
         predictions = self._model.predict_batch(features_list)
 
         # 5. Evaluate each signal through adaptive strategy
+        # Phase 9: Collect all valid signals, then rank by expected value
         params = self.strategy.params
         signals_generated = 0
         trades_executed = 0
         trades_rejected = 0
+        trade_candidates: list[dict[str, Any]] = []
 
         for market, features, prediction in zip(candidates, features_list, predictions):
+            # Phase 8: Apply category-specific adjustments
+            prediction, cat_adj = self.categories.adjust_prediction(
+                prediction, features,
+                market_title=market.title or "",
+                category_hint=market.category or "",
+            )
+
             # Apply adaptive thresholds
             if prediction.confidence < params.min_confidence:
                 continue
@@ -305,13 +338,62 @@ class Frankenstein:
             signals_generated += 1
             self._state.total_signals += 1
 
-            # Kelly criterion position sizing
-            kelly = self._kelly_size(prediction, params)
+            # Kelly criterion position sizing (binary contract formula)
+            kelly = self._kelly_size(prediction, features, params)
             if kelly <= 0:
                 continue
 
+            # Phase 7: Adjust Kelly with advanced risk (drawdown/position scaling)
+            kelly = self._adv_risk.adjusted_kelly(kelly)
+
+            # Phase 10: Scale by liquidity (reduce size in low-liquidity sessions)
+            kelly *= liquidity
+
             count = max(1, int(kelly * params.max_position_size))
             price_cents = self._compute_price(prediction, features)
+
+            # Phase 9: Expected value for ranking
+            # EV = edge * count * (1 - cost) — expected profit per trade
+            cost_frac = price_cents / 100.0
+            ev = abs(prediction.edge) * count * (1.0 - cost_frac)
+
+            trade_candidates.append({
+                "market": market,
+                "prediction": prediction,
+                "features": features,
+                "count": count,
+                "price_cents": price_cents,
+                "kelly": kelly,
+                "ev": ev,
+            })
+
+        # Phase 9: Rank by expected value and take top opportunities
+        trade_candidates.sort(key=lambda c: c["ev"], reverse=True)
+        max_trades_per_scan = min(
+            params.max_simultaneous_positions - self._count_open_positions(),
+            5,  # cap at 5 new trades per scan cycle
+        )
+
+        for candidate in trade_candidates[:max(max_trades_per_scan, 0)]:
+            market = candidate["market"]
+            prediction = candidate["prediction"]
+            features = candidate["features"]
+            count = candidate["count"]
+            price_cents = candidate["price_cents"]
+
+            # Phase 7: Portfolio-level risk check before trade
+            passed, reject_reason = self._adv_risk.portfolio_check(
+                ticker=market.ticker,
+                count=count,
+                price_cents=price_cents,
+                event_ticker=getattr(market, "event_ticker", ""),
+                category=getattr(market, "category", ""),
+            )
+            if not passed:
+                trades_rejected += 1
+                self._state.total_trades_rejected += 1
+                log.debug("portfolio_risk_rejected", ticker=market.ticker, reason=reject_reason)
+                continue
 
             # Record snapshot for regime detection
             self.memory.record_snapshot(
@@ -334,6 +416,17 @@ class Frankenstein:
                 trades_executed += 1
                 self._state.total_trades_executed += 1
 
+                # Phase 7: Register position with advanced risk manager
+                self._adv_risk.register_position(
+                    ticker=market.ticker,
+                    event_ticker=getattr(market, "event_ticker", ""),
+                    category=getattr(market, "category", ""),
+                    side=prediction.side,
+                    count=count,
+                    cost_cents=count * price_cents,
+                    hours_to_expiry=features.hours_to_expiry,
+                )
+
                 # Record in Frankenstein's memory
                 self.memory.record_trade(
                     ticker=market.ticker,
@@ -348,6 +441,26 @@ class Frankenstein:
                     market_ask=int((market.yes_ask or 0) * 100) if isinstance(market.yes_ask, float) else (market.yes_ask or 0),
                     model_version=self.learner.current_version,
                 )
+
+                # Phase 10: Persist to SQLite
+                try:
+                    self._sqlite.save_trade({
+                        "trade_id": result.order_id or f"{market.ticker}_{int(time.time())}",
+                        "ticker": market.ticker,
+                        "timestamp": time.time(),
+                        "predicted_side": prediction.side,
+                        "confidence": prediction.confidence,
+                        "predicted_prob": prediction.predicted_prob,
+                        "edge": prediction.edge,
+                        "action": "buy",
+                        "count": count,
+                        "price_cents": price_cents,
+                        "total_cost_cents": count * price_cents,
+                        "order_id": result.order_id or "",
+                        "model_version": self.learner.current_version,
+                    })
+                except Exception as e:
+                    log.debug("sqlite_save_error", error=str(e))
             else:
                 trades_rejected += 1
                 self._state.total_trades_rejected += 1
@@ -368,6 +481,175 @@ class Frankenstein:
             )
 
     # ── Trade Execution ───────────────────────────────────────────────
+
+    async def _manage_positions(self, markets: list[Market]) -> None:
+        """
+        Active position management — decide whether to hold or exit.
+
+        Exit triggers:
+          1. Stop-loss: position lost too much → cut losses
+          2. Take-profit: position reached target → lock gains
+          3. Edge reversal: model now says the other side → flip
+          4. Near-expiry liquidation: uncertain near expiry → close
+        """
+        from app.pipeline.portfolio_tracker import portfolio_state
+
+        if not portfolio_state.positions:
+            return
+
+        params = self.strategy.params
+        markets_by_ticker = {m.ticker: m for m in markets}
+        exits_executed = 0
+
+        for ticker, pos in list(portfolio_state.positions.items()):
+            market = markets_by_ticker.get(ticker)
+            if not market:
+                continue
+
+            position_count = abs(pos.position or 0) if hasattr(pos, 'position') else 0
+            if position_count == 0:
+                continue
+
+            # Determine our side and current market value
+            # pos.position > 0 means YES contracts, < 0 means NO
+            our_side = "yes" if (pos.position or 0) > 0 else "no"
+
+            # Get current features and prediction
+            features = self._features.compute(market)
+            prediction = self._model.predict(features)
+
+            mid = features.midpoint
+            if mid <= 0 or mid >= 1:
+                continue
+
+            # Estimate entry price from recorded trades
+            entry_price = self._estimate_entry_price(ticker)
+            if entry_price <= 0:
+                continue
+
+            # Current value and P&L
+            if our_side == "yes":
+                current_value = mid
+                unrealized_pnl_pct = (current_value - entry_price) / entry_price if entry_price > 0 else 0
+            else:
+                current_value = 1.0 - mid
+                unrealized_pnl_pct = (current_value - entry_price) / entry_price if entry_price > 0 else 0
+
+            should_exit = False
+            exit_reason = ""
+
+            # ── Stop-loss check ───────────────────────────
+            stop_loss_pct = getattr(params, 'stop_loss_pct', 0.20) or 0.20
+            if unrealized_pnl_pct < -stop_loss_pct:
+                should_exit = True
+                exit_reason = f"stop_loss ({unrealized_pnl_pct:.1%})"
+
+            # ── Take-profit check ─────────────────────────
+            take_profit_pct = getattr(params, 'take_profit_pct', 0.50) or 0.50
+            if unrealized_pnl_pct > take_profit_pct:
+                should_exit = True
+                exit_reason = f"take_profit ({unrealized_pnl_pct:.1%})"
+
+            # ── Edge reversal check ───────────────────────
+            if not should_exit:
+                if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.60:
+                    should_exit = True
+                    exit_reason = f"edge_reversal (now predicts NO @ {prediction.confidence:.2f})"
+                elif our_side == "no" and prediction.side == "yes" and prediction.confidence > 0.60:
+                    should_exit = True
+                    exit_reason = f"edge_reversal (now predicts YES @ {prediction.confidence:.2f})"
+
+            # ── Near-expiry liquidation ───────────────────
+            if not should_exit and features.hours_to_expiry < 2.0:
+                # Close uncertain positions near expiry
+                if 0.35 < mid < 0.65:
+                    should_exit = True
+                    exit_reason = f"near_expiry_uncertain ({features.hours_to_expiry:.1f}h)"
+
+            # ── Execute exit ──────────────────────────────
+            if should_exit:
+                result = await self._execute_exit(
+                    market=market,
+                    side=our_side,
+                    count=position_count,
+                    reason=exit_reason,
+                )
+                if result and result.success:
+                    exits_executed += 1
+                    self._state.total_trades_executed += 1
+                    # Phase 7: Remove from portfolio risk tracker
+                    self._adv_risk.remove_position(ticker)
+
+        if exits_executed > 0:
+            log.info("🧟📤 EXITS", count=exits_executed)
+
+    async def _execute_exit(
+        self,
+        market: Market,
+        side: str,
+        count: int,
+        reason: str,
+    ) -> ExecutionResult | None:
+        """Execute a sell order to exit a position."""
+        try:
+            order_side = OrderSide.YES if side == "yes" else OrderSide.NO
+            mid = float(market.midpoint or market.last_price or 50) / 100 if isinstance(market.midpoint, int) else float(market.midpoint or market.last_price or 0.50)
+
+            # Price at or slightly below mid for quick execution
+            if side == "yes":
+                exit_price = max(int(mid * 100) - 1, 1)
+            else:
+                exit_price = max(int((1.0 - mid) * 100) - 1, 1)
+
+            result = await self._execution.execute(
+                ticker=market.ticker,
+                side=order_side,
+                action=OrderAction.SELL,
+                count=count,
+                price_cents=exit_price,
+                order_type=OrderType.LIMIT,
+                strategy_id="frankenstein_exit",
+                signal_id=None,
+            )
+
+            if result and result.success:
+                log.info(
+                    "🧟📤 EXIT_EXECUTED",
+                    ticker=market.ticker,
+                    side=side,
+                    count=count,
+                    price=f"{exit_price}¢",
+                    reason=reason,
+                )
+
+                # Record exit in memory
+                self.memory.record_trade(
+                    ticker=market.ticker,
+                    prediction=Prediction(
+                        side=side, confidence=0.0, predicted_prob=0.5,
+                        edge=0.0, model_name="exit", model_version="exit",
+                    ),
+                    features=self._features.compute(market),
+                    action="sell",
+                    count=count,
+                    price_cents=exit_price,
+                    order_id=result.order_id or "",
+                    latency_ms=result.latency_ms,
+                )
+
+            return result
+        except Exception as e:
+            log.error("exit_failed", ticker=market.ticker, error=str(e))
+            return None
+
+    def _estimate_entry_price(self, ticker: str) -> float:
+        """Estimate our average entry price for a ticker from memory."""
+        trades = self.memory.get_recent_trades(n=1000, ticker=ticker)
+        buy_trades = [t for t in trades if t.action == "buy"]
+        if not buy_trades:
+            return 0.0
+        total_cost = sum(t.price_cents for t in buy_trades)
+        return (total_cost / len(buy_trades)) / 100.0
 
     async def _execute_trade(
         self,
@@ -420,34 +702,93 @@ class Frankenstein:
 
         return candidates[:self.config.max_candidates]
 
-    def _kelly_size(self, prediction: Prediction, params: StrategyParams) -> float:
-        """Kelly criterion with adaptive fractional sizing."""
-        p = prediction.confidence
-        q = 1 - p
-        edge = abs(prediction.edge)
+    def _count_open_positions(self) -> int:
+        """Count current open positions for portfolio limit enforcement."""
+        from app.pipeline.portfolio_tracker import portfolio_state
+        return sum(
+            1 for pos in portfolio_state.positions.values()
+            if (pos.position or 0) != 0
+        )
 
-        if edge <= 0 or p <= 0.5:
+    def _kelly_size(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        params: StrategyParams,
+    ) -> float:
+        """
+        Kelly criterion for binary contracts.
+
+        Binary contract math:
+          Buy at cost c (0-1 range, e.g., 0.40 = 40¢ per contract)
+          Win:  receive $1, net profit = (1 - c)
+          Lose: lose entire cost c
+
+        Kelly optimal fraction:  f* = (p - c) / (1 - c)
+        where p = our estimated probability of winning the bet.
+
+        We then apply *fractional* Kelly (default 0.25 = quarter-Kelly)
+        to account for parameter uncertainty — a standard practice.
+        """
+        mid = features.midpoint
+
+        if prediction.side == "yes":
+            p = prediction.predicted_prob          # P(YES settles)
+            c = min(mid + 0.01, 0.99)              # approximate cost
+        else:
+            p = 1.0 - prediction.predicted_prob    # P(NO settles)
+            c = min(1.0 - mid + 0.01, 0.99)        # cost of NO contract
+
+        # No edge or degenerate cost — skip
+        if p <= c or c <= 0.01 or c >= 0.99:
             return 0.0
 
-        b = edge / max(q, 0.01)
-        kelly = (b * p - q) / max(b, 0.01)
+        # Kelly: f* = (p - c) / (1 - c)
+        kelly = (p - c) / (1.0 - c)
 
-        # Apply adaptive fractional Kelly (from strategy engine)
-        adjusted = max(0, kelly * params.kelly_fraction)
+        # Apply fractional Kelly for safety
+        adjusted = kelly * params.kelly_fraction
 
-        # Apply aggression multiplier
-        adjusted *= (0.5 + params.aggression)
-
-        return min(adjusted, 1.0)
+        # Clamp to [0, 1]
+        return max(0.0, min(adjusted, 1.0))
 
     def _compute_price(self, prediction: Prediction, features: MarketFeatures) -> int:
-        """Compute optimal order price."""
+        """
+        Compute optimal order price — spread-aware placement.
+
+        Strategy: place orders as maker (inside the spread) when possible
+        to capture the spread instead of paying it.
+
+        For BUY YES:  bid at (yes_bid + 1¢) — one tick inside the spread
+        For BUY NO:   bid at (no_bid + 1¢)  — one tick inside the spread
+
+        If spread is very tight (≤2¢), cross the spread for immediate fill.
+        """
         mid = features.midpoint
+        spread_cents = max(int(features.spread * 100), 1)
+
         if prediction.side == "yes":
-            price = min(mid + 0.01, 0.99)
+            if spread_cents <= 2:
+                # Tight spread — just take the ask for guaranteed fill
+                price_frac = min(mid + features.spread / 2, 0.99)
+            elif spread_cents <= 6:
+                # Medium spread — place inside (closer to mid)
+                price_frac = min(mid + 0.01, 0.99)
+            else:
+                # Wide spread — be more aggressive as maker
+                # Place at mid - 1¢ to capture spread
+                price_frac = max(mid - 0.01, 0.01)
         else:
-            price = max((1 - mid) + 0.01, 0.01)
-        return int(price * 100)
+            # For NO contracts
+            no_mid = 1.0 - mid
+            if spread_cents <= 2:
+                price_frac = min(no_mid + features.spread / 2, 0.99)
+            elif spread_cents <= 6:
+                price_frac = min(no_mid + 0.01, 0.99)
+            else:
+                price_frac = max(no_mid - 0.01, 0.01)
+
+        return max(1, min(99, int(price_frac * 100)))
 
     # ── Scheduled Tasks ───────────────────────────────────────────────
 
@@ -492,6 +833,29 @@ class Frankenstein:
         if self.config.pause_on_degradation and self.performance.is_model_degrading():
             log.warning("🧟⚠️ MODEL DEGRADATION DETECTED — forcing retrain")
             await self._retrain_task()
+
+        # Phase 10: Record health checks
+        try:
+            self._health.record_check("scan_loop", self._state.is_alive, f"scans={self._state.total_scans}")
+            self._health.record_check("trading", self._state.is_trading and not self._state.is_paused, self._state.pause_reason or "ok")
+            self._health.record_check("model", self._state.model_version != "untrained", f"v={self._state.model_version}")
+        except Exception:
+            pass
+
+        # Phase 10: Persist performance snapshot to SQLite
+        try:
+            snapshot = self.performance.summary()
+            self._sqlite.save_snapshot({
+                "timestamp": time.time(),
+                "total_pnl": snapshot.get("total_pnl_cents", 0) / 100.0,
+                "win_rate": snapshot.get("win_rate", 0),
+                "sharpe_ratio": snapshot.get("sharpe_ratio", 0),
+                "max_drawdown": snapshot.get("max_drawdown_pct", 0),
+                "total_trades": snapshot.get("total_trades", 0),
+                "model_version": self._state.model_version,
+            })
+        except Exception:
+            pass
 
     async def _resolve_outcomes_task(self) -> None:
         """Check for settled markets and resolve pending trades."""
@@ -599,6 +963,12 @@ class Frankenstein:
             "learner": self.learner.stats(),
             "strategy": self.strategy.stats(),
             "scheduler": self.scheduler.stats(),
+
+            # Phase 7+10: Production systems
+            "health": self._health.summary(),
+            "portfolio_risk": self._adv_risk.portfolio_summary(),
+            "exchange_session": ExchangeSchedule.current_session(),
+            "liquidity_factor": ExchangeSchedule.liquidity_factor(),
         }
 
     @staticmethod

@@ -308,33 +308,45 @@ class TradeMemory:
         """
         Extract feature matrix X and labels y for model retraining.
 
-        Labels: 1.0 if the trade was correct, 0.0 otherwise.
+        Labels: 1.0 if market resolved YES, 0.0 if NO.
+        This teaches the model P(YES settles) — the actual outcome —
+        instead of the circular "was my prediction correct".
         """
         now = time.time()
         records = []
+        seen_ids: set[str] = set()
 
         for t in self._trades:
             if only_resolved and t.outcome == TradeOutcome.PENDING:
                 continue
-            if t.was_correct is None:
+            # Need a known market result (YES or NO) to create a label
+            if t.market_result not in ("yes", "no"):
                 continue
             if max_age_hours > 0 and (now - t.timestamp) > max_age_hours * 3600:
                 continue
             if not t.features:
                 continue
-            records.append(t)
+            if t.trade_id not in seen_ids:
+                records.append(t)
+                seen_ids.add(t.trade_id)
 
         # Also include important (pinned) trades
         for t in self._important_trades:
-            if t.was_correct is not None and t.features:
+            if t.market_result in ("yes", "no") and t.features and t.trade_id not in seen_ids:
                 records.append(t)
+                seen_ids.add(t.trade_id)
 
         if len(records) < min_trades:
             log.info("insufficient_training_data", available=len(records), required=min_trades)
             return None
 
         X = np.array([r.features for r in records], dtype=np.float32)
-        y = np.array([1.0 if r.was_correct else 0.0 for r in records], dtype=np.float32)
+        # Label = 1.0 if market resolved YES, 0.0 if NO
+        # This is the correct target: predict P(YES outcome)
+        y = np.array(
+            [1.0 if r.market_result == "yes" else 0.0 for r in records],
+            dtype=np.float32,
+        )
 
         log.info(
             "training_data_extracted",

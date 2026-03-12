@@ -238,6 +238,24 @@ class RiskManager:
 
         return tickers_to_close
 
+    async def get_exit_candidates(self) -> list[dict[str, Any]]:
+        """
+        Combine stop-loss and take-profit checks into a single
+        list of exit candidates with reasons.
+        """
+        candidates: list[dict[str, Any]] = []
+
+        sl_tickers = await self.check_stop_losses()
+        for t in sl_tickers:
+            candidates.append({"ticker": t, "reason": "stop_loss", "urgency": "high"})
+
+        tp_tickers = await self.check_take_profits()
+        for t in tp_tickers:
+            if t not in sl_tickers:
+                candidates.append({"ticker": t, "reason": "take_profit", "urgency": "medium"})
+
+        return candidates
+
     async def update_snapshot(self) -> RiskSnapshot:
         """Refresh the risk snapshot from portfolio state."""
         self._snapshot = RiskSnapshot(
