@@ -25,6 +25,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -155,7 +156,8 @@ class Frankenstein:
         self.scheduler = FrankensteinScheduler()
 
         # Phase 10: Production hardening
-        self._sqlite = SQLiteStore(db_path="data/frankenstein.db")
+        _persist_dir = str(Path(self.config.memory_persist_path).parent)
+        self._sqlite = SQLiteStore(db_path=f"{_persist_dir}/frankenstein.db")
         self._health = HealthMonitor()
         self._schedule = ExchangeSchedule()
 
@@ -930,52 +932,100 @@ class Frankenstein:
             pass
 
     async def _resolve_outcomes_task(self) -> None:
-        """Check for settled markets and resolve pending trades."""
+        """Check for settled markets and resolve pending trades.
+        
+        FIX #2: Uses Kalshi portfolio settlements API instead of
+        checking a non-existent market.result field.  Also checks
+        market status == 'settled' via direct API lookup.
+        """
         pending = self.memory.get_pending_trades()
         if not pending:
             return
 
+        # Batch-fetch recent settlements from Kalshi
+        settlements_by_ticker: dict[str, Any] = {}
+        try:
+            from app.state import state as _st
+            if _st.kalshi_api:
+                slist, _ = await _st.kalshi_api.portfolio.list_settlements(limit=200)
+                for s in slist:
+                    settlements_by_ticker[s.ticker] = s
+        except Exception as e:
+            log.debug("settlement_fetch_error", error=str(e))
+
         for trade in pending:
             try:
-                # Check if market has settled
-                markets = market_cache.get_active()
-                market = None
-                for m in markets:
-                    if m.ticker == trade.ticker:
-                        market = m
-                        break
+                # Method 1: Check settlements API
+                settlement = settlements_by_ticker.get(trade.ticker)
+                if settlement and settlement.market_result is not None:
+                    result_str = settlement.market_result.value.lower()
+                    correct = trade.predicted_side == result_str
 
-                if market is None:
-                    # Market no longer active — might be settled
-                    # We'd need to query the API for result
-                    # For now, mark as expired if old enough
-                    if time.time() - trade.timestamp > 86400:  # 24 hours
+                    if result_str == "void":
                         self.memory.resolve_trade(
-                            trade.trade_id,
-                            TradeOutcome.EXPIRED,
+                            trade.trade_id, TradeOutcome.CANCELLED,
                         )
-                elif market.result is not None:
-                    # Market has settled!
-                    result = str(market.result).lower()
-                    correct = trade.predicted_side == result
-
-                    if correct:
-                        # Won: payout = count * 100 - cost
+                    elif correct:
                         pnl_cents = trade.count * 100 - trade.total_cost_cents
-                        outcome = TradeOutcome.WIN
+                        self.memory.resolve_trade(
+                            trade.trade_id, TradeOutcome.WIN,
+                            pnl_cents=pnl_cents, market_result=result_str,
+                        )
+                        # FIX #7: Report to sports monitor
+                        self._report_sports_outcome(trade, pnl_cents)
                     else:
-                        # Lost: lost the cost
                         pnl_cents = -trade.total_cost_cents
-                        outcome = TradeOutcome.LOSS
+                        self.memory.resolve_trade(
+                            trade.trade_id, TradeOutcome.LOSS,
+                            pnl_cents=pnl_cents, market_result=result_str,
+                        )
+                        self._report_sports_outcome(trade, pnl_cents)
+                    continue
 
+                # Method 2: Check market status via API
+                try:
+                    from app.state import state as _st
+                    if _st.kalshi_api:
+                        mkt = await _st.kalshi_api.markets.get_market(trade.ticker)
+                        if mkt.status.value == "settled":
+                            # Market settled but we didn't find in settlements
+                            # This happens with demo/paper trades
+                            # Mark as expired for now (better than permanent pending)
+                            self.memory.resolve_trade(
+                                trade.trade_id, TradeOutcome.EXPIRED,
+                            )
+                            continue
+                except Exception:
+                    pass
+
+                # Method 3: Timeout after 48 hours
+                if time.time() - trade.timestamp > 172800:  # 48 hours
                     self.memory.resolve_trade(
-                        trade.trade_id,
-                        outcome,
-                        pnl_cents=pnl_cents,
-                        market_result=result,
+                        trade.trade_id, TradeOutcome.EXPIRED,
                     )
             except Exception as e:
                 log.debug("outcome_check_error", ticker=trade.ticker, error=str(e))
+
+    def _report_sports_outcome(self, trade: TradeRecord, pnl_cents: int) -> None:
+        """FIX #7: Report trade outcome to sports monitor for performance tracking."""
+        if not self._sports_monitor or not self._sports_detector:
+            return
+        try:
+            from app.kalshi.models import Market as _MktModel
+            # Build a minimal Market-like object for detection
+            info = self._sports_detector.detect(
+                _MktModel(ticker=trade.ticker, event_ticker=getattr(trade, 'event_ticker', '') or '')
+            )
+            if info.is_sports:
+                self._sports_monitor.record_trade_outcome(
+                    sport_id=info.sport_id,
+                    strategy=trade.model_version or "vegas_baseline",
+                    pnl_cents=pnl_cents,
+                    edge=getattr(trade, 'edge', 0.0),
+                    is_live=info.is_live,
+                )
+        except Exception as e:
+            log.debug("sports_monitor_report_error", error=str(e))
 
     # ── Manual Controls ───────────────────────────────────────────────
 

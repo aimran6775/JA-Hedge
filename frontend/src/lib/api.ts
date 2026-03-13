@@ -204,6 +204,51 @@ export interface RiskStatus {
   recent_violations: string[];
 }
 
+// Sports types
+export interface SportsMarket {
+  ticker: string;
+  event_ticker: string;
+  title: string | null;
+  subtitle: string | null;
+  sport: string;
+  market_type: string;
+  is_live: boolean;
+  home_team: string;
+  away_team: string;
+  yes_bid: number;
+  yes_ask: number;
+  midpoint: number;
+  volume: number;
+  open_interest: number;
+  vegas_home_prob?: number;
+  vegas_away_prob?: number;
+  num_bookmakers?: number;
+  kalshi_vs_vegas?: number;
+}
+
+export interface VegasGame {
+  game_id: string;
+  sport: string;
+  home_team: string;
+  away_team: string;
+  commence_time: string;
+  consensus_home_prob: number;
+  consensus_away_prob: number;
+  consensus_spread: number | null;
+  consensus_total: number | null;
+  num_bookmakers: number;
+}
+
+export interface SportsSignal {
+  type: string;
+  ticker: string;
+  side: string;
+  strength: number;
+  urgency: number;
+  reason: string;
+  age_seconds: number;
+}
+
 // ── API Functions ────────────────────────────────────────────────────────
 
 export const api = {
@@ -382,5 +427,40 @@ export const api = {
       apiFetch<Record<string, unknown>[]>(
         `/frankenstein/chat/history${n ? `?n=${n}` : ""}`,
       ),
+  },
+
+  // Sports Trading
+  sports: {
+    status: () => apiFetch<Record<string, unknown>>("/sports/status"),
+    markets: () =>
+      apiFetch<{
+        total_sports_markets: number;
+        total_all_markets: number;
+        sports_pct: string;
+        by_sport: Record<string, SportsMarket[]>;
+      }>("/sports/markets"),
+    odds: () =>
+      apiFetch<{
+        total_games: number;
+        games: VegasGame[];
+        api_stats: Record<string, unknown>;
+      }>("/sports/odds"),
+    live: () =>
+      apiFetch<{
+        live_games: number;
+        games: Record<string, unknown>[];
+        tracker_stats: Record<string, unknown>;
+      }>("/sports/live"),
+    performance: () => apiFetch<Record<string, unknown>>("/sports/performance"),
+    signals: () =>
+      apiFetch<{
+        pending_signals: number;
+        signals: SportsSignal[];
+        engine_stats: Record<string, unknown>;
+      }>("/sports/signals"),
+    refreshOdds: () =>
+      apiFetch<Record<string, unknown>>("/sports/odds/refresh", {
+        method: "POST",
+      }),
   },
 };

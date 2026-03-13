@@ -118,13 +118,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.autonomous_agent = agent
 
     # 🧟 FRANKENSTEIN — The unified AI brain
+    pdir = settings.persist_dir
     frank_config = FrankensteinConfig(
         scan_interval=settings.strategy_scan_interval,
         retrain_interval=3600.0,  # Retrain every hour
         min_train_samples=50,
         retrain_threshold=25,
-        memory_persist_path="data/frankenstein_memory.json",
-        checkpoint_dir="data/models",
+        memory_persist_path=f"{pdir}/frankenstein_memory.json",
+        checkpoint_dir=f"{pdir}/models",
     )
     frankenstein = Frankenstein(
         model=model,

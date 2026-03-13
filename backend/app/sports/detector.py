@@ -208,8 +208,9 @@ class SportsDetector:
         re.compile(r"(more|fewer)\s+than\s+\d+", re.IGNORECASE),
     ]
     _MONEYLINE_PATTERNS = [
-        re.compile(r"(win|beat|defeat|advance)", re.IGNORECASE),
+        re.compile(r"\b(win|beat|defeat|advance)\b", re.IGNORECASE),
         re.compile(r"(winner|champion)", re.IGNORECASE),
+        re.compile(r"\bwill\s+.+?\s+win\b", re.IGNORECASE),
     ]
     
     # Sports title keywords (backup detection when series_ticker is missing)
@@ -220,22 +221,22 @@ class SportsDetector:
                 "pelicans", "hornets", "wizards", "blazers", "timberwolves", "kings", "spurs", "magic", "raptors", "jazz"],
         "ncaab": ["ncaab", "ncaa", "march madness", "final four", "sweet 16", "elite eight",
                   "first half winner", "1st half", "first half", "college basketball"],
-        "nfl": ["nfl", "football", "chiefs", "eagles", "49ers", "cowboys", "ravens", "bills",
-                "bengals", "lions", "dolphins", "jets", "patriots", "steelers", "packers",
+        "nfl": ["nfl", "chiefs", "eagles", "49ers", "cowboys", "ravens", "bills",
+                "bengals", "lions", "dolphins", "patriots", "steelers", "packers",
                 "chargers", "rams", "seahawks", "bears", "vikings", "saints", "falcons",
-                "panthers", "buccaneers", "broncos", "colts", "commanders", "cardinals",
-                "titans", "jaguars", "texans", "raiders", "giants", "super bowl", "touchdown"],
+                "buccaneers", "broncos", "colts", "commanders",
+                "titans", "jaguars", "texans", "raiders", "super bowl", "touchdown"],
         "mlb": ["mlb", "baseball", "yankees", "dodgers", "braves", "astros", "mets", "phillies",
-                "padres", "cubs", "rangers", "orioles", "twins", "mariners", "red sox",
-                "rays", "guardians", "diamondbacks", "brewers", "blue jays", "cardinals",
+                "padres", "cubs", "orioles", "twins", "mariners", "red sox",
+                "rays", "guardians", "diamondbacks", "brewers", "blue jays",
                 "white sox", "reds", "pirates", "tigers", "royals", "rockies", "nationals",
-                "marlins", "athletics", "angels", "home run", "strikeout", "inning"],
-        "nhl": ["nhl", "hockey", "shl", "goalscorer", "first goal", "puck",
-                "maple leafs", "bruins", "panthers", "rangers", "oilers",
-                "avalanche", "hurricanes", "stars", "devils", "jets", "lightning",
-                "wild", "penguins", "islanders", "canucks", "senators", "flames",
-                "flyers", "kraken", "predators", "kings", "blue jackets", "capitals",
-                "ducks", "coyotes", "blackhawks", "sabres", "red wings", "sharks", "canadiens"],
+                "marlins", "athletics", "home run", "strikeout", "inning"],
+        "nhl": ["nhl", "hockey", "maple leafs", "bruins", "oilers",
+                "avalanche", "hurricanes", "devils", "lightning",
+                "penguins", "islanders", "canucks", "senators", "flames",
+                "flyers", "kraken", "predators", "blue jackets", "capitals",
+                "ducks", "blackhawks", "sabres", "red wings", "sharks", "canadiens",
+                "goalscorer", "first goal", "shl"],
         "tennis": ["tennis", "atp", "wta", "djokovic", "nadal", "federer", "alcaraz", "sinner",
                    "medvedev", "zverev", "rublev", "tsitsipas", "ruud", "fritz", "tiafoe",
                    "swiatek", "sabalenka", "gauff", "grand slam", "wimbledon", "us open",
@@ -373,14 +374,16 @@ class SportsDetector:
         # Prop market detection (player props, first goalscorer, etc.)
         prop_indicators = [
             "firstgoal", "firstbasket", "player", "points", "rebounds",
-            "assists", "strikeout", "passing", "rushing", "td",
+            "assists", "strikeout", "passing", "rushing", "td", "hr",
         ]
         if any(ind in ticker for ind in prop_indicators):
             return MarketType.PROP
         prop_title_patterns = [
-            r"(first\s+goal|goalscorer|first\s+basket)",
-            r"(points|rebounds|assists|strikeouts|touchdowns|yards)\s*[\>\<\:]",
-            r":\s*(over|under)\s+\d+",
+            r"(first\s+goal|goalscorer|first\s+basket|first\s+touchdown)",
+            r"\b\w+\s+\w+\s*:\s*(over|under)\s+\d+",
+            r"(points|rebounds|assists|strikeouts?|touchdowns?|yards|goals?)\s*[\>\<\:\(]",
+            r"(points|rebounds|assists|strikeouts?|touchdowns?|yards|goals?)\s+(over|under)",
+            r"\b\d+\+\s+(points|rebounds|assists|goals|strikeouts)",
         ]
         for pat in prop_title_patterns:
             if re.search(pat, combined, re.IGNORECASE):
@@ -404,6 +407,10 @@ class SportsDetector:
         
         # If it contains "vs" or "at" with team names, likely moneyline
         if re.search(r"\bvs\.?\b|\bat\b", combined, re.IGNORECASE):
+            return MarketType.MONEYLINE
+        
+        # FIX #5: 'game' in ticker without other hints -> moneyline
+        if "game" in ticker:
             return MarketType.MONEYLINE
         
         return MarketType.UNKNOWN

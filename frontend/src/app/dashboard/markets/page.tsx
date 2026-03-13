@@ -12,15 +12,17 @@ export default function MarketsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState<string | null>(null);
+  const [category, setCategory] = useState<string | null>("sports");
 
-  const categories = ["All", "Politics", "Economics", "Crypto", "Climate", "Sports", "Tech", "Science"];
+  const categories = ["Sports", "All", "Politics", "Economics", "Crypto", "Climate", "Tech", "Science"];
 
   const fetchMarkets = useCallback(async () => {
     setLoading(true);
     try {
       const res = await api.markets.list({ category: category || undefined, search: search || undefined, limit: 100 });
-      setMarkets(res.markets);
+      // Sort by volume (most active first) so users see relevant markets
+      const sorted = [...res.markets].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0));
+      setMarkets(sorted);
       setTotal(res.total);
       setSource(res.source);
       setError(null);

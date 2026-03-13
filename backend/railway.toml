@@ -1,0 +1,12 @@
+[build]
+# Build context is the repo root (Dockerfile expects COPY backend/ .)
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Persist Frankenstein's DB + memory across deploys
+# Railway volume: mount /data inside the container
+# Set PERSIST_DIR=/data in Railway env vars
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

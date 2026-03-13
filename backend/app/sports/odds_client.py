@@ -197,6 +197,11 @@ class OddsClient:
     def is_available(self) -> bool:
         return bool(self._api_key) and self._client is not None
     
+    @property
+    def rate_budget_ok(self) -> bool:
+        """True if we have enough API requests left to safely fetch."""
+        return self._requests_remaining > 30
+    
     async def fetch_odds(
         self,
         sport_key: str,
@@ -211,6 +216,11 @@ class OddsClient:
         Rate-limited: skips if fetched recently.
         """
         if not self.is_available:
+            return self.cache.get_all_odds()
+        
+        # FIX #8: Stop fetching when rate budget is low
+        if not force and not self.rate_budget_ok:
+            log.warning("odds_rate_budget_low", remaining=self._requests_remaining)
             return self.cache.get_all_odds()
         
         # Rate limit per sport
@@ -266,6 +276,10 @@ class OddsClient:
     ) -> list[GameScore]:
         """Fetch live scores for a sport."""
         if not self.is_available:
+            return []
+        
+        # FIX #8: Stop fetching when rate budget is low
+        if not self.rate_budget_ok:
             return []
         
         try:
@@ -384,21 +398,77 @@ class OddsClient:
         """
         Find cached odds for a game by team names.
         Uses fuzzy matching (case-insensitive, partial).
+        
+        FIX #1: Guards against empty-string matching.  When either team
+        is empty (prop markets, parsing failures) we SKIP matching
+        entirely rather than returning a random first game.
         """
         home_lower = home_team.lower().strip()
         away_lower = away_team.lower().strip()
         
+        # Guard: both teams must be non-empty and meaningful (>=2 chars)
+        if len(home_lower) < 2 and len(away_lower) < 2:
+            return None
+        
+        best: GameOdds | None = None
+        best_score = 0
+        
         for odds in self.cache.get_all_odds():
             oh = odds.home_team.lower()
             oa = odds.away_team.lower()
+            score = 0
             
-            # Exact match
-            if home_lower == oh and away_lower == oa:
+            # Exact match — highest priority
+            if home_lower and away_lower and home_lower == oh and away_lower == oa:
                 return odds
             
-            # Partial match (team name contains search term)
-            if (home_lower in oh or oh in home_lower) and \
-               (away_lower in oa or oa in away_lower):
+            # Both teams present — partial match
+            if home_lower and away_lower:
+                home_match = (len(home_lower) >= 3 and home_lower in oh) or (len(oh) >= 3 and oh in home_lower)
+                away_match = (len(away_lower) >= 3 and away_lower in oa) or (len(oa) >= 3 and oa in away_lower)
+                if home_match and away_match:
+                    score = 10
+            # Only one team known — require strong match
+            elif home_lower and len(home_lower) >= 4:
+                if home_lower in oh or oh in home_lower:
+                    score = 5
+            elif away_lower and len(away_lower) >= 4:
+                if away_lower in oa or oa in away_lower:
+                    score = 5
+            
+            if score > best_score:
+                best_score = score
+                best = odds
+        
+        return best
+    
+    def find_game_odds_by_event(self, event_ticker: str) -> GameOdds | None:
+        """
+        Find cached odds by parsing team codes from Kalshi event_ticker.
+        
+        e.g. "KXNHLGAME-26MAR12COLSEA" -> look for Colorado / Seattle
+        """
+        if not event_ticker:
+            return None
+        
+        ticker_upper = event_ticker.upper()
+        import re
+        m = re.search(r'\d{1,2}[A-Z]{3}\d{1,2}([A-Z]{2,4})([A-Z]{2,4})$', ticker_upper)
+        if not m:
+            return None
+        
+        code1 = m.group(1).lower()
+        code2 = m.group(2).lower()
+        
+        if len(code1) < 2 or len(code2) < 2:
+            return None
+        
+        for odds in self.cache.get_all_odds():
+            oh = odds.home_team.lower()
+            oa = odds.away_team.lower()
+            c1_in = code1 in oh or code1 in oa
+            c2_in = code2 in oh or code2 in oa
+            if c1_in and c2_in:
                 return odds
         
         return None

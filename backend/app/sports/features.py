@@ -206,9 +206,14 @@ class SportsFeatureEngine:
         # ── Vegas features ────────────────────────────────────────
         if self._odds_client and self._detector:
             info = self._detector.detect(market)
+            # FIX #1: Try team-name match first, then event_ticker fallback
             game_odds = self._odds_client.find_game_odds(
                 info.home_team, info.away_team
             )
+            if game_odds is None:
+                game_odds = self._odds_client.find_game_odds_by_event(
+                    market.event_ticker
+                )
             
             if game_odds:
                 sf.vegas_home_prob = game_odds.consensus_home_prob

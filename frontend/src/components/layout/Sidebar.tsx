@@ -13,11 +13,13 @@ import {
   IconAI,
   IconShield,
   IconSettings,
+  IconSports,
 } from "@/components/ui/Icons";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Overview", icon: IconDashboard },
   { href: "/dashboard/frankenstein", label: "Frankenstein", icon: IconBrain },
+  { href: "/dashboard/sports", label: "Sports", icon: IconSports },
   { href: "/dashboard/markets", label: "Markets", icon: IconMarkets },
   { href: "/dashboard/trading", label: "Trading", icon: IconTrading },
   { href: "/dashboard/portfolio", label: "Portfolio", icon: IconPortfolio },

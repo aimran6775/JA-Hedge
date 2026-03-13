@@ -19,6 +19,10 @@ COPY backend/ .
 # Create keys dir — private key injected at runtime via KALSHI_PRIVATE_KEY_BASE64
 RUN rm -rf /app/keys && mkdir -p /app/keys
 
+# Create data dir for SQLite/memory persistence
+# On Railway: mount a volume at /data and set PERSIST_DIR=/data
+RUN mkdir -p /app/data
+
 # Make entrypoint executable (already copied by COPY backend/ .)
 RUN chmod +x /app/entrypoint.sh
 

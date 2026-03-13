@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     strategy_kelly_fraction: float = 0.25
     strategy_scan_interval: float = 30.0
 
+    # ── Persistence ──────────────────────────────────────
+    persist_dir: str = "data"                  # Directory for DB/memory files; set to volume mount on Railway
+
     # ── Sports Trading ────────────────────────────────────
     the_odds_api_key: str = ""                # The Odds API v4 key
     sports_only_mode: bool = True              # Only trade sports markets

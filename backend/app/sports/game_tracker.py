@@ -97,15 +97,25 @@ class GameTracker:
         away_score: int | None,
         sport_id: str = "",
         is_completed: bool = False,
+        commence_time: str = "",
     ) -> GameState:
         """Update game state with new score data."""
         if game_id not in self._games:
+            # FIX #6: Parse actual commence_time from The Odds API
+            start_ts = time.time()
+            if commence_time:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    dt = _dt.fromisoformat(commence_time.replace("Z", "+00:00"))
+                    start_ts = dt.timestamp()
+                except (ValueError, TypeError):
+                    pass
             self._games[game_id] = GameState(
                 game_id=game_id,
                 sport_id=sport_id,
                 home_team=home_team,
                 away_team=away_team,
-                game_start_time=time.time(),
+                game_start_time=start_ts,
             )
         
         state = self._games[game_id]

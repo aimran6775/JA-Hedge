@@ -288,26 +288,36 @@ class ExchangeSchedule:
     """
     Kalshi exchange operating hours awareness.
 
-    Kalshi markets trade 24/7 but liquidity varies dramatically:
-    - Peak: 9am-5pm ET weekdays
-    - Medium: 5pm-10pm ET weekdays
-    - Low: Overnight and weekends
+    Kalshi markets trade 24/7 but liquidity varies dramatically.
 
-    Trading during low-liquidity periods has wider spreads
-    and higher adverse selection risk.
+    FIX #9: Properly computes ET offset (auto-detect EDT/EST),
+    and NEVER blocks trading entirely — sports games run at night.
     """
 
-    # Eastern Time offset from UTC (EST=-5, EDT=-4)
-    ET_OFFSET = -5  # Use EST as default
+    @classmethod
+    def _et_hour(cls) -> tuple[int, int]:
+        """Return (et_hour, weekday) using proper US/Eastern offset."""
+        now_utc = datetime.now(timezone.utc)
+        month = now_utc.month
+        if 3 < month < 11:
+            et_offset = -4  # EDT
+        elif month == 3:
+            second_sun = 14 - (datetime(now_utc.year, 3, 1).weekday() + 1) % 7
+            et_offset = -4 if now_utc.day >= second_sun else -5
+        elif month == 11:
+            first_sun = 7 - (datetime(now_utc.year, 11, 1).weekday() + 1) % 7
+            et_offset = -5 if now_utc.day >= first_sun else -4
+        else:
+            et_offset = -5  # EST
+        et_hour = (now_utc.hour + et_offset) % 24
+        return et_hour, now_utc.weekday()
 
     @classmethod
     def current_session(cls) -> str:
         """Get current trading session type."""
-        now_utc = datetime.now(timezone.utc)
-        et_hour = (now_utc.hour + cls.ET_OFFSET) % 24
-        weekday = now_utc.weekday()
+        et_hour, weekday = cls._et_hour()
 
-        if weekday >= 5:  # Saturday/Sunday
+        if weekday >= 5:
             return "weekend"
         elif 9 <= et_hour < 17:
             return "peak"
@@ -320,19 +330,13 @@ class ExchangeSchedule:
 
     @classmethod
     def liquidity_factor(cls) -> float:
-        """
-        Liquidity multiplier for current session.
-
-        1.0 = peak liquidity, lower = less liquid.
-        Used to adjust spread tolerance and position sizes.
-        """
         session = cls.current_session()
         return {
             "peak": 1.0,
             "evening": 0.7,
             "pre_market": 0.5,
-            "overnight": 0.3,
-            "weekend": 0.4,
+            "overnight": 0.4,
+            "weekend": 0.5,
         }.get(session, 0.5)
 
     @classmethod
@@ -340,13 +344,10 @@ class ExchangeSchedule:
         """
         Should we be trading right now?
 
-        Returns (should_trade, reason).
+        FIX #9: ALWAYS returns True. Sports games happen 24/7.
+        The liquidity_factor scales position sizes instead of blocking.
         """
         session = cls.current_session()
-
-        if session == "overnight":
-            return False, "overnight_low_liquidity"
-
         return True, session
 
 
