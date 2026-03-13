@@ -162,6 +162,16 @@ class Frankenstein:
         # Phase 7: Advanced portfolio risk manager
         self._adv_risk = AdvancedRiskManager()
 
+        # Sports components (injected by main.py)
+        self._sports_detector = None
+        self._odds_client = None
+        self._sports_feat = None
+        self._sports_predictor = None
+        self._sports_risk = None
+        self._live_engine = None
+        self._sports_monitor = None
+        self._sports_only = True  # default: only trade sports
+
         # State
         self._state = FrankensteinState()
         self._scan_task: asyncio.Task | None = None
@@ -329,6 +339,33 @@ class Frankenstein:
                 category_hint=market.category or "",
             )
 
+            # 🏀 Sports: use sports predictor (Vegas baseline) if available
+            sports_pred = None
+            sports_features = None
+            if self._sports_detector and self._sports_predictor and self._sports_feat:
+                info = self._sports_detector.detect(market)
+                if info.is_sports:
+                    sports_features = self._sports_feat.compute(market, features)
+                    sports_pred = self._sports_predictor.predict(sports_features, features)
+
+            # If sports predictor gave a signal, use it (override base model)
+            if sports_pred is not None:
+                prediction = sports_pred.to_base_prediction()
+                # Sports risk check
+                if self._sports_risk and self._sports_detector:
+                    info = self._sports_detector.detect(market)
+                    passed, reason = self._sports_risk.check(
+                        ticker=market.ticker,
+                        event_ticker=market.event_ticker,
+                        sport_id=info.sport_id,
+                        count=1,
+                        price_cents=int(features.midpoint * 100),
+                        is_live=info.is_live,
+                        edge=prediction.edge,
+                    )
+                    if not passed:
+                        continue
+
             # Apply adaptive thresholds
             if prediction.confidence < params.min_confidence:
                 continue
@@ -426,6 +463,18 @@ class Frankenstein:
                     cost_cents=count * price_cents,
                     hours_to_expiry=features.hours_to_expiry,
                 )
+
+                # 🏀 Register with sports risk manager
+                if self._sports_risk and self._sports_detector:
+                    info = self._sports_detector.detect(market)
+                    if info.is_sports:
+                        self._sports_risk.register_position(
+                            ticker=market.ticker,
+                            event_ticker=market.event_ticker,
+                            sport_id=info.sport_id,
+                            cost_cents=count * price_cents,
+                            is_live=info.is_live,
+                        )
 
                 # Record in Frankenstein's memory
                 self.memory.record_trade(
@@ -540,6 +589,11 @@ class Frankenstein:
 
             # ── Stop-loss check ───────────────────────────
             stop_loss_pct = getattr(params, 'stop_loss_pct', 0.20) or 0.20
+            # 🏀 Tighter stop-loss for live sports positions
+            if self._sports_detector and self._sports_risk:
+                info = self._sports_detector.detect(market)
+                if info.is_sports:
+                    stop_loss_pct = self._sports_risk.get_stop_loss(info.is_live)
             if unrealized_pnl_pct < -stop_loss_pct:
                 should_exit = True
                 exit_reason = f"stop_loss ({unrealized_pnl_pct:.1%})"
@@ -579,6 +633,9 @@ class Frankenstein:
                     self._state.total_trades_executed += 1
                     # Phase 7: Remove from portfolio risk tracker
                     self._adv_risk.remove_position(ticker)
+                    # 🏀 Remove from sports risk tracker
+                    if self._sports_risk:
+                        self._sports_risk.remove_position(ticker)
 
         if exits_executed > 0:
             log.info("🧟📤 EXITS", count=exits_executed)
@@ -682,7 +739,7 @@ class Frankenstein:
     # ── Signal Processing Helpers ─────────────────────────────────────
 
     def _filter_candidates(self, markets: list[Market]) -> list[Market]:
-        """Filter markets to tradeable candidates."""
+        """Filter markets to tradeable candidates — SPORTS FOCUSED."""
         params = self.strategy.params
         candidates = []
 
@@ -691,6 +748,11 @@ class Frankenstein:
                 continue
             if m.yes_bid is None and m.yes_ask is None and m.last_price is None:
                 continue
+
+            # 🏀 Sports-only mode: skip non-sports markets
+            if self._sports_only and self._sports_detector:
+                if not self._sports_detector.is_sports_market(m):
+                    continue
 
             # Skip if we're at position limit for this market
             from app.pipeline.portfolio_tracker import portfolio_state
@@ -969,6 +1031,12 @@ class Frankenstein:
             "portfolio_risk": self._adv_risk.portfolio_summary(),
             "exchange_session": ExchangeSchedule.current_session(),
             "liquidity_factor": ExchangeSchedule.liquidity_factor(),
+
+            # 🏀 Sports
+            "sports_only_mode": self._sports_only,
+            "sports_detector": self._sports_detector.stats() if self._sports_detector else None,
+            "sports_risk": self._sports_risk.summary() if self._sports_risk else None,
+            "sports_predictor": self._sports_predictor.stats() if self._sports_predictor else None,
         }
 
     @staticmethod

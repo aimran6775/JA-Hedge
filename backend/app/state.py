@@ -38,6 +38,17 @@ class AppState:
     # 🧟 FRANKENSTEIN — The unified AI brain
     frankenstein: Any | None = None  # Frankenstein
 
+    # 🏀 Sports Module
+    sports_detector: Any | None = None       # SportsDetector
+    odds_client: Any | None = None           # OddsClient
+    game_tracker: Any | None = None          # GameTracker
+    sports_predictor: Any | None = None      # SportsPredictor
+    sports_feature_engine: Any | None = None # SportsFeatureEngine
+    live_engine: Any | None = None           # LiveTradingEngine
+    sports_risk: Any | None = None           # SportsRiskManager
+    sports_collector: Any | None = None      # SportsDataCollector
+    sports_monitor: Any | None = None        # SportsMonitor
+
     # Alerts
     alert_manager: Any | None = None  # AlertManager
 

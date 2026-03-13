@@ -61,6 +61,15 @@ class MarketCache:
     def get_by_event(self, event_ticker: str) -> list[Market]:
         return [m for m in self._markets.values() if m.event_ticker == event_ticker]
 
+    def get_sports(self) -> list[Market]:
+        """Get all active sports markets using the sports detector."""
+        try:
+            from app.sports.detector import sports_detector
+            active = self.get_active()
+            return sports_detector.filter_sports(active)
+        except ImportError:
+            return []
+
     @property
     def count(self) -> int:
         return len(self._markets)

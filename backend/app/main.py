@@ -136,6 +136,73 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.frankenstein = frankenstein
     log.info("🧟 frankenstein_created", generation=0)
 
+    # 🏀 SPORTS MODULE — The profit engine
+    from app.sports.detector import sports_detector as _sports_detector
+    from app.sports.odds_client import OddsClient
+    from app.sports.game_tracker import game_tracker as _game_tracker
+    from app.sports.model import sports_predictor as _sports_predictor
+    from app.sports.features import sports_feature_engine as _sports_feat
+    from app.sports.live_engine import live_engine as _live_engine
+    from app.sports.risk import sports_risk as _sports_risk
+    from app.sports.collector import sports_collector as _sports_collector
+    from app.sports.monitor import sports_monitor as _sports_monitor
+
+    state.sports_detector = _sports_detector
+    state.game_tracker = _game_tracker
+    state.sports_predictor = _sports_predictor
+    state.sports_feature_engine = _sports_feat
+    state.live_engine = _live_engine
+    state.sports_risk = _sports_risk
+    state.sports_collector = _sports_collector
+    state.sports_monitor = _sports_monitor
+
+    # Initialize The Odds API client
+    odds_client = OddsClient(
+        api_key=settings.the_odds_api_key,
+        cache_ttl=settings.sports_odds_cache_ttl,
+    )
+    await odds_client.start()
+    state.odds_client = odds_client
+
+    # Wire sports feature engine dependencies
+    _sports_feat.set_dependencies(
+        detector=_sports_detector,
+        odds_client=odds_client,
+        game_tracker=_game_tracker,
+    )
+
+    # Wire collector dependencies
+    _sports_collector.set_dependencies(
+        detector=_sports_detector,
+        odds_client=odds_client,
+        game_tracker=_game_tracker,
+        feature_engine=feat_engine,
+        sports_feature_engine=_sports_feat,
+        sqlite=frankenstein._sqlite,  # reuse Frankenstein's SQLite store
+    )
+
+    # Wire monitor dependencies
+    _sports_monitor.set_dependencies(
+        sports_predictor=_sports_predictor,
+        game_tracker=_game_tracker,
+    )
+
+    # Inject sports components into Frankenstein
+    frankenstein._sports_detector = _sports_detector
+    frankenstein._odds_client = odds_client
+    frankenstein._sports_feat = _sports_feat
+    frankenstein._sports_predictor = _sports_predictor
+    frankenstein._sports_risk = _sports_risk
+    frankenstein._live_engine = _live_engine
+    frankenstein._sports_monitor = _sports_monitor
+    frankenstein._sports_only = settings.sports_only_mode
+
+    log.info(
+        "🏀 sports_module_initialized",
+        odds_available=odds_client.is_available,
+        sports_only=settings.sports_only_mode,
+    )
+
     # Market data pipeline (with feature engine callback)
     from app.pipeline import MarketDataPipeline
 
@@ -228,6 +295,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         log.error("frankenstein_awaken_failed", error=str(e))
 
+    # ── Start Sports background tasks ─────────────────────
+    try:
+        await _sports_collector.start()
+        log.info("🏀 sports_collector_started")
+    except Exception as e:
+        log.error("sports_collector_start_failed", error=str(e))
+
+    try:
+        await _sports_monitor.start()
+        log.info("🏀 sports_monitor_started")
+    except Exception as e:
+        log.error("sports_monitor_start_failed", error=str(e))
+
     state.ready = True
     log.info("jahedge_ready", port=settings.backend_port)
 
@@ -235,6 +315,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── Shutdown ──────────────────────────────────────────
     log.info("shutting_down")
+
+    # Stop sports module
+    if state.sports_collector:
+        try:
+            await state.sports_collector.stop()
+        except Exception:
+            pass
+    if state.sports_monitor:
+        try:
+            await state.sports_monitor.stop()
+        except Exception:
+            pass
+    if state.odds_client:
+        try:
+            await state.odds_client.stop()
+        except Exception:
+            pass
 
     # Stop Frankenstein first (saves memory)
     if state.frankenstein:
@@ -359,6 +456,9 @@ async def health_check() -> dict:
             "risk_manager": "ready" if app_state.risk_manager else "not_initialized",
             "ai_strategy": "ready" if app_state.trading_strategy else "not_initialized",
             "frankenstein": "alive" if (app_state.frankenstein and app_state.frankenstein._state.is_alive) else "sleeping",
+            "sports_detector": "ready" if app_state.sports_detector else "not_initialized",
+            "odds_client": "ready" if (app_state.odds_client and app_state.odds_client.is_available) else "no_key",
+            "sports_predictor": "ready" if app_state.sports_predictor else "not_initialized",
         },
     }
 

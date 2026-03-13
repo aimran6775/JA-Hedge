@@ -141,6 +141,13 @@ class Settings(BaseSettings):
     strategy_kelly_fraction: float = 0.25
     strategy_scan_interval: float = 30.0
 
+    # ── Sports Trading ────────────────────────────────────
+    the_odds_api_key: str = ""                # The Odds API v4 key
+    sports_only_mode: bool = True              # Only trade sports markets
+    sports_scan_interval_live: float = 15.0    # Faster scan during live games
+    sports_odds_cache_ttl: float = 300.0       # 5 min cache for odds
+    sports_min_vegas_discrepancy: float = 0.05 # 5% minimum edge to trade
+
     # ── Celery ────────────────────────────────────────────
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"

@@ -101,6 +101,29 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
                 CREATE INDEX IF NOT EXISTS idx_trades_outcome ON trades(outcome);
                 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
+
+                CREATE TABLE IF NOT EXISTS sports_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    ticker TEXT NOT NULL,
+                    event_ticker TEXT,
+                    sport_id TEXT,
+                    market_type TEXT,
+                    is_live INTEGER DEFAULT 0,
+                    yes_bid REAL,
+                    yes_ask REAL,
+                    midpoint REAL,
+                    volume REAL,
+                    open_interest REAL,
+                    vegas_home_prob REAL,
+                    vegas_away_prob REAL,
+                    num_bookmakers INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sports_snap_ticker ON sports_snapshots(ticker);
+                CREATE INDEX IF NOT EXISTS idx_sports_snap_sport ON sports_snapshots(sport_id);
+                CREATE INDEX IF NOT EXISTS idx_sports_snap_ts ON sports_snapshots(timestamp);
             """)
             log.info("sqlite_initialized", path=self._db_path)
 
@@ -229,6 +252,33 @@ class SQLiteStore:
                 snapshot.get("model_version", ""),
                 json.dumps(snapshot),
             ))
+
+    def save_sports_snapshots(self, snapshots: list[dict[str, Any]]) -> None:
+        """Save sports market snapshots for training data."""
+        with self._conn() as conn:
+            for s in snapshots:
+                conn.execute("""
+                    INSERT INTO sports_snapshots
+                    (timestamp, ticker, event_ticker, sport_id, market_type,
+                     is_live, yes_bid, yes_ask, midpoint, volume,
+                     open_interest, vegas_home_prob, vegas_away_prob, num_bookmakers)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    s.get("timestamp", time.time()),
+                    s.get("ticker", ""),
+                    s.get("event_ticker", ""),
+                    s.get("sport_id", ""),
+                    s.get("market_type", ""),
+                    int(s.get("is_live", False)),
+                    s.get("yes_bid", 0),
+                    s.get("yes_ask", 0),
+                    s.get("midpoint", 0),
+                    s.get("volume", 0),
+                    s.get("open_interest", 0),
+                    s.get("vegas_home_prob", 0),
+                    s.get("vegas_away_prob", 0),
+                    s.get("num_bookmakers", 0),
+                ))
 
 
 # ── Exchange Schedule ─────────────────────────────────────────────────────

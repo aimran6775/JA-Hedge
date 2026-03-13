@@ -2218,3 +2218,551 @@ Offline Mode:  Save state to disk, wait for reconnection, alert human
 ---
 
 *Plan complete. No building yet — but when we start, every line of code has a reason.*
+---
+---
+
+# SPORTS-FOCUSED 10-PHASE PLAN
+
+## Why Sports-Only?
+
+The previous 10 phases improved the platform across ALL market categories simultaneously. That was a mistake from an ML perspective — the model is trying to learn patterns across economics, weather, politics, and sports simultaneously. These markets have fundamentally different dynamics:
+
+- **Sports**: Discrete events with known schedules, real-time score/game-state, massive Vegas/offshore odds ecosystem for external signal, in-game (live) trading with rapid price movement, deep liquidity ($1-4M per NBA game on Kalshi). **89% of Kalshi's revenue.**
+- **Economics**: Scheduled data releases, binary cliff events (CPI report drops → market snaps to 0 or 100)
+- **Weather**: Gradual convergence as forecast accuracy increases nearer to event
+- **Politics**: Slow-moving narrative markets, polling-driven
+
+A model trained on ALL of these simultaneously learns nothing well. By focusing exclusively on sports, we can:
+
+1. **Build sport-specific features** that actually predict outcomes (Vegas line comparison, game state, momentum, team strength)
+2. **Train a specialized model** on a consistent data distribution
+3. **Exploit the deepest liquidity** — sports is where the volume is
+4. **Trade intra-game** — live markets move fast, creating exploitable inefficiencies
+5. **Leverage the richest external data ecosystem** — hundreds of free/cheap odds APIs, ESPN, scores APIs
+
+Other categories become "Coming Soon" placeholders in the UI until we prove the sports model is profitable.
+
+---
+
+## Current State Audit — Sports Gaps
+
+### What Exists Today (and why it's insufficient):
+
+| Component | Current State | Gap |
+|-----------|--------------|-----|
+| **`categories.py` SportsStrategy** | 3 simple confidence multipliers (high_vol ×0.85, near_game ×0.70, wide_spread ×1.15) | No external data, no game state, no Vegas lines, no sport-specific logic |
+| **`features.py` FeatureEngine** | 37 generic features (price, volume, time, MA, RSI, momentum) | ZERO sports-specific features. No game period, score differential, team strength, Vegas line comparison |
+| **`ensemble.py` ML Model** | XGBoost(70%) + LogisticRegression(30%) trained on ALL categories | Generic model. Not tuned for sports price dynamics. No sport-specific training data |
+| **`brain.py` Scan Loop** | Scans all active markets indiscriminately | No sports filtering. No concept of "this is an NBA spread market" vs "will it rain tomorrow" |
+| **`websocket.py` WS Feeds** | Generic ticker/trade/orderbook subscriptions | Not sports-aware. Doesn't know which tickers are live games vs pre-game |
+| **Market Detection** | Keyword matching in `detect_category()` | No `series_ticker` parsing. Doesn't know `kxnbagame` = NBA game |
+| **External Data** | None | No Vegas odds, no scores, no team stats, no schedule data |
+| **In-Game Trading** | Not implemented | No live game state tracking, no period/quarter awareness, no momentum signals |
+| **Risk Management** | Generic per-ticker limits | No sports-specific risk (e.g., correlated game markets, event-level exposure) |
+| **Frontend** | Generic category tabs with "Sports" as one option | No sports-specific dashboard, no live game view, no Vegas comparison display |
+
+### Kalshi Sports Market Structure (from live scrape):
+
+**Series Tickers (sport identifiers):**
+| Series | Sport | Example Ticker |
+|--------|-------|----------------|
+| `kxnbagame` | NBA Basketball | `kxnbagame-26mar11cleorl` |
+| `kxncaambgame` | NCAA March Madness | `kxncaambgame-26mar11misstex` |
+| `kxnhlgame` | NHL Hockey | `kxnhlgame-26mar11mtlott` |
+| `kxmlbgame` | MLB Baseball | `kxmlbgame-*` |
+| `kxnflgame` | NFL Football | `kxnflgame-*` |
+| `kxmlsgame` | MLS Soccer | `kxmlsgame-*` |
+| `kxatpmatch` | ATP Tennis | `kxatpmatch-26mar10djodra` |
+| `kxwbcgame` | World Baseball Classic | `kxwbcgame-26mar111900itamex` |
+| `kxconcacafccupgame` | CONCACAF Champions Cup | `kxconcacafccupgame-26mar11nshmia` |
+
+**Ticker Pattern**: `{series}-{date}{time}{teams}` — encodes sport, date, approximate time, and team abbreviations.
+
+**Market Types Per Game (sub-markets under each event):**
+- Spread (e.g., "Lakers -6.5")
+- Total (Over/Under points)
+- Moneyline (who wins) — 3-way for soccer (Win/Draw/Win)
+
+**Volume Observations:**
+- NBA games: $1M–$4M per game
+- NCAAB March Madness: $500K–$2M
+- NHL: $300K–$800K
+- Tennis (ATP): $500K–$1.1M
+- Soccer: $400K–$900K
+
+**Live In-Game Trading Confirmed:**
+- Games show "LIVE" status with game clock: "2ND - 1:18", "7TH", "2nd - 76'"
+- Markets remain open during gameplay with real-time price movement
+- Spread and total lines update as game state changes
+
+---
+
+## External Data Sources Identified
+
+### 1. The Odds API (PRIMARY — Free Tier Available)
+- **URL**: `https://api.the-odds-api.com/v4/`
+- **Free Tier**: 500 requests/month (enough for ~16/day)
+- **Paid**: $30/mo for 20K requests, $59/mo for 100K
+- **Endpoints**:
+  - `GET /v4/sports` — List all in-season sports (FREE, doesn't count against quota)
+  - `GET /v4/sports/{sport}/odds?regions=us&markets=h2h,spreads,totals` — Moneyline + spreads + totals from 10+ US bookmakers (DraftKings, FanDuel, BetMGM, Caesars, etc.)
+  - `GET /v4/sports/{sport}/scores?daysFrom=1` — Live scores + completed game scores
+  - `GET /v4/sports/{sport}/events` — Event listing (FREE, doesn't count)
+  - `GET /v4/sports/{sport}/participants` — Team/player lists
+  - `GET /v4/historical/sports/{sport}/odds?date=...` — Historical snapshots (5-min intervals since Sept 2022)
+- **Sport Keys**: `basketball_nba`, `americanfootball_nfl`, `baseball_mlb`, `icehockey_nhl`, `basketball_ncaab`, `soccer_usa_mls`, `tennis_atp_*`, etc.
+- **Data Format**: JSON with bookmaker-level odds (American or decimal), spreads with point values, totals with over/under lines
+- **Key Feature**: Returns odds from 10+ bookmakers simultaneously — enables consensus line calculation and sharp/soft book comparison
+
+### 2. ESPN API (FREE — Undocumented but stable)
+- **Live Scores**: `https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard`
+- **Team Stats**: `https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{id}/statistics`
+- **Game Summary**: `https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary?event={id}`
+- **Provides**: Live scores, game clock, period, team records, recent form, injuries
+- **Rate Limit**: ~60 req/min (unofficial)
+
+### 3. NBA/NFL/MLB/NHL Official Stats APIs
+- NBA: `https://stats.nba.com/stats/` — Advanced stats, play-by-play
+- NFL: `https://site.api.espn.com/apis/site/v2/sports/football/nfl/`
+- MLB: `https://statsapi.mlb.com/api/v1/`
+- NHL: `https://api-web.nhle.com/v1/`
+- All free, varying rate limits
+
+### 4. Derived Data (Computed Internally)
+- **Kalshi WS Ticker Feeds**: Real-time price movement on sports markets during games
+- **Price Velocity During Games**: How fast Kalshi prices are moving (information arrival)
+- **Volume Spikes**: Sudden volume = new information (score, injury, momentum shift)
+- **Cross-Market Correlation**: Spread + Total + Moneyline for same game should be correlated
+
+---
+
+## THE 10-PHASE SPORTS PLAN
+
+### PHASE S1: Sports Market Detection & Filtering
+**Goal**: Frankenstein only scans sports markets. All other categories are placeholder.
+
+**Changes:**
+- **`brain.py` → `_scan_and_trade()`**: Replace `market_cache.get_active()` with a sports-filtered version that only returns markets matching known sports series tickers
+- **New `sports/detector.py`**: Parse `series_ticker` and `event_ticker` to identify sport type (NBA, NFL, MLB, NHL, etc.), game date, teams, and market type (spread/total/moneyline)
+- **Ticker parser**: `kxnbagame-26mar11cleorl` → `{sport: "NBA", date: "2025-03-26", time: "11:00", teams: ["CLE", "ORL"], market_type: "game"}`
+- **Series ticker registry**: Map all known Kalshi sports series to sport/league. Auto-discover new series from the API.
+- **`market_cache` sports filter**: Add `market_cache.get_sports()` method that returns only sports markets
+- **Category route in brain**: Non-sports markets skip the trading pipeline entirely but remain visible in the dashboard with "Coming Soon" badge
+
+**Files**: `backend/app/sports/detector.py` (NEW), `backend/app/frankenstein/brain.py`, `backend/app/pipeline/__init__.py`
+
+**Estimated Effort**: 1 day
+
+---
+
+### PHASE S2: Vegas Odds Ingestion Pipeline
+**Goal**: Continuously fetch real-time Vegas/sportsbook consensus lines and store them for comparison.
+
+**Changes:**
+- **New `sports/odds_client.py`**: Async client for The Odds API v4
+  - Fetch odds for all active sports every 5 minutes (within free tier)
+  - Parse moneyline (h2h), spreads (handicap + point), and totals (over/under)
+  - Compute consensus line: average across 10+ bookmakers weighted by sharpness (Pinnacle, Circa weighted higher)
+  - Compute "sharp vs soft" spread: difference between sharp books (Pinnacle) and soft books (DraftKings, FanDuel)
+- **New `sports/odds_cache.py`**: In-memory cache of latest odds per game
+  - Key: `{sport}_{home_team}_{away_team}_{date}` — maps to Kalshi event_ticker
+  - Store time-series of odds movements (opening line → current line)
+  - Track line movement direction and magnitude
+- **Game matching engine**: Match Kalshi event tickers to Odds API events
+  - Parse team names from Kalshi ticker/title and fuzzy-match to Odds API `home_team`/`away_team`
+  - Handle abbreviation differences (e.g., "CLE" ↔ "Cleveland Cavaliers")
+  - Cache validated mappings for fast lookup
+- **Env config**: `THE_ODDS_API_KEY` in `.env`, with graceful fallback when absent (log warning, continue with Kalshi-only features)
+
+**Files**: `backend/app/sports/odds_client.py` (NEW), `backend/app/sports/odds_cache.py` (NEW), `backend/app/sports/team_mapper.py` (NEW), `backend/app/config.py`
+
+**Estimated Effort**: 2 days
+
+---
+
+### PHASE S3: Sports-Specific Feature Engineering
+**Goal**: Build a 50+ feature vector specialized for sports trading.
+
+**New Sports Features (on top of existing 37 generic):**
+
+**A. Vegas Comparison Features (most important — this IS the edge):**
+1. `vegas_implied_prob` — Consensus bookmaker implied probability (from moneyline, adjusted for vig)
+2. `kalshi_vs_vegas_diff` — Kalshi midpoint minus Vegas implied prob (THE primary edge signal)
+3. `line_movement_1h` — How much the Vegas line has moved in last hour
+4. `line_movement_open_to_now` — Opening line vs current line
+5. `sharp_vs_soft_diff` — Pinnacle implied prob minus DraftKings/FanDuel average
+6. `vegas_spread_value` — Point spread from Vegas (e.g., -6.5)
+7. `kalshi_spread_vs_vegas` — Kalshi spread market implied handicap vs Vegas spread
+8. `vegas_total_value` — Over/under line from Vegas
+9. `kalshi_total_vs_vegas` — Kalshi total market vs Vegas total
+10. `vig_adjusted_prob` — True probability after removing bookmaker vig (overround)
+11. `odds_age_minutes` — How stale the latest Vegas odds are
+
+**B. Game State Features (for in-game/live trading):**
+12. `is_live` — Boolean: is the game currently in progress?
+13. `game_period` — Current period/quarter/half/inning (normalized 0.0-1.0 for game progress)
+14. `game_clock_remaining_pct` — Percentage of game time remaining
+15. `score_differential` — Current score difference (positive = home leading)
+16. `score_differential_vs_spread` — Score diff relative to pre-game spread (covering?)
+17. `total_points_scored` — Total points so far vs the over/under line
+18. `pace_factor` — Scoring pace relative to expected (fast/slow game)
+19. `momentum_score` — Recent scoring run direction and magnitude
+20. `lead_changes_count` — Number of lead changes (proxy for game competitiveness)
+
+**C. Team/Context Features:**
+21. `home_team_win_pct` — Season win percentage of home team
+22. `away_team_win_pct` — Season win percentage of away team
+23. `home_advantage_factor` — Historical home court/field advantage for this sport
+24. `rest_days_home` — Days since home team's last game (fatigue factor)
+25. `rest_days_away` — Days since away team's last game
+26. `is_playoff` — Boolean: playoff/tournament game (different dynamics)
+27. `is_rivalry` — Boolean: known rivalry game (higher volatility)
+
+**D. Kalshi Market Microstructure Features (sports-specific):**
+28. `kalshi_volume_rank` — This game's volume rank among all active sports markets
+29. `spread_market_vs_total_market_corr` — Cross-market correlation within same game
+30. `price_velocity_live` — How fast Kalshi price is moving during live game (WS-powered)
+31. `trade_intensity` — Trades per minute on this market (WS-powered)
+32. `large_trade_indicator` — Recent large orders (information signal)
+
+**Implementation:**
+- Extend `MarketFeatures` dataclass with sports-specific fields (default to 0/NaN for non-sports)
+- New `sports/features.py` module that enriches generic features with sports data
+- Feature computation pulls from odds_cache and scores_cache
+- `to_array()` returns 37 generic + ~32 sports-specific = ~69 features total
+
+**Files**: `backend/app/sports/features.py` (NEW), `backend/app/ai/features.py` (MODIFY — extend MarketFeatures)
+
+**Estimated Effort**: 2 days
+
+---
+
+### PHASE S4: Live Game State Tracker
+**Goal**: Real-time game state tracking for in-game trading intelligence.
+
+**Changes:**
+- **New `sports/game_tracker.py`**: Manages live game state for all active games
+  - Polls ESPN scoreboard API every 30 seconds during games
+  - Tracks: period, game clock, scores, recent plays, possession
+  - Computes derived state: momentum, scoring pace, garbage time detection, timeout patterns
+  - Event-driven: emits signals on score changes, period transitions, game start/end
+- **New `sports/scores_cache.py`**: Stores current and historical game states
+  - Time-series of scores at each update interval
+  - Score differential trajectory (visualizable)
+  - Period-by-period scoring breakdown
+- **Integration with brain scan loop**:
+  - During live games, reduce scan interval from 60s to 15s for sports markets
+  - "Game-aware" scanning: prioritize markets for games currently in progress
+  - Detect "game started" / "game ended" transitions to trigger position management
+- **Game schedule awareness**:
+  - Fetch today's game schedule from The Odds API events endpoint (FREE)
+  - Pre-populate game tracker before games start
+  - Set up WS subscriptions for game markets 30 min before tip-off
+
+**The Odds API Score Integration:**
+- `GET /v4/sports/{sport}/scores` returns live scores (updates ~30s) — free endpoint
+- Cross-reference with ESPN for richer data (quarter scores, play-by-play)
+- Game `id` field matches between scores and odds endpoints
+
+**Files**: `backend/app/sports/game_tracker.py` (NEW), `backend/app/sports/scores_cache.py` (NEW), `backend/app/frankenstein/brain.py` (MODIFY — adaptive scan intervals)
+
+**Estimated Effort**: 2 days
+
+---
+
+### PHASE S5: Sports-Specific ML Model
+**Goal**: Train a dedicated XGBoost model exclusively on sports market data.
+
+**Architecture Decision**: Separate sports model, NOT a fine-tuned generic model.
+
+**Rationale**: Sports markets have fundamentally different feature distributions than other categories. A dedicated model can:
+- Use all 69 features (including sports-specific ones that are NaN for non-sports)
+- Learn sport-specific patterns (home advantage, pace effects, live trading dynamics)
+- Be evaluated purely on sports prediction accuracy (not diluted by econ/weather)
+
+**Changes:**
+- **New `sports/model.py`**: SportsPredictor
+  - XGBoost primary model trained on sports features
+  - Separate models per market type: spread model, total model, moneyline model
+  - Heuristic fallback that uses Vegas-Kalshi discrepancy directly (no ML needed for obvious mispricings)
+  - Pre-game vs in-game model switching (different feature importances)
+- **Training Pipeline:**
+  - Collect training data: every sports market scan → features + eventual settlement outcome
+  - Historical data bootstrap: use Kalshi candlestick data + The Odds API historical odds (if on paid tier) to build initial training set
+  - Online learning: retrain model every 24 hours with new data
+  - Walk-forward validation: always test on future data, never peek
+- **Sport-Specific Sub-Models (future):**
+  - NBA model (4 quarters, timeout patterns, pace)
+  - NFL model (4 quarters, possession-heavy, clock management)
+  - MLB model (9 innings, no clock, pitching matchups)
+  - NHL model (3 periods, overtime/shootout rules)
+  - Tennis model (sets, service games, match format)
+- **The "Naive Edge" Baseline:**
+  - Before ML even works: if `kalshi_vs_vegas_diff > 5%` → trade toward Vegas consensus
+  - This alone may be profitable. ML model must beat this baseline to justify complexity.
+
+**Files**: `backend/app/sports/model.py` (NEW), `backend/app/sports/training.py` (NEW), `backend/app/frankenstein/brain.py` (MODIFY — use SportsPredictor for sports markets)
+
+**Estimated Effort**: 3 days
+
+---
+
+### PHASE S6: In-Game Trading Engine
+**Goal**: Exploit real-time inefficiencies during live games.
+
+**The Core Insight:**
+During live games, information (scores, injuries, momentum shifts) hits the traditional sportsbooks first (DraftKings, FanDuel have huge teams). But Kalshi's prediction market may lag by seconds to minutes in reflecting that information. This latency = our edge.
+
+**Strategy Framework:**
+
+**A. Score-Based Arbitrage (primary strategy):**
+- When a team scores, immediately check if Kalshi price has adjusted
+- If Kalshi lags behind the expected adjustment → trade toward fair value
+- Example: Team down 10 hits a 3-pointer → Vegas line shifts, Kalshi spread market hasn't moved yet → buy the covering team
+- Requires: Fast score detection (ESPN/WS) + fast Kalshi order execution
+
+**B. Momentum Scalping:**
+- Detect scoring runs (e.g., 8-0 run in NBA) before they're fully priced in
+- Trade in direction of momentum, exit on pause/timeout
+- Short-lived positions (minutes, not hours)
+
+**C. Garbage Time Detection:**
+- When a game is effectively decided (NBA up 25 with 5 min left), close markets converge to extremes
+- If Kalshi hasn't fully priced in the blowout → trade toward certainty
+- Also: avoid getting trapped in "garbage time rally" false signals
+
+**D. Period Transition Trading:**
+- Halftime/intermission: odds may adjust for halftime adjustments narrative
+- End-of-game clock management: final minutes have different dynamics
+
+**Changes:**
+- **New `sports/live_engine.py`**: In-game trading coordinator
+  - Separate from brain's regular scan loop — runs on tighter intervals (5-10s during live games)
+  - Consumes game_tracker events (score change, period change)
+  - Generates instant trade signals based on score-event → price-lag detection
+  - Manages "flash positions" with tight stop-losses and take-profits (in/out within minutes)
+- **Execution optimization for speed:**
+  - Pre-compute order parameters for likely scenarios
+  - Use WebSocket for price monitoring (sub-second awareness)
+  - Market orders or aggressive limit orders (1-2¢ better than mid) for fast fills
+
+**Files**: `backend/app/sports/live_engine.py` (NEW), `backend/app/sports/strategies/` (NEW directory — score_arb.py, momentum.py, garbage_time.py)
+
+**Estimated Effort**: 3 days
+
+---
+
+### PHASE S7: Sports Risk Management
+**Goal**: Risk controls specifically designed for sports market dynamics.
+
+**Sports-Specific Risks Not Handled by Generic Risk Manager:**
+
+1. **Game-Level Correlation**: Spread + Total + Moneyline for the same game are highly correlated. Betting YES on "Lakers -6.5" and YES on "Over 220" are not independent bets. Must limit total exposure per game event, not just per ticker.
+
+2. **Multi-Game Correlation**: NBA games on the same night may share systematic risk (rest patterns, schedule effects). NFL Sunday slate has correlation through weather, primetime effects.
+
+3. **Live Trading Speed Risk**: In-game positions can go wrong fast. A single play can move the line 5-10¢. Need tighter stop-losses for live positions than pre-game positions.
+
+4. **Settlement Risk**: Sports markets settle quickly after game ends. No time to exit if wrong. Must size for potential total loss.
+
+5. **Information Asymmetry Risk**: Insider info (injury reports, lineup changes) can cause sudden price movements before public announcement.
+
+**Changes:**
+- **Extend `AdvancedRiskManager`** with sports-specific rules:
+  - `max_exposure_per_game` — cap total $ at risk per game event (sum across spread + total + ML markets)
+  - `max_live_positions` — limit simultaneous in-game positions (higher risk)
+  - `max_sport_exposure` — cap exposure per sport (don't go all-in on NBA)
+  - `correlation_adjustment` — reduce effective Kelly for correlated markets within same game
+  - `live_stop_loss_tighter` — 10% stop-loss for live positions (vs 20% for pre-game)
+  - `max_position_duration_live` — auto-close live positions older than 15 minutes
+- **Game-event grouping**: Use `event_ticker` to group all markets for the same game; aggregate risk at event level
+- **Daily sport budget**: Allocate % of portfolio to each sport based on historical edge
+
+**Files**: `backend/app/sports/risk.py` (NEW), `backend/app/engine/advanced_risk.py` (MODIFY)
+
+**Estimated Effort**: 1.5 days
+
+---
+
+### PHASE S8: Historical Data Collection & Backtesting
+**Goal**: Build a sports-specific backtesting framework to validate strategies before live deployment.
+
+**The Problem**: We can't know if our sports model works until we have historical data to backtest on. We need to collect data NOW even before the model is live.
+
+**Changes:**
+- **New `sports/data_collector.py`**: Background task that records every sports market scan
+  - For each sports market: timestamp, Kalshi prices (bid/ask/mid/volume), Vegas odds (if available), game state (if live), features vector, eventual settlement outcome
+  - Store in SQLite table `sports_market_snapshots` — one row per market per scan
+  - Also records The Odds API historical odds snapshots for games we're tracking
+- **New `sports/backtester.py`**: Walk-forward backtesting engine
+  - Replays historical market snapshots chronologically
+  - Simulates feature computation → prediction → trade decision → outcome
+  - Computes: Brier score (calibration), hit rate, profit/loss, Sharpe ratio, max drawdown
+  - Separate evaluation for pre-game vs in-game strategies
+  - Evaluates the "naive Vegas discrepancy" baseline vs ML model
+- **Training data schema:**
+  ```
+  sports_market_snapshots:
+    - snapshot_id (auto)
+    - ticker, event_ticker, series_ticker
+    - sport, market_type (spread/total/moneyline)
+    - timestamp
+    - kalshi_bid, kalshi_ask, kalshi_mid, kalshi_volume
+    - vegas_implied_prob, vegas_spread, vegas_total
+    - game_state (pre_game, live, post_game)
+    - game_period, score_home, score_away
+    - features_json (full feature vector)
+    - settlement_result (NULL until settled, then 0 or 1)
+  ```
+- **Minimum data requirement**: ~500 settled sports market observations before trusting the ML model; rely on Vegas baseline until then
+
+**Files**: `backend/app/sports/data_collector.py` (NEW), `backend/app/sports/backtester.py` (NEW), `backend/app/production.py` (MODIFY — new SQLite table)
+
+**Estimated Effort**: 2 days
+
+---
+
+### PHASE S9: Sports Dashboard & Frontend
+**Goal**: Purpose-built sports trading dashboard with live game views.
+
+**Changes:**
+
+**A. Sports Landing Page (`/dashboard/sports`):**
+- Live scoreboard: all games in progress with real-time scores
+- Per-game cards showing: teams, score, period/clock, Kalshi spread/total/ML prices, Vegas consensus, our predicted edge
+- Color-coded edge indicators: green = opportunity, red = efficient, gray = no coverage
+- "Active Positions" section showing our live sports trades with unrealized P&L
+
+**B. Game Detail View (`/dashboard/sports/{event_ticker}`):**
+- Full game card: teams, score trajectory chart, period-by-period breakdown
+- Side-by-side comparison: Kalshi price vs Vegas implied probability over time (line chart)
+- All sub-markets for this game (spread, total, moneyline) with our signals
+- Trade history for this game
+- Live price feed from WebSocket
+
+**C. Sports Analytics Page (`/dashboard/sports/analytics`):**
+- Sports P&L by sport (NBA, NFL, MLB, etc.)
+- Win rate by market type (spread, total, moneyline)
+- Edge source attribution: "X% of profit from Vegas discrepancy, Y% from live trading"
+- Model performance metrics: Brier score, calibration curve, ROC/AUC by sport
+- Feature importance chart from XGBoost
+
+**D. "Coming Soon" Treatment for Non-Sports:**
+- Markets page category tabs: Sports (active, highlighted) | Economics ⏳ | Politics ⏳ | Weather ⏳ | etc.
+- "Coming Soon" badge with brief explanation on non-sports tabs
+- Non-sports markets still viewable (from Kalshi data) but Frankenstein doesn't trade them
+- Clear messaging: "Our AI currently specializes in sports markets. Other categories coming soon."
+
+**Files**: `frontend/src/app/dashboard/sports/` (NEW directory), `frontend/src/app/dashboard/sports/page.tsx` (NEW), `frontend/src/app/dashboard/sports/[event]/page.tsx` (NEW), `frontend/src/app/dashboard/sports/analytics/page.tsx` (NEW), `frontend/src/app/dashboard/markets/page.tsx` (MODIFY — coming soon badges), `frontend/src/lib/api.ts` (MODIFY — sports API calls), `backend/app/routes/sports.py` (NEW — sports-specific endpoints)
+
+**Estimated Effort**: 3 days
+
+---
+
+### PHASE S10: Production Hardening & Continuous Improvement
+**Goal**: Make the sports trading system reliable, self-improving, and monitored.
+
+**Changes:**
+
+**A. Sports-Specific Health Monitoring:**
+- Track odds API uptime/staleness (alert if Vegas data is >10 min stale)
+- Track score feed latency (alert if ESPN data lagging >60s during live games)
+- Monitor Kalshi WS connection specifically for sports tickers
+- Game schedule checker: alert if expected games aren't found on Kalshi
+- Model performance drift detection: alert if recent Brier score degrades vs baseline
+
+**B. Automated Retraining Pipeline:**
+- Nightly job: collect all settled sports markets from the day
+- Retrain XGBoost model with expanded training set (append new data, walk-forward)
+- Auto-evaluate: if new model is worse than current → don't deploy
+- Track model version and performance over time in SQLite
+- A/B test: 80% capital on current model, 20% on new model candidate
+
+**C. Edge Monitoring & Alerting:**
+- If sports P&L goes negative for 3 consecutive days → pause trading, alert
+- If win rate drops below 50% for 7 days → reduce position sizes by 50%
+- If Vegas data source becomes unavailable → fall back to Kalshi-only features (reduced confidence)
+- If Kalshi changes sports ticker format → alert for manual review
+
+**D. Performance Benchmarks & Targets:**
+
+| Metric | Baseline (naive Vegas) | Phase S5 Target | Phase S10 Target |
+|--------|----------------------|-----------------|-----------------|
+| Sports Brier Score | ~0.24 | < 0.21 | < 0.18 |
+| Sports Win Rate | ~52% (Vegas edge) | > 55% | > 58% |
+| Avg Edge per Trade | ~2¢ | > 3¢ | > 5¢ |
+| Live Trading Win Rate | N/A | > 53% | > 57% |
+| Daily Sports P&L | $0 | > $5/day | > $20/day |
+| Model vs Vegas Baseline | 0% | > +5% | > +15% |
+| Sharpe Ratio (sports) | N/A | > 0.5 | > 1.5 |
+| Max Drawdown | N/A | < 15% | < 8% |
+
+**E. Graceful Expansion Path:**
+- Once sports model proves profitable → clone architecture for economics (FRED data = Vegas equivalent)
+- Then politics (polling data = Vegas equivalent)
+- Each category gets its own model, features, and external data pipeline
+- Shared infrastructure: risk management, execution engine, dashboard framework
+
+**Files**: `backend/app/sports/monitoring.py` (NEW), `backend/app/sports/retraining.py` (NEW), `backend/app/frankenstein/brain.py` (MODIFY — performance tracking), `backend/app/routes/sports.py` (MODIFY — analytics endpoints)
+
+**Estimated Effort**: 2 days
+
+---
+
+## Implementation Priority & Dependency Chain
+
+```
+S1 (Detection/Filtering) → S2 (Vegas Ingestion) → S3 (Features)
+                         ↘                         ↗
+                          S4 (Game Tracker) ────────
+                                                    ↘
+S3 + S4 → S5 (Sports ML Model) → S6 (Live Engine)
+                                ↘
+                                 S7 (Sports Risk)
+                                ↗
+S5 → S8 (Backtesting/Data Collection)
+
+S1-S7 → S9 (Frontend Dashboard)
+
+S1-S9 → S10 (Production Hardening)
+```
+
+**Critical Path**: S1 → S2 → S3 → S5 → S6 (this is the "revenue path")
+**Can be parallelized**: S4 alongside S2-S3; S7 alongside S5-S6; S8 starts with S1
+**Frontend (S9)**: Can start after S1 and incrementally build as backend phases complete
+
+---
+
+## Total Estimated Effort
+
+| Phase | Description | Days |
+|-------|-------------|------|
+| S1 | Sports Market Detection & Filtering | 1 |
+| S2 | Vegas Odds Ingestion Pipeline | 2 |
+| S3 | Sports-Specific Feature Engineering | 2 |
+| S4 | Live Game State Tracker | 2 |
+| S5 | Sports-Specific ML Model | 3 |
+| S6 | In-Game Trading Engine | 3 |
+| S7 | Sports Risk Management | 1.5 |
+| S8 | Historical Data Collection & Backtesting | 2 |
+| S9 | Sports Dashboard & Frontend | 3 |
+| S10 | Production Hardening & Continuous Improvement | 2 |
+| **Total** | | **~21.5 days** |
+
+---
+
+## The First Dollar Strategy (Phases S1+S2+S3 alone)
+
+Even without the full ML model (S5), phases S1-S3 give us a **"naive Vegas discrepancy" strategy** that may be immediately profitable:
+
+1. **S1**: Filter to sports markets only
+2. **S2**: Ingest Vegas consensus odds
+3. **S3**: Compute `kalshi_vs_vegas_diff`
+4. **Simple rule**: If Kalshi midpoint diverges from Vegas implied prob by > 5% → trade toward Vegas consensus
+5. **Why this works**: Vegas lines are set by the sharpest bettors in the world with billions of dollars behind them. If Kalshi disagrees significantly, it's almost always Kalshi that's wrong (smaller liquidity, retail-heavy).
+
+This "dumb strategy" should be our **baseline**. Every subsequent phase (ML model, live trading, momentum) must prove it adds value OVER this baseline.
+
+---
+
+*Sports plan complete. 10 phases. No building yet. When we start: Phase S1 first, then S2, then prove the Vegas baseline works before going deeper.*
