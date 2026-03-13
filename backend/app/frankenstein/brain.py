@@ -367,9 +367,19 @@ class Frankenstein:
                         continue
 
             # Apply adaptive thresholds
-            if prediction.confidence < params.min_confidence:
+            # 🏀 Sports markets get slightly relaxed thresholds when
+            # no Vegas data is available (base model is still useful)
+            effective_min_conf = params.min_confidence
+            effective_min_edge = params.min_edge
+            if self._sports_only and sports_pred is None:
+                # Without Vegas, base model produces smaller edges.
+                # Lower threshold so we can at least paper trade and learn.
+                effective_min_conf = min(params.min_confidence, 0.50)
+                effective_min_edge = min(params.min_edge, 0.015)
+
+            if prediction.confidence < effective_min_conf:
                 continue
-            if abs(prediction.edge) < params.min_edge:
+            if abs(prediction.edge) < effective_min_edge:
                 continue
 
             signals_generated += 1

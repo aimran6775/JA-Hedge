@@ -50,7 +50,8 @@ SPORT_REGISTRY: dict[str, SportConfig] = {
     "nba": SportConfig(
         sport_id="nba",
         sport_name="NBA Basketball",
-        series_prefixes=["kxnbagame", "kxnba"],
+        series_prefixes=["kxnbagame", "kxnbaplayer", "kxnbafirstbasket",
+                        "kxnbapoints", "kxnbarebounds", "kxnbaassists", "kxnba"],
         odds_api_keys=["basketball_nba"],
         periods=4, has_clock=True, has_overtime=True,
         avg_game_duration_min=150,
@@ -60,7 +61,8 @@ SPORT_REGISTRY: dict[str, SportConfig] = {
     "ncaab": SportConfig(
         sport_id="ncaab",
         sport_name="NCAA Basketball",
-        series_prefixes=["kxncaambgame", "kxncaabgame", "kxncaab"],
+        series_prefixes=["kxncaambgame", "kxncaamb1h", "kxncaamb",
+                        "kxncaabgame", "kxncaab", "kxmarchm"],
         odds_api_keys=["basketball_ncaab"],
         periods=2, has_clock=True, has_overtime=True,
         avg_game_duration_min=130,
@@ -70,7 +72,8 @@ SPORT_REGISTRY: dict[str, SportConfig] = {
     "nfl": SportConfig(
         sport_id="nfl",
         sport_name="NFL Football",
-        series_prefixes=["kxnflgame", "kxnfl"],
+        series_prefixes=["kxnflgame", "kxnflplayer", "kxnfltd",
+                        "kxnflpassing", "kxnflrushing", "kxnfl"],
         odds_api_keys=["americanfootball_nfl"],
         periods=4, has_clock=True, has_overtime=True,
         avg_game_duration_min=195,
@@ -80,7 +83,8 @@ SPORT_REGISTRY: dict[str, SportConfig] = {
     "mlb": SportConfig(
         sport_id="mlb",
         sport_name="MLB Baseball",
-        series_prefixes=["kxmlbgame", "kxmlb"],
+        series_prefixes=["kxmlbgame", "kxmlbplayer", "kxmlbhr",
+                        "kxmlbstrikeout", "kxmlb"],
         odds_api_keys=["baseball_mlb"],
         periods=9, has_clock=False, has_overtime=True,
         avg_game_duration_min=180,
@@ -90,7 +94,9 @@ SPORT_REGISTRY: dict[str, SportConfig] = {
     "nhl": SportConfig(
         sport_id="nhl",
         sport_name="NHL Hockey",
-        series_prefixes=["kxnhlgame", "kxnhl"],
+        series_prefixes=["kxnhlgame", "kxnhlfirstgoal", "kxnhlplayer",
+                        "kxnhlpoints", "kxnhlgoal", "kxnhl",
+                        "kxshlgame", "kxshl"],  # SHL = Swedish Hockey League
         odds_api_keys=["icehockey_nhl"],
         periods=3, has_clock=True, has_overtime=True,
         avg_game_duration_min=150,
@@ -120,7 +126,8 @@ SPORT_REGISTRY: dict[str, SportConfig] = {
     "soccer": SportConfig(
         sport_id="soccer",
         sport_name="Soccer (International)",
-        series_prefixes=["kxconcacafccupgame", "kxworldcupgame", "kxuefagame", "kxsoccer"],
+        series_prefixes=["kxconcacafccupgame", "kxworldcupgame", "kxuefagame",
+                        "kxeplgame", "kxlaligagame", "kxsoccer"],
         odds_api_keys=["soccer_epl", "soccer_uefa_champs_league"],
         periods=2, has_clock=True, has_overtime=False,
         avg_game_duration_min=105,
@@ -211,6 +218,8 @@ class SportsDetector:
                 "knicks", "heat", "bulls", "cavaliers", "mavericks", "nuggets", "suns",
                 "clippers", "rockets", "hawks", "pistons", "pacers", "thunder", "grizzlies",
                 "pelicans", "hornets", "wizards", "blazers", "timberwolves", "kings", "spurs", "magic", "raptors", "jazz"],
+        "ncaab": ["ncaab", "ncaa", "march madness", "final four", "sweet 16", "elite eight",
+                  "first half winner", "1st half", "first half", "college basketball"],
         "nfl": ["nfl", "football", "chiefs", "eagles", "49ers", "cowboys", "ravens", "bills",
                 "bengals", "lions", "dolphins", "jets", "patriots", "steelers", "packers",
                 "chargers", "rams", "seahawks", "bears", "vikings", "saints", "falcons",
@@ -221,7 +230,8 @@ class SportsDetector:
                 "rays", "guardians", "diamondbacks", "brewers", "blue jays", "cardinals",
                 "white sox", "reds", "pirates", "tigers", "royals", "rockies", "nationals",
                 "marlins", "athletics", "angels", "home run", "strikeout", "inning"],
-        "nhl": ["nhl", "hockey", "maple leafs", "bruins", "panthers", "rangers", "oilers",
+        "nhl": ["nhl", "hockey", "shl", "goalscorer", "first goal", "puck",
+                "maple leafs", "bruins", "panthers", "rangers", "oilers",
                 "avalanche", "hurricanes", "stars", "devils", "jets", "lightning",
                 "wild", "penguins", "islanders", "canucks", "senators", "flames",
                 "flyers", "kraken", "predators", "kings", "blue jackets", "capitals",
@@ -230,8 +240,8 @@ class SportsDetector:
                    "medvedev", "zverev", "rublev", "tsitsipas", "ruud", "fritz", "tiafoe",
                    "swiatek", "sabalenka", "gauff", "grand slam", "wimbledon", "us open",
                    "french open", "australian open", "set", "match point"],
-        "soccer": ["soccer", "mls", "premier league", "la liga", "bundesliga", "serie a",
-                   "champions league", "concacaf", "fifa", "world cup", "goal", "penalty kick",
+        "soccer": ["soccer", "premier league", "la liga", "bundesliga", "serie a",
+                   "champions league", "concacaf", "fifa", "world cup", "penalty kick",
                    "red card", "yellow card"],
     }
     
@@ -262,11 +272,23 @@ class SportsDetector:
             series_ticker=market.series_ticker or "",
         )
         
-        # Method 1: series_ticker prefix matching (most reliable)
-        series = (market.series_ticker or "").lower()
+        # Method 1: prefix matching against series_ticker, ticker, AND event_ticker
+        # (series_ticker is often empty on Kalshi, so ticker/event is critical)
+        candidates = [
+            (market.series_ticker or "").lower(),
+            (market.ticker or "").lower(),
+            (market.event_ticker or "").lower(),
+        ]
+        # Build a sorted prefix list (longest first → most specific wins)
+        _prefix_map: list[tuple[str, str, SportConfig]] = []
         for sport_id, config in SPORT_REGISTRY.items():
             for prefix in config.series_prefixes:
-                if series.startswith(prefix.lower()):
+                _prefix_map.append((prefix.lower(), sport_id, config))
+        _prefix_map.sort(key=lambda x: len(x[0]), reverse=True)
+        
+        for prefix, sport_id, config in _prefix_map:
+            for candidate in candidates:
+                if candidate.startswith(prefix):
                     info.is_sports = True
                     info.sport_id = sport_id
                     info.sport_config = config
@@ -342,10 +364,27 @@ class SportsDetector:
         return groups
     
     def _detect_market_type(self, market: Market) -> str:
-        """Detect if this is a spread, total, or moneyline market."""
+        """Detect if this is a spread, total, moneyline, or prop market."""
         title = (market.title or "").lower()
         subtitle = (market.subtitle or "").lower()
         combined = f"{title} {subtitle}"
+        ticker = (market.ticker or "").lower()
+        
+        # Prop market detection (player props, first goalscorer, etc.)
+        prop_indicators = [
+            "firstgoal", "firstbasket", "player", "points", "rebounds",
+            "assists", "strikeout", "passing", "rushing", "td",
+        ]
+        if any(ind in ticker for ind in prop_indicators):
+            return MarketType.PROP
+        prop_title_patterns = [
+            r"(first\s+goal|goalscorer|first\s+basket)",
+            r"(points|rebounds|assists|strikeouts|touchdowns|yards)\s*[\>\<\:]",
+            r":\s*(over|under)\s+\d+",
+        ]
+        for pat in prop_title_patterns:
+            if re.search(pat, combined, re.IGNORECASE):
+                return MarketType.PROP
         
         for pattern in self._SPREAD_PATTERNS:
             if pattern.search(combined):
@@ -358,6 +397,10 @@ class SportsDetector:
         for pattern in self._MONEYLINE_PATTERNS:
             if pattern.search(combined):
                 return MarketType.MONEYLINE
+        
+        # "Winner?" in title → moneyline
+        if re.search(r"winner\??", combined, re.IGNORECASE):
+            return MarketType.MONEYLINE
         
         # If it contains "vs" or "at" with team names, likely moneyline
         if re.search(r"\bvs\.?\b|\bat\b", combined, re.IGNORECASE):
