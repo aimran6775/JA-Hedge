@@ -77,6 +77,9 @@ export default function FrankensteinPage() {
   // Trade detail popup
   const [selectedTrade, setSelectedTrade] = useState<FrankensteinTrade | null>(null);
 
+  // Market title cache: ticker → human-readable title
+  const [marketTitles, setMarketTitles] = useState<Record<string, string>>({});
+
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -108,6 +111,29 @@ export default function FrankensteinPage() {
     const iv = setInterval(refresh, 12000);
     return () => clearInterval(iv);
   }, [refresh]);
+
+  // Resolve market titles for trade tickers
+  useEffect(() => {
+    if (trades.length === 0) return;
+    const unknown = [...new Set(trades.map(t => t.ticker))].filter(tk => !marketTitles[tk]);
+    if (unknown.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const resolved: Record<string, string> = {};
+      await Promise.all(
+        unknown.map(async (tk) => {
+          try {
+            const m = await api.markets.get(tk);
+            if (m?.title) resolved[tk] = m.title;
+          } catch { /* ignore — title stays as ticker */ }
+        })
+      );
+      if (!cancelled && Object.keys(resolved).length > 0) {
+        setMarketTitles(prev => ({ ...prev, ...resolved }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [trades, marketTitles]);
 
   // Chat scroll
   useEffect(() => {
@@ -429,7 +455,7 @@ export default function FrankensteinPage() {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-white/[0.06] text-[var(--text-muted)]">
-                      <th className="text-left pb-2 font-medium">Ticker</th>
+                      <th className="text-left pb-2 font-medium">Market</th>
                       <th className="text-left pb-2 font-medium">Side</th>
                       <th className="text-right pb-2 font-medium">Qty</th>
                       <th className="text-right pb-2 font-medium">Price</th>
@@ -445,7 +471,9 @@ export default function FrankensteinPage() {
                       const isBootstrap = t.model_version?.startsWith("bootstrap");
                       return (
                         <tr key={i} onClick={() => setSelectedTrade(t)} className={`hover:bg-white/[0.03] cursor-pointer transition-colors ${isBootstrap ? "opacity-40" : ""}`}>
-                          <td className="py-2.5 font-mono text-[var(--text-primary)] max-w-[200px] truncate">{t.ticker}</td>
+                          <td className="py-2.5 max-w-[240px]">
+                            <div className="text-[var(--text-primary)] truncate text-xs">{marketTitles[t.ticker] || prettifyTicker(t.ticker)}</div>
+                          </td>
                           <td className={`py-2.5 font-semibold ${t.side === "yes" ? "text-accent" : "text-loss"}`}>{t.side?.toUpperCase()}</td>
                           <td className="py-2.5 text-right tabular-nums text-[var(--text-secondary)]">{t.count}</td>
                           <td className="py-2.5 text-right tabular-nums text-[var(--text-secondary)]">{t.price_cents}¢</td>
@@ -472,7 +500,7 @@ export default function FrankensteinPage() {
           </Card>
 
           {/* Trade Detail Popup */}
-          {selectedTrade && <TradeDetailPopup trade={selectedTrade} onClose={() => setSelectedTrade(null)} />}
+          {selectedTrade && <TradeDetailPopup trade={selectedTrade} title={marketTitles[selectedTrade.ticker]} onClose={() => setSelectedTrade(null)} />}
 
           {/* Trade Statistics */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -746,9 +774,54 @@ function StageIcon({ stage }: { stage: string }) {
   return <IconCircle size={6} className="text-[var(--text-muted)] flex-shrink-0" />;
 }
 
+/* ── Ticker Prettifier (fallback when title not loaded) ────────────────── */
+
+function prettifyTicker(ticker: string): string {
+  // Kalshi tickers: PREFIX-DETAILS  e.g. "KXMVESPORTS...-S202635D...-23DCE..."
+  // Try to extract meaningful text from the first segment
+  let base = ticker.split("-")[0] ?? ticker;
+  // Remove common prefixes like KX, INX, etc.
+  base = base.replace(/^(KX|INX|CPI|GDP|FED|NFL|NBA|MLB|NHL|NCAA)/, "$1 ");
+  // Insert spaces before capitals in camelCase / PascalCase runs
+  base = base.replace(/([a-z])([A-Z])/g, "$1 $2");
+  // Insert spaces between known word boundaries in ALL-CAPS
+  base = base
+    .replace(/SPORTS/g, " Sports")
+    .replace(/MULTI/g, " Multi")
+    .replace(/GAME/g, " Game")
+    .replace(/EXTENDED/g, " Extended")
+    .replace(/OVER/g, " Over")
+    .replace(/UNDER/g, " Under")
+    .replace(/TOTAL/g, " Total")
+    .replace(/SPREAD/g, " Spread")
+    .replace(/WINNER/g, " Winner")
+    .replace(/POINTS/g, " Points")
+    .replace(/SCORE/g, " Score")
+    .replace(/MATCH/g, " Match")
+    .replace(/PLAYER/g, " Player")
+    .replace(/TEAM/g, " Team")
+    .replace(/SERIES/g, " Series")
+    .replace(/ROUND/g, " Round")
+    .replace(/MVP/g, " MVP")
+    .replace(/CHAMP/g, " Champ")
+    .replace(/WORLD/g, " World")
+    .replace(/ELECTION/g, " Election")
+    .replace(/PRESIDENT/g, " President")
+    .replace(/PRICE/g, " Price")
+    .replace(/BITCOIN/g, " Bitcoin")
+    .replace(/ABOVE/g, " Above")
+    .replace(/BELOW/g, " Below")
+    .replace(/WEATHER/g, " Weather")
+    .replace(/TEMP/g, " Temp")
+    .replace(/HIGH/g, " High")
+    .replace(/LOW/g, " Low");
+  // Clean up multiple spaces and trim
+  return base.replace(/\s+/g, " ").trim() || ticker;
+}
+
 /* ── Trade Detail Popup ───────────────────────────────────────────────────── */
 
-function TradeDetailPopup({ trade, onClose }: { trade: FrankensteinTrade; onClose: () => void }) {
+function TradeDetailPopup({ trade, title, onClose }: { trade: FrankensteinTrade; title?: string; onClose: () => void }) {
   const isBootstrap = trade.model_version?.startsWith("bootstrap");
   const conf = ((trade.confidence ?? 0) * 100);
   const edge = ((trade.edge ?? 0) * 100);
@@ -756,6 +829,7 @@ function TradeDetailPopup({ trade, onClose }: { trade: FrankensteinTrade; onClos
   const pnl = (trade.pnl_cents ?? 0) / 100;
   const cost = (trade.price_cents * trade.count) / 100;
   const maxProfit = ((100 - trade.price_cents) * trade.count) / 100;
+  const displayName = title || prettifyTicker(trade.ticker);
 
   // Close on Escape
   useEffect(() => {
@@ -788,10 +862,11 @@ function TradeDetailPopup({ trade, onClose }: { trade: FrankensteinTrade; onClos
           <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all text-lg">✕</button>
         </div>
 
-        {/* Ticker */}
+        {/* Market Name */}
         <div className="px-6 pt-4 pb-2">
           <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">Market</div>
-          <div className="text-base font-mono font-bold text-[var(--text-primary)] break-all leading-tight">{trade.ticker}</div>
+          <div className="text-base font-semibold text-[var(--text-primary)] leading-snug">{displayName}</div>
+          <div className="text-[10px] font-mono text-[var(--text-muted)] mt-1 break-all">{trade.ticker}</div>
         </div>
 
         {/* Key Metrics Grid */}
