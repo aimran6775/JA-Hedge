@@ -254,9 +254,12 @@ export interface FrankensteinStatus {
 
   learner: {
     current_version: string;
+    generation: number;
     champion_auc: number;
     champion_samples: number;
-    generations_trained: number;
+    total_retrains: number;
+    total_promotions: number;
+    needs_retrain: boolean;
     top_features: Record<string, number>;
   };
 

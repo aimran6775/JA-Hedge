@@ -473,7 +473,9 @@ export default function FrankensteinPage() {
               <StateRow label="Version" value={learn?.current_version ?? "—"} mono />
               <StateRow label="Champion AUC" value={learn ? learn.champion_auc.toFixed(4) : "—"} />
               <StateRow label="Training Samples" value={`${learn?.champion_samples ?? 0}`} />
-              <StateRow label="Generations" value={`${learn?.generations_trained ?? 0}`} />
+              <StateRow label="Generations" value={`${learn?.generation ?? 0}`} />
+              <StateRow label="Retrains" value={`${learn?.total_retrains ?? 0}`} />
+              <StateRow label="Promotions" value={`${learn?.total_promotions ?? 0}`} />
               <StateRow label="Regime" value={s?.strategy?.regime ?? "unknown"} />
               <StateRow label="Adaptations" value={`${s?.strategy?.total_adaptations ?? 0}`} />
             </div>
