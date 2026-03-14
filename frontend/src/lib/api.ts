@@ -189,6 +189,140 @@ export interface AISignal {
   timestamp: string | null;
 }
 
+// ── Frankenstein Types ───────────────────────────────────────────────────
+
+export interface FrankensteinStatus {
+  name: string;
+  version: string;
+  generation: number;
+  is_alive: boolean;
+  is_trading: boolean;
+  is_paused: boolean;
+  pause_reason: string | null;
+  uptime_seconds: number;
+  uptime_human: string;
+
+  total_scans: number;
+  total_signals: number;
+  total_trades_executed: number;
+  total_trades_rejected: number;
+  last_scan_ms: string;
+  last_scan_debug: {
+    candidates?: number;
+    trade_candidates?: number;
+    exec_successes?: number;
+    exec_rejections?: number;
+    portfolio_rejections?: number;
+    top_candidates?: Array<{
+      ticker: string;
+      stage: string;
+      error?: string;
+      order_id?: string;
+    }>;
+  };
+
+  memory: {
+    total_recorded: number;
+    total_resolved: number;
+    pending: number;
+    win_rate: number;
+    total_pnl: number;
+    avg_pnl_per_trade: number;
+    outcomes: Record<string, number>;
+  };
+
+  performance: {
+    snapshot: {
+      total_trades: number;
+      real_trades: number;
+      win_rate: number;
+      prediction_accuracy: number;
+      total_pnl: number;
+      daily_pnl: number;
+      sharpe_ratio: number;
+      sortino_ratio: number;
+      max_drawdown: number;
+      current_drawdown: number;
+      profit_factor: number;
+      avg_win: number;
+      avg_loss: number;
+      regime: string;
+    };
+    should_pause: boolean;
+    pause_reason: string;
+  };
+
+  learner: {
+    current_version: string;
+    champion_auc: number;
+    champion_samples: number;
+    generations_trained: number;
+    top_features: Record<string, number>;
+  };
+
+  strategy: {
+    current_params: {
+      min_confidence: number;
+      min_edge: number;
+      kelly_fraction: number;
+      max_position_size: number;
+      max_simultaneous_positions: number;
+      scan_interval: number;
+      max_daily_loss: number;
+      stop_loss_pct: number;
+      take_profit_pct: number;
+      max_spread_cents: number;
+      min_volume: number;
+      min_hours_to_expiry: number;
+      aggression: number;
+    };
+    total_adaptations: number;
+    regime: string;
+  };
+
+  scheduler: {
+    tasks: number;
+    next_run: string | null;
+  };
+
+  health: Record<string, unknown>;
+  portfolio_risk: Record<string, unknown>;
+  exchange_session: string;
+  liquidity_factor: number;
+  sports_only_mode: boolean;
+  sports_detector: Record<string, unknown> | null;
+  sports_risk: Record<string, unknown> | null;
+  sports_predictor: Record<string, unknown> | null;
+}
+
+export interface FrankensteinTrade {
+  trade_id: string;
+  ticker: string;
+  side: string;
+  action: string;
+  count: number;
+  price_cents: number;
+  confidence: number;
+  edge: number;
+  predicted_prob: number;
+  model_version: string;
+  outcome: string;
+  pnl_cents: number;
+  timestamp: string;
+}
+
+export interface FrankensteinHealth {
+  alive: boolean;
+  trading: boolean;
+  paused: boolean;
+  pause_reason: string | null;
+  generation: number;
+  model_version: string;
+  total_trades: number;
+  should_pause: boolean;
+  should_pause_reason: string;
+}
+
 // Risk types
 export interface RiskLimits {
   max_positions: number;
@@ -456,8 +590,8 @@ export const api = {
 
   // Frankenstein AI Brain
   frankenstein: {
-    status: () => apiFetch<Record<string, unknown>>("/frankenstein/status"),
-    health: () => apiFetch<Record<string, unknown>>("/frankenstein/health"),
+    status: () => apiFetch<FrankensteinStatus>("/frankenstein/status"),
+    health: () => apiFetch<FrankensteinHealth>("/frankenstein/health"),
     awaken: () =>
       apiFetch<{ status: string; message: string }>("/frankenstein/awaken", {
         method: "POST",
@@ -466,6 +600,33 @@ export const api = {
       apiFetch<{ status: string; message: string }>("/frankenstein/sleep", {
         method: "POST",
       }),
+    pause: (reason?: string) =>
+      apiFetch<{ status: string; reason: string }>(`/frankenstein/pause${reason ? `?reason=${encodeURIComponent(reason)}` : ""}`, {
+        method: "POST",
+      }),
+    resume: () =>
+      apiFetch<{ status: string }>("/frankenstein/resume", {
+        method: "POST",
+      }),
+    retrain: () =>
+      apiFetch<Record<string, unknown>>("/frankenstein/retrain", {
+        method: "POST",
+      }),
+    bootstrap: () =>
+      apiFetch<Record<string, unknown>>("/frankenstein/bootstrap", {
+        method: "POST",
+      }),
+    performance: () => apiFetch<Record<string, unknown>>("/frankenstein/performance"),
+    performanceSnapshot: () => apiFetch<Record<string, unknown>>("/frankenstein/performance/snapshot"),
+    memory: () => apiFetch<Record<string, unknown>>("/frankenstein/memory"),
+    recentTrades: (n?: number) =>
+      apiFetch<FrankensteinTrade[]>(
+        `/frankenstein/memory/recent${n ? `?n=${n}` : ""}`,
+      ),
+    pendingTrades: () => apiFetch<FrankensteinTrade[]>("/frankenstein/memory/pending"),
+    features: () => apiFetch<{ current: Record<string, number>; trends: Record<string, unknown> }>("/frankenstein/features"),
+    learner: () => apiFetch<Record<string, unknown>>("/frankenstein/learner"),
+    strategy: () => apiFetch<Record<string, unknown>>("/frankenstein/strategy"),
     chatWelcome: () => apiFetch<Record<string, unknown>>("/frankenstein/chat/welcome"),
     chat: (message: string) =>
       apiFetch<Record<string, unknown>>("/frankenstein/chat", {

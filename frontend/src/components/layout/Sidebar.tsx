@@ -9,8 +9,6 @@ import {
   IconMarkets,
   IconTrading,
   IconPortfolio,
-  IconAgent,
-  IconAI,
   IconShield,
   IconSettings,
   IconSports,
@@ -19,14 +17,12 @@ import {
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Overview", icon: IconDashboard },
-  { href: "/dashboard/frankenstein", label: "Frankenstein", icon: IconBrain },
+  { href: "/dashboard/frankenstein", label: "Frankenstein AI", icon: IconBrain },
   { href: "/dashboard/strategies", label: "Strategies", icon: IconStrategy },
   { href: "/dashboard/sports", label: "Sports", icon: IconSports },
   { href: "/dashboard/markets", label: "Markets", icon: IconMarkets },
   { href: "/dashboard/trading", label: "Trading", icon: IconTrading },
   { href: "/dashboard/portfolio", label: "Portfolio", icon: IconPortfolio },
-  { href: "/dashboard/agent", label: "AI Agent", icon: IconAgent },
-  { href: "/dashboard/ai", label: "AI Engine", icon: IconAI },
   { href: "/dashboard/risk", label: "Risk", icon: IconShield },
   { href: "/dashboard/settings", label: "Settings", icon: IconSettings },
 ];
