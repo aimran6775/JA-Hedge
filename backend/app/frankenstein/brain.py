@@ -845,11 +845,22 @@ class Frankenstein:
         params = self.strategy.params
         candidates = []
 
+        # Get spread limit from execution risk manager
+        max_spread = 40  # default
+        if self._execution._risk_manager:
+            max_spread = self._execution._risk_manager.limits.max_spread_cents
+
         for m in markets:
             if m.status != MarketStatus.ACTIVE:
                 continue
             if m.yes_bid is None and m.yes_ask is None and m.last_price is None:
                 continue
+
+            # Pre-filter: skip markets with spread wider than risk limit
+            if m.spread is not None:
+                spread_cents = int(m.spread * 100) if isinstance(m.spread, float) else m.spread
+                if spread_cents > max_spread:
+                    continue
 
             # 🏀 Sports-only mode: skip non-sports markets
             if self._sports_only and self._sports_detector:

@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     risk_max_daily_loss: float = 50.0
     risk_max_position_size: int = 10
     risk_max_portfolio_exposure: float = 500.0
+    risk_max_spread_cents: int = 40
     kill_switch_enabled: bool = True
     # ── Paper Trading ─────────────────────────────────────────────
     paper_trading: bool = True  # Use simulated balance (fake money)

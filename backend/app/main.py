@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_position_size=settings.risk_max_position_size,
         max_daily_loss=Decimal(str(settings.risk_max_daily_loss)),
         max_portfolio_exposure=Decimal(str(settings.risk_max_portfolio_exposure)),
+        max_spread_cents=settings.risk_max_spread_cents,
     )
     risk_mgr = RiskManager(limits=risk_limits)
     state.risk_manager = risk_mgr

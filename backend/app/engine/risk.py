@@ -39,7 +39,7 @@ class RiskLimits:
     stop_loss_pct: Decimal | None = None
     take_profit_pct: Decimal | None = None
     min_spread_cents: int = 0
-    max_spread_cents: int = 20
+    max_spread_cents: int = 40
     min_volume: int = 0
     min_time_to_expiry_hours: int = 1
     kill_switch_active: bool = False
