@@ -200,7 +200,7 @@ class AdaptiveStrategy:
         """Get more aggressive when winning, conservative when losing."""
         events = []
 
-        if snap.total_trades < 10:
+        if snap.real_trades < 10:
             return events  # Not enough data
 
         if snap.win_rate > 0.65:
@@ -243,7 +243,7 @@ class AdaptiveStrategy:
         """Adjust based on model's prediction accuracy."""
         events = []
 
-        if snap.total_trades < 20:
+        if snap.real_trades < 20:
             return events
 
         if snap.prediction_accuracy < 0.45:
@@ -288,7 +288,7 @@ class AdaptiveStrategy:
         score = 0.5  # Neutral
 
         # Win rate factor
-        if snap.total_trades >= 10:
+        if snap.real_trades >= 10:
             score += (snap.win_rate - 0.5) * 0.3  # ±0.15
 
         # Drawdown factor
@@ -296,13 +296,13 @@ class AdaptiveStrategy:
             score -= min(abs(snap.current_drawdown) / 200.0, 0.3)
 
         # Model accuracy factor
-        if snap.total_trades >= 20:
+        if snap.real_trades >= 20:
             score += (snap.prediction_accuracy - 0.5) * 0.2  # ±0.10
 
         # Profit factor
         if snap.profit_factor > 2.0:
             score += 0.1
-        elif snap.profit_factor < 0.5 and snap.total_trades >= 10:
+        elif snap.profit_factor < 0.5 and snap.real_trades >= 10:
             score -= 0.15
 
         # Clamp

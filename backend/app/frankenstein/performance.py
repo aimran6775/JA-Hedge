@@ -109,10 +109,18 @@ class PerformanceTracker:
         """Compute a full performance snapshot from current memory."""
         now = time.time()
         trades = self.memory.get_recent_trades(n=100_000)
-        resolved = [t for t in trades if t.outcome not in (TradeOutcome.PENDING, TradeOutcome.CANCELLED)]
+        all_resolved = [t for t in trades if t.outcome not in (TradeOutcome.PENDING, TradeOutcome.CANCELLED)]
+
+        # Separate bootstrap/synthetic trades from real ones — bootstrap data
+        # is only useful for initial model training, not performance tracking
+        resolved = [t for t in all_resolved if not t.model_version.startswith("bootstrap")]
 
         if not resolved:
-            snap = PerformanceSnapshot(timestamp=now)
+            snap = PerformanceSnapshot(
+                timestamp=now,
+                total_trades=len(all_resolved),
+                real_trades=0,
+            )
             self._snapshots.append(snap)
             return snap
 
@@ -155,9 +163,8 @@ class PerformanceTracker:
         # Consecutive losses
         consecutive_losses, max_consecutive = self._compute_streaks(resolved)
 
-        # Prediction accuracy (exclude bootstrap/synthetic trades)
-        real_trades = [t for t in resolved if not t.model_version.startswith("bootstrap")]
-        with_outcomes = [t for t in real_trades if t.was_correct is not None]
+        # Prediction accuracy (bootstrap already excluded from resolved)
+        with_outcomes = [t for t in resolved if t.was_correct is not None]
         accuracy = (
             sum(1 for t in with_outcomes if t.was_correct) / len(with_outcomes)
             if with_outcomes else 0.0
@@ -205,8 +212,8 @@ class PerformanceTracker:
             avg_confidence=avg_conf,
             confidence_calibration=calibration,
             edge_capture=edge_capture,
-            total_trades=len(resolved),
-            real_trades=len(real_trades),
+            total_trades=len(all_resolved),
+            real_trades=len(resolved),
             trades_today=len(today_trades),
             trades_this_hour=len(hour_trades),
             unique_markets=unique_markets,
