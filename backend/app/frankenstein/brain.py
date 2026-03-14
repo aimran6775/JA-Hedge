@@ -98,6 +98,7 @@ class FrankensteinState:
     last_adaptation_time: float = 0.0
     generation: int = 0
     model_version: str = "untrained"
+    last_scan_debug: dict = field(default_factory=dict)
 
 
 class Frankenstein:
@@ -486,6 +487,19 @@ class Frankenstein:
             5,  # cap at 5 new trades per scan cycle
         )
 
+        # Debug: record scan state
+        scan_debug = {
+            "candidates": len(candidates),
+            "trade_candidates": len(trade_candidates),
+            "max_trades": max_trades_per_scan,
+            "open_positions": self._count_open_positions(),
+            "signals": signals_generated,
+            "portfolio_rejections": 0,
+            "exec_rejections": 0,
+            "exec_successes": 0,
+            "top_candidates": [],
+        }
+
         for candidate in trade_candidates[:max(max_trades_per_scan, 0)]:
             market = candidate["market"]
             prediction = candidate["prediction"]
@@ -504,6 +518,8 @@ class Frankenstein:
             if not passed:
                 trades_rejected += 1
                 self._state.total_trades_rejected += 1
+                scan_debug["portfolio_rejections"] += 1
+                scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "portfolio_rejected", "reason": reject_reason, "count": count, "price": price_cents})
                 log.warning("portfolio_risk_rejected", ticker=market.ticker, reason=reject_reason, count=count, price=price_cents)
                 continue
 
@@ -529,6 +545,8 @@ class Frankenstein:
             if result and result.success:
                 trades_executed += 1
                 self._state.total_trades_executed += 1
+                scan_debug["exec_successes"] += 1
+                scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "executed", "order_id": result.order_id})
 
                 # Phase 7: Register position with advanced risk manager
                 self._adv_risk.register_position(
@@ -591,8 +609,11 @@ class Frankenstein:
                 trades_rejected += 1
                 self._state.total_trades_rejected += 1
                 err = getattr(result, 'error', None) or getattr(result, 'risk_rejection_reason', None) or 'unknown'
+                scan_debug["exec_rejections"] += 1
+                scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "exec_rejected", "error": err, "count": count, "price": price_cents})
                 log.warning("execute_trade_rejected", ticker=market.ticker, error=err, count=count, price=price_cents)
 
+        self._state.last_scan_debug = scan_debug
         elapsed = (time.monotonic() - start) * 1000
         self._state.current_scan_time_ms = elapsed
         self._state.last_scan_time = time.time()
@@ -1236,6 +1257,7 @@ class Frankenstein:
             "total_trades_executed": self._state.total_trades_executed,
             "total_trades_rejected": self._state.total_trades_rejected,
             "last_scan_ms": f"{self._state.current_scan_time_ms:.1f}",
+            "last_scan_debug": self._state.last_scan_debug,
 
             # Subsystem status
             "memory": self.memory.stats(),
