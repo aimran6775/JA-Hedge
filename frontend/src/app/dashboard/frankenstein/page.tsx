@@ -185,38 +185,83 @@ export default function FrankensteinPage() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {actionMsg && <span className="text-xs text-accent mr-2">{actionMsg}</span>}
-          {s && !s.is_alive && (
-            <button onClick={() => doAction(() => api.frankenstein.awaken(), "Awoken")}
-              className="glass rounded-xl px-4 py-2 text-xs font-medium text-accent hover:bg-accent/10 transition-all flex items-center gap-2">
-              <IconPlay size={14} /> Awaken
-            </button>
-          )}
-          {s?.is_alive && !s.is_paused && (
-            <button onClick={() => doAction(() => api.frankenstein.pause(), "Paused")}
-              className="glass rounded-xl px-4 py-2 text-xs font-medium text-[var(--warning)] hover:bg-[var(--warning)]/10 transition-all flex items-center gap-2">
-              <IconPause size={14} /> Pause
-            </button>
-          )}
-          {s?.is_paused && (
-            <button onClick={() => doAction(() => api.frankenstein.resume(), "Resumed")}
-              className="glass rounded-xl px-4 py-2 text-xs font-medium text-accent hover:bg-accent/10 transition-all flex items-center gap-2">
-              <IconPlay size={14} /> Resume
-            </button>
-          )}
-          {s?.is_alive && (
-            <button onClick={() => doAction(() => api.frankenstein.sleep(), "Sleeping")}
-              className="glass rounded-xl px-4 py-2 text-xs font-medium text-loss hover:bg-loss/10 transition-all flex items-center gap-2">
-              <IconStop size={14} /> Sleep
-            </button>
-          )}
-          <button onClick={() => doAction(() => api.frankenstein.retrain(), "Retrained")}
-            className="glass rounded-xl px-4 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all flex items-center gap-2">
-            <IconRocket size={14} /> Retrain
-          </button>
           <button onClick={refresh} disabled={loading}
             className="glass rounded-xl px-3 py-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all">
             <IconRefresh size={14} className={loading ? "animate-spin" : ""} />
           </button>
+        </div>
+      </div>
+
+      {/* ── MASTER CONTROL PANEL ───────────────────────────────────────────── */}
+      <div className="glass rounded-2xl p-4 border border-white/[0.06]">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          {/* Big Start/Stop Toggle */}
+          <div className="flex items-center gap-4">
+            {s && !s.is_alive ? (
+              <button
+                onClick={() => doAction(() => api.frankenstein.awaken(), "Awoken — Trading 24/7")}
+                className="relative overflow-hidden rounded-2xl px-8 py-4 text-base font-bold text-white
+                  bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400
+                  shadow-lg shadow-green-500/25 hover:shadow-green-500/40
+                  transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98]
+                  flex items-center gap-3 min-w-[180px] justify-center"
+              >
+                <IconPlay size={22} />
+                <span>START</span>
+                <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 animate-shimmer" />
+              </button>
+            ) : s?.is_alive ? (
+              <button
+                onClick={() => doAction(() => api.frankenstein.sleep(), "Sleeping — Trading Stopped")}
+                className="relative overflow-hidden rounded-2xl px-8 py-4 text-base font-bold text-white
+                  bg-gradient-to-r from-red-600 to-rose-500 hover:from-red-500 hover:to-rose-400
+                  shadow-lg shadow-red-500/25 hover:shadow-red-500/40
+                  transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98]
+                  flex items-center gap-3 min-w-[180px] justify-center"
+              >
+                <IconStop size={22} />
+                <span>STOP</span>
+              </button>
+            ) : (
+              <div className="rounded-2xl px-8 py-4 text-base font-bold text-[var(--text-muted)] glass flex items-center gap-3">
+                <IconCircle size={22} />
+                <span>Loading...</span>
+              </div>
+            )}
+
+            {/* Status indicator */}
+            <div className="flex flex-col">
+              <span className={`text-sm font-bold ${s?.is_alive ? (s.is_paused ? "text-[var(--warning)]" : "text-accent") : "text-[var(--text-muted)]"}`}>
+                {s?.is_alive ? (s.is_paused ? "⏸ PAUSED" : "🟢 RUNNING 24/7") : "⏹ STOPPED"}
+              </span>
+              <span className="text-xs text-[var(--text-muted)]">
+                {s?.is_alive ? `${s.total_scans} scans · ${s.total_trades_executed} trades` : "Click START to begin trading"}
+              </span>
+            </div>
+          </div>
+
+          {/* Secondary Controls */}
+          <div className="flex items-center gap-2">
+            {s?.is_alive && !s.is_paused && (
+              <button onClick={() => doAction(() => api.frankenstein.pause(), "Paused")}
+                className="glass rounded-xl px-4 py-2.5 text-xs font-semibold text-[var(--warning)] hover:bg-[var(--warning)]/10
+                  border border-[var(--warning)]/20 transition-all flex items-center gap-2">
+                <IconPause size={14} /> Pause
+              </button>
+            )}
+            {s?.is_paused && (
+              <button onClick={() => doAction(() => api.frankenstein.resume(), "Resumed")}
+                className="glass rounded-xl px-4 py-2.5 text-xs font-semibold text-accent hover:bg-accent/10
+                  border border-accent/20 transition-all flex items-center gap-2">
+                <IconPlay size={14} /> Resume
+              </button>
+            )}
+            <button onClick={() => doAction(() => api.frankenstein.retrain(), "Retrained")}
+              className="glass rounded-xl px-4 py-2.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]
+                border border-white/[0.06] transition-all flex items-center gap-2">
+              <IconRocket size={14} /> Retrain Model
+            </button>
+          </div>
         </div>
       </div>
 

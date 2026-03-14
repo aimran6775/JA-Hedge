@@ -1202,7 +1202,7 @@ class Frankenstein:
             if _st.kalshi_api:
                 settled_stats = await bootstrap_from_settled_markets(
                     _st.kalshi_api, self.memory,
-                    max_markets=500, min_target=100,
+                    max_markets=1000, min_target=300,
                 )
                 result["settled_stats"] = settled_stats
             else:
@@ -1215,7 +1215,7 @@ class Frankenstein:
         if self.memory.total_resolved < self.learner.min_samples:
             try:
                 active_stats = await bootstrap_from_active_markets(
-                    self.memory, count=200,
+                    self.memory, count=500,
                 )
                 result["active_stats"] = active_stats
             except Exception as e:

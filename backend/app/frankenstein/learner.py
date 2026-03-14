@@ -143,9 +143,11 @@ class OnlineLearner:
         try:
             metrics = challenger.train(
                 X, y,
-                num_boost_round=300,
-                early_stopping_rounds=25,
+                num_boost_round=500,
+                early_stopping_rounds=30,
                 eval_split=0.2,
+                n_cv_folds=3,
+                hyperparam_trials=8,
             )
         except Exception as e:
             log.error("retrain_failed", error=str(e))

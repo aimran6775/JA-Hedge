@@ -162,6 +162,22 @@ def _features_from_market(m: Market, *, jitter: bool = True) -> MarketFeatures:
         log_odds=log_odds,
         overround=overround,
         price_acceleration=_j(0.0, 0.005),
+        # Phase 4: advanced statistical features
+        volatility_5=_j(0.01, 0.005),
+        volatility_20=_j(0.008, 0.003),
+        volatility_ratio=_j(1.2, 0.3),
+        bollinger_pct=_j(0.5, 0.15),
+        price_zscore=_j(0.0, 0.5),
+        price_bin=round(mid * 10) / 10,
+        kelly_edge=_j(abs(mid - 0.5) * 2 * time_decay * 0.1, 0.005),
+        vwap_deviation=_j(0.0, 0.01),
+        obv_signal=_j(0.0, 0.2),
+        spread_velocity=_j(0.0, 0.005),
+        price_range=_j(0.05, 0.02),
+        hurst_proxy=_j(0.5, 0.1),
+        settlement_confidence=2 * abs(mid - 0.5),
+        time_urgency=math.exp(-hours_to_expiry / 24.0) if hours_to_expiry >= 0 else 0.0,
+        volume_momentum=_j(0.0, 0.01),
     )
     return features
 
@@ -170,8 +186,8 @@ async def bootstrap_from_settled_markets(
     api: KalshiAPI,
     memory: TradeMemory,
     *,
-    max_markets: int = 500,
-    min_target: int = 100,
+    max_markets: int = 1000,
+    min_target: int = 300,
 ) -> dict[str, Any]:
     """
     Fetch settled markets from Kalshi and inject synthetic training records.
@@ -275,7 +291,7 @@ async def bootstrap_from_settled_markets(
 async def bootstrap_from_active_markets(
     memory: TradeMemory,
     *,
-    count: int = 200,
+    count: int = 500,
 ) -> dict[str, Any]:
     """
     Fallback bootstrap: generate training data from ACTIVE markets.

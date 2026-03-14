@@ -1,13 +1,14 @@
 """
-JA Hedge — AI Feature Engineering.
+JA Hedge — AI Feature Engineering v2.
 
-Computes trading features from raw market data for ML models:
-- Price-based features (moving averages, RSI, momentum)
-- Spread/liquidity features
-- Volume features
-- Time-based features (time-to-expiry, hour-of-day)
-- Cross-market correlation features
-- Orderbook imbalance features
+World-class 52-feature set for prediction market trading:
+- Price-based features (moving averages, RSI, momentum, Bollinger bands)
+- Spread/liquidity features (bid-ask dynamics, depth ratios)
+- Volume features (volume profiles, OBV, VWAP)
+- Time-based features (time-to-expiry curves, urgency, day/hour effects)
+- Prediction-market-native features (convergence, log-odds, overround)
+- Statistical features (volatility regimes, z-scores, Hurst exponent)
+- Cross-feature interactions (price×time, volume×momentum)
 """
 
 from __future__ import annotations
@@ -99,6 +100,23 @@ class MarketFeatures:
     # Price acceleration: is convergence speeding up?
     price_acceleration: float = 0.0
 
+    # ── Advanced Statistical Features (Phase 4) ─────────────
+    volatility_5: float = 0.0       # rolling 5-tick std dev
+    volatility_20: float = 0.0      # rolling 20-tick std dev
+    volatility_ratio: float = 1.0   # short/long volatility regime
+    bollinger_pct: float = 0.5      # position within Bollinger Bands
+    price_zscore: float = 0.0       # z-score vs recent history
+    price_bin: float = 0.5          # discretized probability zone
+    kelly_edge: float = 0.0         # estimated Kelly sizing edge
+    vwap_deviation: float = 0.0     # current price - VWAP
+    obv_signal: float = 0.0         # on-balance volume direction
+    spread_velocity: float = 0.0    # rate of change of spread
+    price_range: float = 0.0        # recent high-low range
+    hurst_proxy: float = 0.5        # mean-reversion vs trending
+    settlement_confidence: float = 0.0  # market confidence in outcome
+    time_urgency: float = 0.0       # exponential urgency near expiry
+    volume_momentum: float = 0.0    # volume × momentum interaction
+
     def to_array(self) -> np.ndarray:
         """Convert to numpy array for ML model input."""
         return np.array(
@@ -141,6 +159,22 @@ class MarketFeatures:
                 self.log_odds,
                 self.overround,
                 self.price_acceleration,
+                # Phase 4: advanced statistical features
+                self.volatility_5,
+                self.volatility_20,
+                self.volatility_ratio,
+                self.bollinger_pct,
+                self.price_zscore,
+                self.price_bin,
+                self.kelly_edge,
+                self.vwap_deviation,
+                self.obv_signal,
+                self.spread_velocity,
+                self.price_range,
+                self.hurst_proxy,
+                self.settlement_confidence,
+                self.time_urgency,
+                self.volume_momentum,
             ],
             dtype=np.float32,
         )
@@ -164,25 +198,33 @@ class MarketFeatures:
             "oi_change", "book_imbalance", "hours_to_expiry",
             "time_decay_factor", "hour_of_day", "day_of_week",
             "implied_prob", "prob_distance_from_50", "extreme_prob",
-            # Phase 3: prediction-market-native features
             "convergence_rate", "normalized_time", "price_time_signal",
             "info_rate", "spread_time_ratio", "log_odds",
             "overround", "price_acceleration",
+            # Phase 4
+            "volatility_5", "volatility_20", "volatility_ratio",
+            "bollinger_pct", "price_zscore", "price_bin",
+            "kelly_edge", "vwap_deviation", "obv_signal",
+            "spread_velocity", "price_range", "hurst_proxy",
+            "settlement_confidence", "time_urgency", "volume_momentum",
         ]
 
 
 class PriceHistory:
     """Ring buffer of recent prices for a market."""
 
-    def __init__(self, maxlen: int = 1000):
+    def __init__(self, maxlen: int = 2000):
         self.prices: deque[tuple[float, float]] = deque(maxlen=maxlen)  # (timestamp, price)
         self.volumes: deque[tuple[float, float]] = deque(maxlen=maxlen)
         self.oi: deque[tuple[float, float]] = deque(maxlen=maxlen)
+        self.spreads: deque[tuple[float, float]] = deque(maxlen=maxlen)
 
-    def add(self, ts: float, price: float, volume: float = 0, oi: float = 0) -> None:
+    def add(self, ts: float, price: float, volume: float = 0,
+            oi: float = 0, spread: float = 0) -> None:
         self.prices.append((ts, price))
         self.volumes.append((ts, volume))
         self.oi.append((ts, oi))
+        self.spreads.append((ts, spread))
 
     def get_price_at(self, minutes_ago: float) -> float | None:
         """Get price approximately N minutes ago."""
@@ -199,6 +241,9 @@ class PriceHistory:
     def get_volumes(self, n: int) -> list[float]:
         return [v for _, v in list(self.volumes)[-n:]]
 
+    def get_spreads(self, n: int) -> list[float]:
+        return [s for _, s in list(self.spreads)[-n:]]
+
 
 class FeatureEngine:
     """
@@ -211,12 +256,13 @@ class FeatureEngine:
     def __init__(self) -> None:
         self._histories: dict[str, PriceHistory] = {}
 
-    def update(self, ticker: str, price: float, volume: float = 0, oi: float = 0) -> None:
+    def update(self, ticker: str, price: float, volume: float = 0,
+               oi: float = 0, spread: float = 0) -> None:
         """Push a new price observation for a market."""
         if ticker not in self._histories:
             self._histories[ticker] = PriceHistory()
         import time
-        self._histories[ticker].add(time.time(), price, volume, oi)
+        self._histories[ticker].add(time.time(), price, volume, oi, spread)
 
     def compute(self, market: Market) -> MarketFeatures:
         """Compute full feature vector for a market."""
@@ -285,6 +331,61 @@ class FeatureEngine:
                     else 1.0
                 )
 
+            # ── Phase 4: Advanced Statistical Features ──────
+            # Volatility (std dev of price changes)
+            if len(prices_5) >= 3:
+                ret_5 = [prices_5[i] - prices_5[i-1] for i in range(1, len(prices_5))]
+                features.volatility_5 = float(np.std(ret_5)) if ret_5 else 0.0
+            if len(prices_20) >= 5:
+                ret_20 = [prices_20[i] - prices_20[i-1] for i in range(1, len(prices_20))]
+                features.volatility_20 = float(np.std(ret_20)) if ret_20 else 0.0
+            features.volatility_ratio = (
+                features.volatility_5 / max(features.volatility_20, 1e-6)
+                if features.volatility_20 > 0 else 1.0
+            )
+
+            # Bollinger Band position
+            if len(prices_20) >= 5 and features.volatility_20 > 0:
+                bb_upper = features.sma_20 + 2 * features.volatility_20
+                bb_lower = features.sma_20 - 2 * features.volatility_20
+                bb_range = bb_upper - bb_lower
+                features.bollinger_pct = max(0.0, min(1.0,
+                    (mid - bb_lower) / bb_range if bb_range > 0 else 0.5))
+
+            # Z-score of current price
+            if len(prices_20) >= 5:
+                mean_20 = sum(prices_20) / len(prices_20)
+                std_20 = float(np.std(prices_20))
+                features.price_zscore = (mid - mean_20) / max(std_20, 1e-6) if std_20 > 0 else 0.0
+
+            # Price range
+            if len(prices_20) >= 3:
+                features.price_range = max(prices_20) - min(prices_20)
+
+            # On-balance volume signal
+            if len(prices_5) >= 2 and volumes_5 and len(volumes_5) >= 2:
+                obv = 0.0
+                for i in range(1, min(len(prices_5), len(volumes_5))):
+                    if prices_5[i] > prices_5[i-1]:
+                        obv += volumes_5[i] if i < len(volumes_5) else 0
+                    elif prices_5[i] < prices_5[i-1]:
+                        obv -= volumes_5[i] if i < len(volumes_5) else 0
+                max_vol = max(volumes_5) if volumes_5 else 1.0
+                features.obv_signal = max(-1.0, min(1.0,
+                    obv / max(max_vol * len(volumes_5), 1.0)))
+
+            # Spread velocity
+            spreads_5 = hist.get_spreads(5)
+            if len(spreads_5) >= 2:
+                features.spread_velocity = spreads_5[-1] - spreads_5[0]
+
+            # Hurst exponent proxy
+            if len(prices_20) >= 10:
+                features.hurst_proxy = self._hurst_proxy(prices_20)
+
+            # Volume-momentum interaction
+            features.volume_momentum = features.volume_ratio * features.price_change_5m
+
         # Volume / OI from market
         features.volume = float(market.volume or 0)
         features.open_interest = float(market.open_interest or 0)
@@ -348,6 +449,28 @@ class FeatureEngine:
             vel_old = recent_20[mid_idx] - recent_20[0] if mid_idx > 0 else 0
             features.price_acceleration = vel_recent - vel_old
 
+        # ── Phase 4: Additional Advanced Features ────────────
+        # Price bin (discretized zone — helps model learn non-linear price effects)
+        features.price_bin = round(mid * 10) / 10
+
+        # Kelly edge estimate
+        features.kelly_edge = abs(mid - 0.5) * 2 * features.time_decay_factor * 0.1
+
+        # VWAP deviation
+        if hist and len(hist.prices) >= 5:
+            pl = hist.get_prices(10)
+            vl = hist.get_volumes(10)
+            if pl and vl and len(vl) >= len(pl):
+                tv = sum(vl[:len(pl)]) or 1.0
+                vwap = sum(p * v for p, v in zip(pl, vl[:len(pl)])) / tv
+                features.vwap_deviation = mid - vwap
+
+        # Settlement confidence: how close price is to 0 or 1
+        features.settlement_confidence = 2 * abs(mid - 0.5)
+
+        # Time urgency: exponential urgency near expiry
+        features.time_urgency = math.exp(-features.hours_to_expiry / 24.0) if features.hours_to_expiry >= 0 else 0.0
+
         return features
 
     @staticmethod
@@ -384,3 +507,32 @@ class FeatureEngine:
             return 100.0
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
+
+    @staticmethod
+    def _hurst_proxy(prices: list[float]) -> float:
+        """
+        Simplified Hurst exponent estimation.
+        < 0.5 = mean-reverting, = 0.5 = random walk, > 0.5 = trending.
+        """
+        if len(prices) < 5:
+            return 0.5
+        try:
+            returns = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+            n = len(returns)
+            mean_r = sum(returns) / n
+            cumulative = []
+            s = 0.0
+            for d in (r - mean_r for r in returns):
+                s += d
+                cumulative.append(s)
+            R = max(cumulative) - min(cumulative)
+            S = float(np.std(returns))
+            if S < 1e-10:
+                return 0.5
+            RS = R / S
+            if RS <= 0 or n <= 1:
+                return 0.5
+            H = math.log(RS) / math.log(n)
+            return max(0.0, min(1.0, H))
+        except Exception:
+            return 0.5

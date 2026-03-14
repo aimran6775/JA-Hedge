@@ -340,7 +340,20 @@ class TradeMemory:
             log.info("insufficient_training_data", available=len(records), required=min_trades)
             return None
 
-        X = np.array([r.features for r in records], dtype=np.float32)
+        # Handle feature dimension mismatch: old records may have fewer
+        # features (e.g. 37) than the current model expects (52).
+        # Pad shorter vectors with zeros so numpy can build a matrix.
+        expected_dim = len(MarketFeatures.feature_names())  # 52
+        padded = []
+        for r in records:
+            feat = list(r.features)
+            if len(feat) < expected_dim:
+                feat.extend([0.0] * (expected_dim - len(feat)))
+            elif len(feat) > expected_dim:
+                feat = feat[:expected_dim]
+            padded.append(feat)
+
+        X = np.array(padded, dtype=np.float32)
         # Label = 1.0 if market resolved YES, 0.0 if NO
         # This is the correct target: predict P(YES outcome)
         y = np.array(

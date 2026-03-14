@@ -221,8 +221,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             mid = float(m.midpoint or m.last_price or 0)
             vol = float(m.volume or 0)
             oi = float(m.open_interest or 0)
+            spd = float(m.spread or 0)
             if mid > 0:
-                feat_engine.update(m.ticker, mid, vol, oi)
+                feat_engine.update(m.ticker, mid, vol, oi, spd)
 
     pipeline = MarketDataPipeline(api=kalshi, on_refresh_callback=_feed_features)
     state.market_pipeline = pipeline
@@ -252,8 +253,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _mid = float(_m.midpoint or _m.last_price or 0)
         _vol = float(_m.volume or 0)
         _oi = float(_m.open_interest or 0)
+        _spd = float(_m.spread or 0)
         if _mid > 0:
-            feat_engine.update(_m.ticker, _mid, _vol, _oi)
+            feat_engine.update(_m.ticker, _mid, _vol, _oi, _spd)
     log.info("feature_engine_seeded", markets=len(_mc.get_active()))
 
     # ── Phase 5: WebSocket real-time data feed ────────────
