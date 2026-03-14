@@ -74,6 +74,9 @@ export default function FrankensteinPage() {
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [tab, setTab] = useState<"overview" | "trades" | "model" | "chat">("overview");
 
+  // Trade detail popup
+  const [selectedTrade, setSelectedTrade] = useState<FrankensteinTrade | null>(null);
+
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -441,7 +444,7 @@ export default function FrankensteinPage() {
                     {trades.map((t, i) => {
                       const isBootstrap = t.model_version?.startsWith("bootstrap");
                       return (
-                        <tr key={i} className={`hover:bg-white/[0.03] ${isBootstrap ? "opacity-40" : ""}`}>
+                        <tr key={i} onClick={() => setSelectedTrade(t)} className={`hover:bg-white/[0.03] cursor-pointer transition-colors ${isBootstrap ? "opacity-40" : ""}`}>
                           <td className="py-2.5 font-mono text-[var(--text-primary)] max-w-[200px] truncate">{t.ticker}</td>
                           <td className={`py-2.5 font-semibold ${t.side === "yes" ? "text-accent" : "text-loss"}`}>{t.side?.toUpperCase()}</td>
                           <td className="py-2.5 text-right tabular-nums text-[var(--text-secondary)]">{t.count}</td>
@@ -467,6 +470,9 @@ export default function FrankensteinPage() {
               <div className="flex h-48 items-center justify-center text-sm text-[var(--text-muted)]">No trades recorded yet</div>
             )}
           </Card>
+
+          {/* Trade Detail Popup */}
+          {selectedTrade && <TradeDetailPopup trade={selectedTrade} onClose={() => setSelectedTrade(null)} />}
 
           {/* Trade Statistics */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -738,4 +744,122 @@ function StageIcon({ stage }: { stage: string }) {
   if (stage === "exec_rejected") return <IconCircle size={6} className="text-[var(--warning)] flex-shrink-0" />;
   if (stage === "portfolio_rejected") return <IconCircle size={6} className="text-loss flex-shrink-0" />;
   return <IconCircle size={6} className="text-[var(--text-muted)] flex-shrink-0" />;
+}
+
+/* ── Trade Detail Popup ───────────────────────────────────────────────────── */
+
+function TradeDetailPopup({ trade, onClose }: { trade: FrankensteinTrade; onClose: () => void }) {
+  const isBootstrap = trade.model_version?.startsWith("bootstrap");
+  const conf = ((trade.confidence ?? 0) * 100);
+  const edge = ((trade.edge ?? 0) * 100);
+  const predProb = ((trade.predicted_prob ?? 0) * 100);
+  const pnl = (trade.pnl_cents ?? 0) / 100;
+  const cost = (trade.price_cents * trade.count) / 100;
+  const maxProfit = ((100 - trade.price_cents) * trade.count) / 100;
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+
+      {/* Popup */}
+      <div
+        className="relative w-full max-w-md rounded-2xl border border-white/[0.08] bg-[var(--card-bg,#0d1117)] shadow-2xl shadow-black/50 animate-fade-in"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${trade.side === "yes" ? "bg-accent/15" : "bg-loss/15"}`}>
+              {trade.side === "yes" ? <IconTrendUp size={20} className="text-accent" /> : <IconTrendDown size={20} className="text-loss" />}
+            </div>
+            <div>
+              <div className="text-sm font-bold text-[var(--text-primary)]">{trade.side?.toUpperCase()} × {trade.count}</div>
+              <div className="text-xs text-[var(--text-muted)]">{isBootstrap ? "Bootstrap (simulated)" : "Live AI Trade"}</div>
+            </div>
+          </div>
+          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all text-lg">✕</button>
+        </div>
+
+        {/* Ticker */}
+        <div className="px-6 pt-4 pb-2">
+          <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">Market</div>
+          <div className="text-base font-mono font-bold text-[var(--text-primary)] break-all leading-tight">{trade.ticker}</div>
+        </div>
+
+        {/* Key Metrics Grid */}
+        <div className="grid grid-cols-3 gap-3 px-6 py-3">
+          <MetricBox label="Price" value={`${trade.price_cents}¢`} />
+          <MetricBox label="Cost" value={`$${cost.toFixed(2)}`} />
+          <MetricBox label="Max Profit" value={`$${maxProfit.toFixed(2)}`} color="text-accent" />
+        </div>
+
+        {/* AI Analysis */}
+        <div className="mx-6 rounded-xl bg-white/[0.02] border border-white/[0.04] p-4 space-y-2.5">
+          <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">AI Analysis</div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--text-muted)]">Confidence</span>
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 w-20 rounded-full bg-white/[0.06] overflow-hidden">
+                <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.min(conf, 100)}%` }} />
+              </div>
+              <span className="text-xs font-bold text-accent tabular-nums">{conf.toFixed(0)}%</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--text-muted)]">Edge</span>
+            <span className={`text-xs font-bold tabular-nums ${edge > 0 ? "text-accent" : "text-loss"}`}>{edge > 0 ? "+" : ""}{edge.toFixed(1)}%</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--text-muted)]">Predicted Probability</span>
+            <span className="text-xs font-bold text-[var(--text-primary)] tabular-nums">{predProb.toFixed(1)}%</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--text-muted)]">Model</span>
+            <span className="text-xs font-mono text-[var(--text-secondary)]">{trade.model_version || "—"}</span>
+          </div>
+        </div>
+
+        {/* Outcome & PnL */}
+        <div className="flex items-center justify-between px-6 py-4">
+          <div>
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">Outcome</div>
+            <OutcomeBadge outcome={trade.outcome} />
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">P&L</div>
+            <span className={`text-lg font-bold tabular-nums ${pnl > 0 ? "text-accent" : pnl < 0 ? "text-loss" : "text-[var(--text-muted)]"}`}>
+              {pnl !== 0 ? `${pnl > 0 ? "+" : ""}$${pnl.toFixed(2)}` : "Pending"}
+            </span>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-white/[0.06] px-6 py-3 flex items-center justify-between">
+          <span className="text-[10px] text-[var(--text-muted)]">
+            {trade.timestamp ? new Date(trade.timestamp).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
+          </span>
+          <span className="text-[10px] font-mono text-[var(--text-muted)] truncate max-w-[180px]">
+            {trade.trade_id ? `ID: ${trade.trade_id.slice(0, 12)}...` : ""}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MetricBox({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-3 text-center">
+      <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-0.5">{label}</div>
+      <div className={`text-sm font-bold tabular-nums ${color ?? "text-[var(--text-primary)]"}`}>{value}</div>
+    </div>
+  );
 }
