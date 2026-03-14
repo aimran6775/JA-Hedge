@@ -166,6 +166,57 @@ async def debug_rejections() -> dict:
     }
 
 
+@router.post("/debug/test-trade")
+async def debug_test_trade() -> dict:
+    """Debug: actually try to execute one trade and return full result."""
+    frank = _get_frank()
+    from app.pipeline import market_cache
+    from app.kalshi.models import OrderSide, OrderAction, OrderType
+
+    markets = market_cache.get_active()
+    candidates = frank._filter_candidates(markets)
+
+    if not candidates:
+        return {"error": "no_candidates"}
+
+    m = candidates[0]
+    features = frank._features.compute(m)
+    predictions = frank._model.predict_batch([features])
+    pred = predictions[0] if predictions else None
+    if pred is None:
+        return {"error": "no_prediction"}
+
+    params = frank.strategy.params
+    kelly = frank._kelly_size(pred, features, params)
+    count = max(1, int(kelly * params.max_position_size))
+    price_cents = frank._compute_price(pred, features)
+
+    try:
+        result = await frank._execute_trade(
+            market=m,
+            prediction=pred,
+            features=features,
+            count=count,
+            price_cents=price_cents,
+        )
+        if result is None:
+            return {"error": "execute_returned_none", "ticker": m.ticker}
+        return {
+            "ticker": m.ticker,
+            "success": result.success,
+            "order_id": result.order_id,
+            "error": result.error,
+            "risk_check_passed": result.risk_check_passed,
+            "risk_rejection_reason": result.risk_rejection_reason,
+            "latency_ms": result.latency_ms,
+            "count": count,
+            "price_cents": price_cents,
+            "side": pred.side,
+        }
+    except Exception as e:
+        return {"error": str(e), "type": type(e).__name__, "ticker": m.ticker}
+
+
 @router.get("/learner")
 async def learner_status() -> dict:
     """Get the online learner's status."""
