@@ -504,7 +504,7 @@ class Frankenstein:
             if not passed:
                 trades_rejected += 1
                 self._state.total_trades_rejected += 1
-                log.debug("portfolio_risk_rejected", ticker=market.ticker, reason=reject_reason)
+                log.warning("portfolio_risk_rejected", ticker=market.ticker, reason=reject_reason, count=count, price=price_cents)
                 continue
 
             # Record snapshot for regime detection
@@ -588,6 +588,8 @@ class Frankenstein:
             else:
                 trades_rejected += 1
                 self._state.total_trades_rejected += 1
+                err = getattr(result, 'error', None) or getattr(result, 'risk_rejection_reason', None) or 'unknown'
+                log.warning("execute_trade_rejected", ticker=market.ticker, error=err, count=count, price=price_cents)
 
         elapsed = (time.monotonic() - start) * 1000
         self._state.current_scan_time_ms = elapsed

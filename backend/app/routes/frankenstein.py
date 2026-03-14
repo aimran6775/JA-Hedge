@@ -105,6 +105,67 @@ async def bootstrap_training_data() -> dict:
     return result
 
 
+@router.get("/debug/rejections")
+async def debug_rejections() -> dict:
+    """Debug: show why trades are being rejected."""
+    frank = _get_frank()
+    from app.pipeline import market_cache
+    from app.ai.features import MarketFeatures
+
+    markets = market_cache.get_active()
+    candidates = frank._filter_candidates(markets)
+
+    if not candidates:
+        return {"error": "no_candidates", "total_active": len(markets)}
+
+    # Try one candidate
+    m = candidates[0]
+    features = frank._features.compute(m)
+    predictions = frank._model.predict_batch([features])
+    pred = predictions[0] if predictions else None
+
+    if pred is None:
+        return {"error": "no_prediction", "ticker": m.ticker}
+
+    params = frank.strategy.params
+    kelly = frank._kelly_size(pred, features, params)
+    count = max(1, int(kelly * params.max_position_size))
+    price_cents = frank._compute_price(pred, features)
+
+    # Check portfolio risk
+    passed, reject_reason = frank._adv_risk.portfolio_check(
+        ticker=m.ticker,
+        count=count,
+        price_cents=price_cents,
+        event_ticker=getattr(m, "event_ticker", ""),
+        category=getattr(m, "category", ""),
+    )
+
+    # Check execution risk (without actually executing)
+    risk_ok, risk_reason = None, None
+    if frank._execution._risk_manager:
+        from app.kalshi.models import OrderSide, OrderAction
+        side = OrderSide.YES if pred.side == "yes" else OrderSide.NO
+        import asyncio
+        risk_ok, risk_reason = await frank._execution._risk_manager.pre_trade_check(
+            ticker=m.ticker, side=side, action=OrderAction.BUY,
+            count=count, price_cents=price_cents,
+        )
+
+    return {
+        "ticker": m.ticker,
+        "title": m.title,
+        "prediction": {"side": pred.side, "confidence": pred.confidence, "edge": pred.edge, "prob": pred.predicted_prob},
+        "features": {"midpoint": features.midpoint, "spread": features.spread, "volume": features.volume},
+        "sizing": {"kelly": kelly, "count": count, "price_cents": price_cents},
+        "params": {"min_confidence": params.min_confidence, "min_edge": params.min_edge},
+        "portfolio_check": {"passed": passed, "reason": reject_reason},
+        "execution_risk": {"passed": risk_ok, "reason": risk_reason},
+        "total_candidates": len(candidates),
+        "total_active": len(markets),
+    }
+
+
 @router.get("/learner")
 async def learner_status() -> dict:
     """Get the online learner's status."""
