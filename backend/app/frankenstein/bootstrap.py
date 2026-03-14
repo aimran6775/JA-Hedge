@@ -226,7 +226,6 @@ async def bootstrap_from_settled_markets(
                 confidence=abs(prob - 0.5) * 2,  # higher for extreme prices
                 side=side,
                 edge=abs(prob - 0.5) * 0.1,
-                features_hash="bootstrap",
                 model_name="bootstrap_v0",
             )
 
@@ -289,7 +288,7 @@ async def bootstrap_from_active_markets(
     can't return settled markets (e.g., demo mode).
     """
     log.info("bootstrap_from_active_starting", target=count)
-    stats = {"scanned": 0, "injected": 0, "skipped": 0}
+    stats = {"scanned": 0, "injected": 0, "skipped": 0, "errors": 0}
 
     markets = market_cache.get_active()
     if not markets:
@@ -305,19 +304,23 @@ async def bootstrap_from_active_markets(
 
         stats["scanned"] += 1
 
-        # Need price data
-        mid = float(m.midpoint) if m.midpoint else None
-        last = float(m.last_price) if m.last_price else None
+        # Need price data — handle Decimal carefully
+        try:
+            mid = float(m.midpoint) if m.midpoint is not None else None
+        except (TypeError, ValueError):
+            mid = None
+        try:
+            last = float(m.last_price) if m.last_price is not None else None
+        except (TypeError, ValueError):
+            last = None
+
         price = mid or last
         if price is None or price <= 0.01 or price >= 0.99:
             stats["skipped"] += 1
             continue
 
-        # Skip markets with no volume (likely stale)
-        vol = (m.volume_int or 0) + int(float(m.volume or 0))
-        if vol < 1:
-            stats["skipped"] += 1
-            continue
+        # Volume is not critical for bootstrap data quality — skip the filter
+        # (We want to learn from price patterns, not just liquid markets)
 
         try:
             features = _features_from_market(m, jitter=True)
@@ -334,7 +337,6 @@ async def bootstrap_from_active_markets(
                 confidence=abs(price - 0.5) * 2,
                 side=side,
                 edge=abs(price - 0.5) * 0.08,
-                features_hash="bootstrap_active",
                 model_name="bootstrap_active_v0",
             )
 
@@ -364,6 +366,7 @@ async def bootstrap_from_active_markets(
 
         except Exception as e:
             log.debug("bootstrap_active_error", ticker=m.ticker, error=str(e))
+            stats["errors"] += 1
 
     log.info("bootstrap_from_active_complete", **stats)
     return stats

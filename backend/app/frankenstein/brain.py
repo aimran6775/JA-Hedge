@@ -1163,11 +1163,15 @@ class Frankenstein:
 
         # Method 1: Settled markets (real outcomes)
         try:
-            settled_stats = await bootstrap_from_settled_markets(
-                self._api, self.memory,
-                max_markets=500, min_target=100,
-            )
-            result["settled_stats"] = settled_stats
+            from app.state import state as _st
+            if _st.kalshi_api:
+                settled_stats = await bootstrap_from_settled_markets(
+                    _st.kalshi_api, self.memory,
+                    max_markets=500, min_target=100,
+                )
+                result["settled_stats"] = settled_stats
+            else:
+                result["settled_stats"] = {"error": "Kalshi API not available"}
         except Exception as e:
             log.warning("bootstrap_settled_failed", error=str(e))
             result["settled_stats"] = {"error": str(e)}
