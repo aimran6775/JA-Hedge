@@ -62,7 +62,7 @@ async def create_order(body: CreateOrderBody) -> OrderResponse:
     return OrderResponse(
         success=result.success,
         order_id=result.order_id,
-        error=result.error,
+        error=result.error or result.risk_rejection_reason,
         latency_ms=result.latency_ms,
     )
 
