@@ -458,7 +458,6 @@ class Frankenstein:
                         confidence=sig.confidence,
                         side=sig.side,
                         edge=sig.edge,
-                        features_hash="strategy_engine",
                         model_name=sig.strategy,
                     )
 
@@ -520,7 +519,7 @@ class Frankenstein:
                 self._state.total_trades_rejected += 1
                 scan_debug["portfolio_rejections"] += 1
                 scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "portfolio_rejected", "reason": reject_reason, "count": count, "price": price_cents})
-                log.warning("portfolio_risk_rejected", ticker=market.ticker, reason=reject_reason, count=count, price=price_cents)
+                log.info("portfolio_risk_rejected", ticker=market.ticker, reason=reject_reason, count=count, price=price_cents)
                 continue
 
             # Record snapshot for regime detection
@@ -532,7 +531,6 @@ class Frankenstein:
             )
 
             # Execute through risk manager
-            log.warning("trade_attempt", ticker=market.ticker, count=count, price=price_cents, side=prediction.side)
             result = await self._execute_trade(
                 market=market,
                 prediction=prediction,
@@ -540,7 +538,6 @@ class Frankenstein:
                 count=count,
                 price_cents=price_cents,
             )
-            log.warning("trade_result", ticker=market.ticker, success=getattr(result, 'success', None), error=getattr(result, 'error', None), risk_reason=getattr(result, 'risk_rejection_reason', None))
 
             if result and result.success:
                 trades_executed += 1
@@ -611,7 +608,7 @@ class Frankenstein:
                 err = getattr(result, 'error', None) or getattr(result, 'risk_rejection_reason', None) or 'unknown'
                 scan_debug["exec_rejections"] += 1
                 scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "exec_rejected", "error": err, "count": count, "price": price_cents})
-                log.warning("execute_trade_rejected", ticker=market.ticker, error=err, count=count, price=price_cents)
+                log.info("execute_trade_rejected", ticker=market.ticker, error=err, count=count, price=price_cents)
 
         self._state.last_scan_debug = scan_debug
         elapsed = (time.monotonic() - start) * 1000
