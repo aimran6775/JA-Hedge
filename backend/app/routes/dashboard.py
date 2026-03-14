@@ -88,13 +88,17 @@ async def dashboard_overview() -> dict[str, Any]:
     # ── Frankenstein ──────────────────────────────────────
     frank_summary: dict[str, Any] = {"status": "not_initialized"}
     if state.frankenstein:
-        frank_summary = {
-            "is_alive": state.frankenstein.is_alive,
-            "is_trading": state.frankenstein.is_trading,
-            "total_scans": state.frankenstein.stats.get("total_scans", 0),
-            "total_signals": state.frankenstein.stats.get("total_signals", 0),
-            "total_trades": state.frankenstein.stats.get("total_trades_executed", 0),
-        }
+        try:
+            full_status = state.frankenstein.status()
+            frank_summary = {
+                "is_alive": full_status.get("is_alive", False),
+                "is_trading": full_status.get("is_trading", False),
+                "total_scans": full_status.get("total_scans", 0),
+                "total_signals": full_status.get("total_signals", 0),
+                "total_trades": full_status.get("total_trades_executed", 0),
+            }
+        except Exception:
+            frank_summary = {"status": "error"}
 
     # ── Markets ───────────────────────────────────────────
     active_markets = market_cache.get_active()
