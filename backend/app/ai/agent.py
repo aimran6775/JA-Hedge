@@ -244,6 +244,8 @@ class AutonomousAgent:
         self._max_loss_pct: float = 0.20  # Stop if 20% of starting balance lost
         self._max_trades_per_scan: int = 5
         self._traded_tickers: set[str] = set()  # Avoid re-trading same market
+        self._failed_tickers: dict[str, float] = {}  # ticker → cooldown expiry ts
+        self._failed_ticker_cooldown: float = 300.0  # 5 min cooldown after failure
 
     def _apply_aggressiveness(self, level: Aggressiveness) -> None:
         """Apply aggressiveness preset."""
@@ -485,6 +487,16 @@ class AutonomousAgent:
         """Scan markets and find trading opportunities."""
         opportunities: list[Opportunity] = []
 
+        # Import sports detector for sports_only filtering
+        from app.state import state as app_state
+        sports_detector = app_state.sports_detector
+
+        now = time.time()
+        # Purge expired cooldowns
+        self._failed_tickers = {
+            t: exp for t, exp in self._failed_tickers.items() if exp > now
+        }
+
         for market in markets:
             # Skip non-active
             if market.status != MarketStatus.ACTIVE:
@@ -497,6 +509,20 @@ class AutonomousAgent:
             # Skip already-traded tickers (unless aggressive)
             if market.ticker in self._traded_tickers and self._aggressiveness != Aggressiveness.AGGRESSIVE:
                 continue
+
+            # Skip tickers on failed cooldown (prevent spam-retrying)
+            if market.ticker in self._failed_tickers:
+                continue
+
+            # Sports-only filter: skip non-sports markets when sports_only is active
+            if sports_detector is not None:
+                try:
+                    detection = sports_detector.detect(market)
+                    if not detection.is_sports:
+                        continue
+                except Exception:
+                    # If detection fails, skip to be safe
+                    continue
 
             # Skip if we already have max positions
             if len(self._traded_tickers) >= self._max_concurrent_positions:
@@ -672,17 +698,27 @@ class AutonomousAgent:
                 trade.fill_pnl = 0
                 self._stats.orders_failed += 1
 
+                # Add to failed cooldown to prevent spam-retrying
+                self._failed_tickers[opp.market.ticker] = (
+                    time.time() + self._failed_ticker_cooldown
+                )
+
                 error_msg = result.error or result.risk_rejection_reason or "unknown"
                 log.warning(
                     "agent_trade_failed",
                     trade_id=trade_id,
                     ticker=opp.market.ticker,
                     error=error_msg,
+                    cooldown_seconds=self._failed_ticker_cooldown,
                 )
 
         except Exception as e:
             trade.status = "failed"
             self._stats.orders_failed += 1
+            # Add to failed cooldown on exception too
+            self._failed_tickers[opp.market.ticker] = (
+                time.time() + self._failed_ticker_cooldown
+            )
             log.error("agent_trade_error", trade_id=trade_id, error=str(e))
 
     # ── P&L Tracking ──────────────────────────────────────────────────────

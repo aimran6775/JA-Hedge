@@ -135,8 +135,12 @@ class AdvancedRiskManager:
             return False, f"Portfolio cost limit: ${(total_deployed + new_cost) / 100:.2f} > ${self._limits.max_portfolio_cost_cents / 100:.2f}"
 
         # 5. Single position concentration
-        if self._limits.max_single_position_pct > 0 and total_deployed > 0:
-            position_pct = new_cost / max(total_deployed + new_cost, 1)
+        # Compare against total PORTFOLIO balance, not just deployed capital,
+        # to avoid over-rejecting when deployed capital is small.
+        if self._limits.max_single_position_pct > 0:
+            portfolio_balance_cents = portfolio_state.balance_cents or 0
+            reference_value = max(portfolio_balance_cents, total_deployed + new_cost, 1)
+            position_pct = new_cost / reference_value
             if position_pct > self._limits.max_single_position_pct:
                 return False, f"Position too concentrated: {position_pct:.1%} > {self._limits.max_single_position_pct:.1%}"
 

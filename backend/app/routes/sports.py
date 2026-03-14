@@ -40,8 +40,18 @@ async def sports_status() -> dict[str, Any]:
     
     # Odds client
     if state.odds_client:
-        result["odds"] = state.odds_client.stats()
-        result["components"]["odds_client"] = "ready" if state.odds_client.is_available else "no_api_key"
+        odds_stats = state.odds_client.stats()
+        result["odds"] = odds_stats
+        quota_remaining = odds_stats.get("requests_remaining", 1)
+        if quota_remaining == 0:
+            result["components"]["odds_client"] = "quota_exhausted"
+            result["odds_warning"] = (
+                "Free tier Odds API quota exhausted (500/month). "
+                "Vegas odds unavailable until next billing cycle. "
+                "Predictions use Kalshi-only signals with reduced accuracy."
+            )
+        else:
+            result["components"]["odds_client"] = "ready" if state.odds_client.is_available else "no_api_key"
     else:
         result["components"]["odds_client"] = "not_initialized"
     
@@ -178,6 +188,14 @@ async def sports_odds() -> dict[str, Any]:
         "total_games": len(games),
         "games": games,
         "api_stats": state.odds_client.stats(),
+        "api_quota_exhausted": state.odds_client.stats().get("requests_remaining", 1) == 0,
+        "quota_warning": (
+            "Free tier Odds API quota exhausted (500/month). "
+            "Vegas odds comparisons unavailable until quota resets. "
+            "Sports predictions will use Kalshi-only signals with reduced edge detection."
+            if state.odds_client.stats().get("requests_remaining", 1) == 0
+            else None
+        ),
     }
 
 

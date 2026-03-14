@@ -50,6 +50,9 @@ async def risk_snapshot() -> RiskSnapshotResponse:
     if not state.risk_manager:
         return RiskSnapshotResponse()
 
+    # Refresh snapshot from portfolio_state before returning
+    await state.risk_manager.update_snapshot()
+
     snap = state.risk_manager.snapshot
     return RiskSnapshotResponse(
         total_exposure=float(snap.total_exposure),
