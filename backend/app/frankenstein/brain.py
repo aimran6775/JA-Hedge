@@ -516,6 +516,7 @@ class Frankenstein:
             )
 
             # Execute through risk manager
+            log.warning("trade_attempt", ticker=market.ticker, count=count, price=price_cents, side=prediction.side)
             result = await self._execute_trade(
                 market=market,
                 prediction=prediction,
@@ -523,6 +524,7 @@ class Frankenstein:
                 count=count,
                 price_cents=price_cents,
             )
+            log.warning("trade_result", ticker=market.ticker, success=getattr(result, 'success', None), error=getattr(result, 'error', None), risk_reason=getattr(result, 'risk_rejection_reason', None))
 
             if result and result.success:
                 trades_executed += 1
@@ -600,6 +602,8 @@ class Frankenstein:
                 "🧟 SCAN",
                 candidates=len(candidates),
                 signals=signals_generated,
+                trade_candidates=len(trade_candidates),
+                max_trades=max_trades_per_scan,
                 executed=trades_executed,
                 rejected=trades_rejected,
                 ms=f"{elapsed:.1f}",
