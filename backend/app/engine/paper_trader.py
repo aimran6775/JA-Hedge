@@ -218,6 +218,49 @@ class PaperTradingSimulator:
             fee_rate=f"{fee_rate_cents}¢/contract",
         )
 
+    # ── Reset ─────────────────────────────────────────────────────────
+
+    def reset(self, new_balance_cents: int | None = None) -> dict[str, Any]:
+        """
+        Reset the entire simulation: clear all trades, positions, orders,
+        and restore balance. Optionally set a new starting balance.
+        """
+        old_balance = self.balance_cents
+        old_pnl = self.pnl_cents
+        old_trades = self.total_fills
+
+        if new_balance_cents is not None:
+            self.starting_balance_cents = new_balance_cents
+        self.balance_cents = self.starting_balance_cents
+
+        # Clear all state
+        self._orders.clear()
+        self._fills.clear()
+        self._positions.clear()
+        self._order_history.clear()
+
+        # Reset stats
+        self.total_orders = 0
+        self.total_fills = 0
+        self.total_fees_paid = 0
+        self.total_volume_cents = 0
+
+        log.info(
+            "paper_trader_reset",
+            old_balance=f"${old_balance / 100:.2f}",
+            old_pnl=f"${old_pnl / 100:.2f}",
+            old_trades=old_trades,
+            new_balance=f"${self.balance_cents / 100:.2f}",
+        )
+
+        return {
+            "previous_balance": f"${old_balance / 100:.2f}",
+            "previous_pnl": f"${old_pnl / 100:.2f}",
+            "previous_trades": old_trades,
+            "new_balance": f"${self.balance_cents / 100:.2f}",
+            "starting_balance": f"${self.starting_balance_cents / 100:.2f}",
+        }
+
     # ── Balance ───────────────────────────────────────────────────────
 
     def get_balance(self) -> Balance:

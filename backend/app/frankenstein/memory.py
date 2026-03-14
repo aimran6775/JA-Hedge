@@ -341,9 +341,9 @@ class TradeMemory:
             return None
 
         # Handle feature dimension mismatch: old records may have fewer
-        # features (e.g. 37) than the current model expects (52).
+        # features than the current model expects (60).
         # Pad shorter vectors with zeros so numpy can build a matrix.
-        expected_dim = len(MarketFeatures.feature_names())  # 52
+        expected_dim = len(MarketFeatures.feature_names())  # 60
         padded = []
         for r in records:
             feat = list(r.features)

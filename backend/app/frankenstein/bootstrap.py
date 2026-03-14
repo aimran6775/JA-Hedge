@@ -178,6 +178,15 @@ def _features_from_market(m: Market, *, jitter: bool = True) -> MarketFeatures:
         settlement_confidence=2 * abs(mid - 0.5),
         time_urgency=math.exp(-hours_to_expiry / 24.0) if hours_to_expiry >= 0 else 0.0,
         volume_momentum=_j(0.0, 0.01),
+        # Phase 5: elite edge features
+        oi_velocity=_j(0.0, 0.5),
+        volume_price_trend=_j(0.0, 0.3),
+        rsi_divergence=_j(0.0, 0.02),
+        macd_histogram=_j(0.0, 0.005),
+        mean_reversion_signal=_j(0.0, 0.2),
+        smart_money_flow=_j(0.0, 0.3),
+        edge_decay=_j(0.0, 0.02),
+        price_efficiency=_j(0.3, 0.15),
     )
     return features
 

@@ -640,6 +640,59 @@ export const api = {
       apiFetch<Record<string, unknown>[]>(
         `/frankenstein/chat/history${n ? `?n=${n}` : ""}`,
       ),
+    // Simulation reset & settings
+    resetSimulation: (opts?: { balance_cents?: number; clear_memory?: boolean; restart_brain?: boolean }) =>
+      apiFetch<{
+        status: string;
+        message: string;
+        previous_balance: string;
+        previous_pnl: string;
+        previous_trades: number;
+        new_balance: string;
+        starting_balance: string;
+        memory_cleared: boolean;
+        brain_restarted: boolean;
+      }>("/frankenstein/simulation/reset", {
+        method: "POST",
+        body: JSON.stringify(opts || {}),
+      }),
+    getSettings: () =>
+      apiFetch<{
+        paper_trading: {
+          enabled: boolean;
+          balance_cents: number;
+          starting_balance_cents: number;
+          pnl_cents: number;
+          fee_rate_cents: number;
+          slippage_cents: number;
+        };
+        strategy: {
+          min_confidence: number;
+          min_edge: number;
+          kelly_fraction: number;
+          max_position_size: number;
+          max_simultaneous_positions: number;
+          scan_interval: number;
+          max_daily_loss: number;
+          stop_loss_pct: number;
+          take_profit_pct: number;
+          max_spread_cents: number;
+          aggression: number;
+        };
+        brain: {
+          scan_interval: number;
+          retrain_interval: number;
+          min_train_samples: number;
+          sports_only: boolean;
+          model_version: string;
+          generation: number;
+        };
+      }>("/frankenstein/settings"),
+    updateSettings: (settings: Record<string, unknown>) =>
+      apiFetch<{ status: string; updated: string[]; message: string }>("/frankenstein/settings", {
+        method: "PUT",
+        body: JSON.stringify(settings),
+      }),
   },
 
   // Strategy Engine (pre-built trading strategies)

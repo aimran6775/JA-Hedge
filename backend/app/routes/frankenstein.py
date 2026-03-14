@@ -431,3 +431,196 @@ async def _handle_command(command: str, chat) -> dict:
         # Unknown command — treat as regular message
         resp = chat.chat(command)
         return resp.to_dict()
+
+
+# ── Simulation Reset & Settings ───────────────────────────────────────────────
+
+@router.post("/simulation/reset")
+async def reset_simulation(body: dict = {}) -> dict:
+    """
+    Reset the paper trading simulation.
+
+    Optional body:
+    - balance_cents: new starting balance in cents (default: 1_000_000 = $10,000)
+    - clear_memory: also clear Frankenstein's trade memory (default: true)
+    - restart_brain: sleep & re-awaken Frankenstein (default: true)
+    """
+    frank = _get_frank()
+    sim = state.paper_simulator
+    if sim is None:
+        raise HTTPException(400, "Paper trading not enabled")
+
+    balance_cents = body.get("balance_cents", None)
+    clear_memory = body.get("clear_memory", True)
+    restart_brain = body.get("restart_brain", True)
+
+    # 1. Stop Frankenstein if running
+    was_alive = frank._state.is_alive
+    if was_alive and restart_brain:
+        await frank.sleep()
+
+    # 2. Reset paper simulator
+    reset_result = sim.reset(new_balance_cents=balance_cents)
+
+    # 3. Clear trade memory if requested
+    memory_cleared = False
+    if clear_memory:
+        frank.memory._trades.clear()
+        frank.memory._pending_trades.clear()
+        frank.memory._important_trades.clear()
+        frank.memory._snapshots.clear()
+        frank.memory._by_ticker.clear()
+        frank.memory._by_outcome.clear()
+        frank.memory._total_resolved = 0
+        memory_cleared = True
+        log.info("trade_memory_cleared")
+
+    # 4. Reset performance tracker
+    frank.performance = __import__(
+        "app.frankenstein.performance", fromlist=["PerformanceTracker"]
+    ).PerformanceTracker(memory=frank.memory)
+
+    # 5. Reset brain state counters
+    frank._state.total_scans = 0
+    frank._state.total_signals = 0
+    frank._state.total_trades_executed = 0
+    frank._state.total_trades_rejected = 0
+    frank._state.last_scan_debug = {}
+
+    # 6. Re-awaken if it was alive
+    if was_alive and restart_brain:
+        await frank.awaken()
+
+    log.info(
+        "simulation_reset_complete",
+        new_balance=reset_result["new_balance"],
+        memory_cleared=memory_cleared,
+        restarted=was_alive and restart_brain,
+    )
+
+    return {
+        "status": "ok",
+        "message": "Simulation reset complete",
+        **reset_result,
+        "memory_cleared": memory_cleared,
+        "brain_restarted": was_alive and restart_brain,
+    }
+
+
+@router.get("/settings")
+async def get_settings() -> dict:
+    """Get current Frankenstein + trading settings."""
+    frank = _get_frank()
+    sim = state.paper_simulator
+    params = frank.strategy.params
+
+    return {
+        "paper_trading": {
+            "enabled": sim is not None,
+            "balance_cents": sim.balance_cents if sim else 0,
+            "starting_balance_cents": sim.starting_balance_cents if sim else 0,
+            "pnl_cents": sim.pnl_cents if sim else 0,
+            "fee_rate_cents": sim.fee_rate_cents if sim else 7,
+            "slippage_cents": sim.slippage_cents if sim else 1,
+        },
+        "strategy": {
+            "min_confidence": params.min_confidence,
+            "min_edge": params.min_edge,
+            "kelly_fraction": params.kelly_fraction,
+            "max_position_size": params.max_position_size,
+            "max_simultaneous_positions": params.max_simultaneous_positions,
+            "scan_interval": params.scan_interval,
+            "max_daily_loss": params.max_daily_loss,
+            "stop_loss_pct": params.stop_loss_pct,
+            "take_profit_pct": params.take_profit_pct,
+            "max_spread_cents": params.max_spread_cents,
+            "aggression": params.aggression,
+        },
+        "brain": {
+            "scan_interval": frank.config.scan_interval,
+            "retrain_interval": frank.config.retrain_interval,
+            "min_train_samples": frank.config.min_train_samples,
+            "sports_only": frank._sports_only,
+            "model_version": frank._state.model_version,
+            "generation": frank._state.generation,
+        },
+    }
+
+
+@router.put("/settings")
+async def update_settings(body: dict) -> dict:
+    """
+    Update Frankenstein strategy/trading settings live.
+
+    Accepts partial updates. Supported keys:
+    - strategy.min_confidence, strategy.min_edge, strategy.kelly_fraction, etc.
+    - brain.scan_interval, brain.sports_only
+    - paper.fee_rate_cents, paper.slippage_cents
+    """
+    frank = _get_frank()
+    sim = state.paper_simulator
+    params = frank.strategy.params
+    updated = []
+
+    # Strategy updates
+    strat = body.get("strategy", {})
+    if "min_confidence" in strat:
+        params.min_confidence = max(0.50, min(0.95, float(strat["min_confidence"])))
+        updated.append("min_confidence")
+    if "min_edge" in strat:
+        params.min_edge = max(0.01, min(0.20, float(strat["min_edge"])))
+        updated.append("min_edge")
+    if "kelly_fraction" in strat:
+        params.kelly_fraction = max(0.05, min(0.50, float(strat["kelly_fraction"])))
+        updated.append("kelly_fraction")
+    if "max_position_size" in strat:
+        params.max_position_size = max(1, min(50, int(strat["max_position_size"])))
+        updated.append("max_position_size")
+    if "max_simultaneous_positions" in strat:
+        params.max_simultaneous_positions = max(1, min(100, int(strat["max_simultaneous_positions"])))
+        updated.append("max_simultaneous_positions")
+    if "scan_interval" in strat:
+        params.scan_interval = max(10, min(300, float(strat["scan_interval"])))
+        updated.append("scan_interval")
+    if "max_daily_loss" in strat:
+        params.max_daily_loss = max(10, min(500, float(strat["max_daily_loss"])))
+        updated.append("max_daily_loss")
+    if "stop_loss_pct" in strat:
+        params.stop_loss_pct = max(0.05, min(0.50, float(strat["stop_loss_pct"])))
+        updated.append("stop_loss_pct")
+    if "take_profit_pct" in strat:
+        params.take_profit_pct = max(0.10, min(1.00, float(strat["take_profit_pct"])))
+        updated.append("take_profit_pct")
+    if "max_spread_cents" in strat:
+        params.max_spread_cents = max(5, min(100, int(strat["max_spread_cents"])))
+        updated.append("max_spread_cents")
+    if "aggression" in strat:
+        params.aggression = max(0.1, min(1.0, float(strat["aggression"])))
+        updated.append("aggression")
+
+    # Brain updates
+    brain = body.get("brain", {})
+    if "scan_interval" in brain:
+        frank.config.scan_interval = max(10, min(300, float(brain["scan_interval"])))
+        updated.append("brain.scan_interval")
+    if "sports_only" in brain:
+        frank._sports_only = bool(brain["sports_only"])
+        updated.append("brain.sports_only")
+
+    # Paper trading updates
+    paper = body.get("paper", {})
+    if sim:
+        if "fee_rate_cents" in paper:
+            sim.fee_rate_cents = max(0, min(20, int(paper["fee_rate_cents"])))
+            updated.append("paper.fee_rate_cents")
+        if "slippage_cents" in paper:
+            sim.slippage_cents = max(0, min(10, int(paper["slippage_cents"])))
+            updated.append("paper.slippage_cents")
+
+    log.info("settings_updated", fields=updated)
+
+    return {
+        "status": "ok",
+        "updated": updated,
+        "message": f"Updated {len(updated)} settings",
+    }

@@ -117,6 +117,16 @@ class MarketFeatures:
     time_urgency: float = 0.0       # exponential urgency near expiry
     volume_momentum: float = 0.0    # volume × momentum interaction
 
+    # ── Phase 5: Elite Edge Features ────────────────────
+    oi_velocity: float = 0.0        # rate of change of open interest
+    volume_price_trend: float = 0.0 # volume-confirmed price direction
+    rsi_divergence: float = 0.0     # price vs RSI divergence signal
+    macd_histogram: float = 0.0     # MACD - signal line (momentum shift)
+    mean_reversion_signal: float = 0.0  # z-score × Hurst interaction
+    smart_money_flow: float = 0.0   # large-volume directional pressure
+    edge_decay: float = 0.0         # how fast the edge is shrinking
+    price_efficiency: float = 0.0   # how efficiently price moves (vs noise)
+
     def to_array(self) -> np.ndarray:
         """Convert to numpy array for ML model input."""
         return np.array(
@@ -172,9 +182,11 @@ class MarketFeatures:
                 self.spread_velocity,
                 self.price_range,
                 self.hurst_proxy,
-                self.settlement_confidence,
-                self.time_urgency,
-                self.volume_momentum,
+                self.settlement_confidence, self.time_urgency, self.volume_momentum,
+                # Phase 5: elite edge features
+                self.oi_velocity, self.volume_price_trend, self.rsi_divergence,
+                self.macd_histogram, self.mean_reversion_signal, self.smart_money_flow,
+                self.edge_decay, self.price_efficiency,
             ],
             dtype=np.float32,
         )
@@ -207,6 +219,10 @@ class MarketFeatures:
             "kelly_edge", "vwap_deviation", "obv_signal",
             "spread_velocity", "price_range", "hurst_proxy",
             "settlement_confidence", "time_urgency", "volume_momentum",
+            # Phase 5
+            "oi_velocity", "volume_price_trend", "rsi_divergence",
+            "macd_histogram", "mean_reversion_signal", "smart_money_flow",
+            "edge_decay", "price_efficiency",
         ]
 
 
@@ -316,6 +332,21 @@ class FeatureEngine:
             if len(prices_14) >= 14:
                 features.rsi_14 = self._rsi(prices_14[-14:])
 
+            # MACD signal line (9-period EMA of MACD) — was dead, now fixed
+            if features.macd != 0:
+                features.signal_line = features.macd * 0.2  # simplified signal approx
+                if len(prices_26) >= 26:
+                    # Proper: compute MACD history and EMA it
+                    macd_hist_vals = []
+                    for k in range(min(9, len(prices_26) - 12)):
+                        idx = len(prices_26) - 12 - k
+                        if idx >= 0:
+                            e12 = self._ema(prices_26[idx:idx+12], 12)
+                            e26 = self._ema(prices_26[:idx+12], 26) if idx + 12 <= len(prices_26) else features.ema_26
+                            macd_hist_vals.append(e12 - e26)
+                    if macd_hist_vals:
+                        features.signal_line = self._ema(list(reversed(macd_hist_vals)), min(9, len(macd_hist_vals)))
+
             # Momentum
             prices_10 = hist.get_prices(11)
             if len(prices_10) >= 10:
@@ -389,6 +420,19 @@ class FeatureEngine:
         # Volume / OI from market
         features.volume = float(market.volume or 0)
         features.open_interest = float(market.open_interest or 0)
+
+        # OI change — was dead, now computed from history
+        if hist and len(hist.oi) >= 2:
+            oi_list = [o for _, o in list(hist.oi)[-5:]]
+            if len(oi_list) >= 2:
+                features.oi_change = oi_list[-1] - oi_list[0]
+
+        # Book imbalance — was dead, now computed from bid/ask depth
+        if market.yes_bid is not None and market.yes_ask is not None:
+            bid_d = float(market.yes_bid or 0)
+            ask_d = float(market.yes_ask or 0)
+            total_d = bid_d + ask_d
+            features.book_imbalance = (bid_d - ask_d) / total_d if total_d > 0 else 0.0
 
         # Time features
         if market.expiration_time:
@@ -470,6 +514,66 @@ class FeatureEngine:
 
         # Time urgency: exponential urgency near expiry
         features.time_urgency = math.exp(-features.hours_to_expiry / 24.0) if features.hours_to_expiry >= 0 else 0.0
+
+        # ── Phase 5: Elite Edge Features ─────────────────────
+        # OI velocity: rate of change of open interest (institutional flow proxy)
+        if hist and len(hist.oi) >= 5:
+            oi_vals = [o for _, o in list(hist.oi)[-10:]]
+            if len(oi_vals) >= 2:
+                features.oi_velocity = (oi_vals[-1] - oi_vals[0]) / max(len(oi_vals), 1)
+
+        # Volume-price trend: confirms whether volume supports direction
+        if features.price_velocity != 0 and features.volume_ratio != 1.0:
+            direction = 1.0 if features.price_velocity > 0 else -1.0
+            features.volume_price_trend = direction * features.volume_ratio
+
+        # RSI divergence: price makes new high but RSI doesn't (bearish) or vice versa
+        if hist and len(hist.prices) >= 20:
+            p_recent = hist.get_prices(20)
+            half = len(p_recent) // 2
+            p_first, p_second = p_recent[:half], p_recent[half:]
+            if len(p_first) >= 7 and len(p_second) >= 7:
+                rsi_first = self._rsi(p_first[-14:] if len(p_first) >= 14 else p_first)
+                rsi_second = self._rsi(p_second[-14:] if len(p_second) >= 14 else p_second)
+                price_delta = (sum(p_second) / len(p_second)) - (sum(p_first) / len(p_first))
+                rsi_delta = rsi_second - rsi_first
+                # Divergence: price up but RSI down (or vice versa)
+                if abs(price_delta) > 0.001:
+                    features.rsi_divergence = -price_delta * rsi_delta / 100.0
+
+        # MACD histogram: captures momentum acceleration (MACD - signal)
+        features.macd_histogram = features.macd - features.signal_line
+
+        # Mean-reversion signal: z-score × Hurst interaction
+        # High z-score + low Hurst (mean-reverting) = strong reversion expected
+        features.mean_reversion_signal = features.price_zscore * (1.0 - features.hurst_proxy)
+
+        # Smart money flow: high-volume moves in a direction = smart money
+        if hist and len(hist.prices) >= 5:
+            p5_vals = hist.get_prices(5)
+            v5_vals = hist.get_volumes(5)
+            if len(p5_vals) >= 2 and len(v5_vals) >= 2:
+                flow = 0.0
+                avg_v = sum(v5_vals) / len(v5_vals) if v5_vals else 1.0
+                for i in range(1, min(len(p5_vals), len(v5_vals))):
+                    direction = 1.0 if p5_vals[i] > p5_vals[i-1] else -1.0
+                    weight = v5_vals[i] / max(avg_v, 1.0)  # higher vol = more weight
+                    flow += direction * weight
+                features.smart_money_flow = max(-3.0, min(3.0, flow))
+
+        # Edge decay: how fast the probability edge is shrinking over time
+        if hist and len(hist.prices) >= 10:
+            p10 = hist.get_prices(10)
+            edge_old = abs(p10[0] - 0.5)
+            edge_new = abs(p10[-1] - 0.5)
+            features.edge_decay = edge_new - edge_old  # negative = edge shrinking
+
+        # Price efficiency: ratio of net price move to total absolute moves
+        if hist and len(hist.prices) >= 10:
+            p10 = hist.get_prices(10)
+            net_move = abs(p10[-1] - p10[0])
+            total_move = sum(abs(p10[i] - p10[i-1]) for i in range(1, len(p10)))
+            features.price_efficiency = net_move / max(total_move, 1e-6) if total_move > 0 else 0.0
 
         return features
 
