@@ -156,6 +156,25 @@ export default function DashboardPage() {
             )}
           </div>
 
+          {/* Market Mode Pill — clickable toggle */}
+          {frank && (
+            <button
+              onClick={async () => {
+                try {
+                  await api.frankenstein.updateSettings({ brain: { sports_only: !frank.sports_only_mode } });
+                  fetchAll();
+                } catch { /* ignore */ }
+              }}
+              className="flex items-center gap-2 rounded-xl glass px-3 py-2 text-xs hover:bg-white/[0.04] transition-all"
+              title="Click to toggle market mode"
+            >
+              <span>{frank.sports_only_mode ? "🏀" : "🌐"}</span>
+              <span className={`font-semibold ${frank.sports_only_mode ? "text-orange-400" : "text-blue-400"}`}>
+                {frank.sports_only_mode ? "Sports Only" : "All Markets"}
+              </span>
+            </button>
+          )}
+
           {health ? (
             <div className="flex items-center gap-2 rounded-xl glass px-3 py-2 text-xs">
               <IconCircle size={6} className={health.paper_trading?.enabled ? "text-[var(--warning)]" : "text-accent"} />

@@ -13,6 +13,7 @@ import {
   IconSettings,
   IconSports,
   IconStrategy,
+  IconBook,
 } from "@/components/ui/Icons";
 
 const NAV_ITEMS = [
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/portfolio", label: "Portfolio", icon: IconPortfolio },
   { href: "/dashboard/risk", label: "Risk", icon: IconShield },
   { href: "/dashboard/settings", label: "Settings", icon: IconSettings },
+  { href: "/dashboard/guide", label: "How It Works", icon: IconBook },
 ];
 
 export function Sidebar() {
