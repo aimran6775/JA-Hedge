@@ -97,6 +97,14 @@ async def force_retrain() -> dict:
     return result
 
 
+@router.post("/bootstrap")
+async def bootstrap_training_data() -> dict:
+    """Bootstrap training data from settled/active markets to solve cold-start."""
+    frank = _get_frank()
+    result = await frank.bootstrap_training_data()
+    return result
+
+
 @router.get("/learner")
 async def learner_status() -> dict:
     """Get the online learner's status."""

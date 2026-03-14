@@ -238,6 +238,13 @@ class Frankenstein:
             name="frankenstein_scan",
         )
 
+        # Auto-bootstrap if model is untrained (cold-start fix)
+        if self._state.model_version == "untrained":
+            asyncio.create_task(
+                self._auto_bootstrap(),
+                name="frankenstein_bootstrap",
+            )
+
         log.info(
             "🧟⚡ FRANKENSTEIN IS ALIVE!",
             model=self._model.name,
@@ -922,6 +929,27 @@ class Frankenstein:
 
     # ── Scheduled Tasks ───────────────────────────────────────────────
 
+    async def _auto_bootstrap(self) -> None:
+        """Auto-bootstrap training data on cold start (runs once at startup)."""
+        # Wait for market cache to populate first
+        for _ in range(30):
+            if market_cache.get_active():
+                break
+            await asyncio.sleep(2)
+
+        log.info("🧟🧪 AUTO-BOOTSTRAP: Model is untrained, bootstrapping training data...")
+        try:
+            result = await self.bootstrap_training_data()
+            trained = result.get("retrain_result", {}).get("success", False)
+            log.info(
+                "🧟🧪 AUTO-BOOTSTRAP COMPLETE",
+                trained=trained,
+                memory=self.memory.total_resolved,
+                version=self._state.model_version,
+            )
+        except Exception as e:
+            log.error("auto_bootstrap_failed", error=str(e))
+
     async def _retrain_task(self) -> None:
         """Periodic model retraining."""
         checkpoint = await self.learner.retrain()
@@ -1110,6 +1138,70 @@ class Frankenstein:
                 "auc": checkpoint.val_auc,
             }
         return {"success": False, "reason": "insufficient_data_or_no_improvement"}
+
+    async def bootstrap_training_data(self) -> dict[str, Any]:
+        """
+        Bootstrap training data to solve the cold-start problem.
+
+        Tries two methods:
+        1. Fetch settled markets from Kalshi (best quality — real outcomes)
+        2. Synthesize from active markets (fallback — probabilistic labels)
+
+        After injecting data, triggers an immediate retrain.
+        """
+        from app.frankenstein.bootstrap import (
+            bootstrap_from_settled_markets,
+            bootstrap_from_active_markets,
+        )
+
+        result: dict[str, Any] = {
+            "settled_stats": {},
+            "active_stats": {},
+            "retrain_result": None,
+            "memory_before": self.memory.total_resolved,
+        }
+
+        # Method 1: Settled markets (real outcomes)
+        try:
+            settled_stats = await bootstrap_from_settled_markets(
+                self._api, self.memory,
+                max_markets=500, min_target=100,
+            )
+            result["settled_stats"] = settled_stats
+        except Exception as e:
+            log.warning("bootstrap_settled_failed", error=str(e))
+            result["settled_stats"] = {"error": str(e)}
+
+        # Method 2: Active markets (if settled didn't give enough)
+        if self.memory.total_resolved < self.learner.min_samples:
+            try:
+                active_stats = await bootstrap_from_active_markets(
+                    self.memory, count=200,
+                )
+                result["active_stats"] = active_stats
+            except Exception as e:
+                log.warning("bootstrap_active_failed", error=str(e))
+                result["active_stats"] = {"error": str(e)}
+
+        result["memory_after"] = self.memory.total_resolved
+
+        # Trigger retrain if we have enough data now
+        if self.memory.total_resolved >= self.learner.min_samples:
+            retrain_result = await self.force_retrain()
+            result["retrain_result"] = retrain_result
+        else:
+            result["retrain_result"] = {
+                "success": False,
+                "reason": f"Only {self.memory.total_resolved} resolved trades, need {self.learner.min_samples}",
+            }
+
+        log.info(
+            "🧟🧪 BOOTSTRAP COMPLETE",
+            memory_before=result["memory_before"],
+            memory_after=result["memory_after"],
+            trained=result["retrain_result"].get("success", False) if result["retrain_result"] else False,
+        )
+        return result
 
     # ── Full Status ───────────────────────────────────────────────────
 

@@ -158,12 +158,15 @@ class Market(BaseModel):
     fractional_trading_enabled: bool = False
     price_ranges: list[PriceRange] = Field(default_factory=list)
 
+    # Result (present on settled markets)
+    result: str | None = None  # "yes", "no", "void"
+
     # Timestamps
     open_time: datetime | None = None
     close_time: datetime | None = None
     expiration_time: datetime | None = None
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
     @property
     def midpoint(self) -> Decimal | None:
