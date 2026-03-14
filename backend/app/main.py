@@ -137,6 +137,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.frankenstein = frankenstein
     log.info("🧟 frankenstein_created", generation=0)
 
+    # 📊 Pre-built Trading Strategies Engine
+    from app.strategies import StrategyEngine
+
+    strategy_engine = StrategyEngine()
+    state.strategy_engine = strategy_engine
+    log.info("📊 strategy_engine_created", strategies=len(strategy_engine.configs))
+
     # 🏀 SPORTS MODULE — The profit engine
     from app.sports.detector import sports_detector as _sports_detector
     from app.sports.odds_client import OddsClient
@@ -456,6 +463,7 @@ async def health_check() -> dict:
             "execution_engine": "ready" if app_state.execution_engine else "not_initialized",
             "risk_manager": "ready" if app_state.risk_manager else "not_initialized",
             "ai_strategy": "ready" if app_state.trading_strategy else "not_initialized",
+            "strategy_engine": "ready" if app_state.strategy_engine else "not_initialized",
             "frankenstein": "alive" if (app_state.frankenstein and app_state.frankenstein._state.is_alive) else "sleeping",
             "sports_detector": "ready" if app_state.sports_detector else "not_initialized",
             "odds_client": "ready" if (app_state.odds_client and app_state.odds_client.is_available) else "no_key",

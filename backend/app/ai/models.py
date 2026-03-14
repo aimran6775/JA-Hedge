@@ -261,62 +261,76 @@ class XGBoostPredictor(PredictionModel):
           2. Momentum (recent price movement direction)
           3. Volume confirmation (high volume validates price direction)
           4. Spread penalty (wide spread → less confident)
+          5. RSI oversold/overbought (if available)
+          6. MACD crossover (if available)
         """
         mid = features.midpoint
         if mid <= 0 or mid >= 1:
             mid = 0.5
 
         # ── Signal 1: Time-weighted market trust ────────────
-        # Near expiry, the market price IS the best estimate.
-        # Far from expiry, there's more room for the model to disagree.
         if features.hours_to_expiry > 0:
-            # Decaying disagreement factor: 1.0 far from expiry → 0.0 at expiry
             time_trust = 1.0 / (1.0 + 0.1 * features.hours_to_expiry)
-            # time_trust ≈ 0.01 at 1000h, ≈ 0.50 at 10h, ≈ 0.91 at 1h
         else:
-            time_trust = 0.95  # very near expiry: trust market almost fully
+            time_trust = 0.95
 
-        # Base estimate: weighted average of market price and our model
-        # For the heuristic, lean toward the market price
         base_prob = mid
 
-        # ── Signal 2: Momentum ──────────────────────────────
-        # If price is moving, follow it (prediction markets trend toward truth)
+        # ── Signal 2: Momentum (stronger weight) ───────────
         momentum_adj = 0.0
-        if features.price_change_5m > 0.02:
-            momentum_adj = min(features.price_change_5m * 2.0, 0.10)
-        elif features.price_change_5m < -0.02:
-            momentum_adj = max(features.price_change_5m * 2.0, -0.10)
-        elif features.price_change_1m > 0.01:
-            momentum_adj = min(features.price_change_1m * 1.5, 0.05)
-        elif features.price_change_1m < -0.01:
-            momentum_adj = max(features.price_change_1m * 1.5, -0.05)
+        if features.price_change_5m > 0.015:
+            momentum_adj = min(features.price_change_5m * 2.5, 0.12)
+        elif features.price_change_5m < -0.015:
+            momentum_adj = max(features.price_change_5m * 2.5, -0.12)
+        elif features.price_change_1m > 0.008:
+            momentum_adj = min(features.price_change_1m * 2.0, 0.06)
+        elif features.price_change_1m < -0.008:
+            momentum_adj = max(features.price_change_1m * 2.0, -0.06)
 
         # ── Signal 3: Convergence boost near expiry ─────────
-        # Near expiry, extreme prices are highly informative
         convergence_adj = 0.0
         if features.hours_to_expiry < 24:
             dist = abs(mid - 0.5)
-            if dist > 0.3:
-                # Price is extreme AND near expiry → boost toward dominant side
+            if dist > 0.25:
                 direction = 1.0 if mid > 0.5 else -1.0
-                convergence_adj = direction * dist * time_trust * 0.15
+                convergence_adj = direction * dist * time_trust * 0.20
 
         # ── Signal 4: Volume confirmation ───────────────────
         volume_adj = 0.0
         if features.volume_ratio > 1.5 and abs(features.price_change_5m) > 0.01:
-            # High relative volume + price movement = confirmed move
-            volume_adj = features.price_change_5m * 0.5 * min(features.volume_ratio / 3.0, 1.0)
+            volume_adj = features.price_change_5m * 0.6 * min(features.volume_ratio / 3.0, 1.0)
+
+        # ── Signal 5: RSI-based adjustment ──────────────────
+        rsi_adj = 0.0
+        if features.rsi_14 > 0:
+            if features.rsi_14 > 70 and features.hours_to_expiry < 48:
+                rsi_adj = 0.03  # overbought near expiry → likely goes YES
+            elif features.rsi_14 < 30 and features.hours_to_expiry < 48:
+                rsi_adj = -0.03  # oversold near expiry → likely goes NO
+            elif features.rsi_14 > 70 and features.hours_to_expiry >= 48:
+                rsi_adj = -0.02  # overbought far → possible reversion
+            elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
+                rsi_adj = 0.02
+
+        # ── Signal 6: MACD crossover ────────────────────────
+        macd_adj = 0.0
+        if features.macd != 0:
+            if features.macd > 0.02:
+                macd_adj = min(features.macd * 0.5, 0.04)
+            elif features.macd < -0.02:
+                macd_adj = max(features.macd * 0.5, -0.04)
 
         # ── Combine signals ─────────────────────────────────
-        # Weight momentum/volume less near expiry (market is already efficient)
-        signal_weight = max(0.05, 1.0 - time_trust)
-        prob_yes = base_prob + signal_weight * (momentum_adj + volume_adj) + convergence_adj
+        signal_weight = max(0.08, 1.0 - time_trust)
+        prob_yes = (
+            base_prob
+            + signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
+            + convergence_adj
+        )
 
         # ── Spread penalty ──────────────────────────────────
-        # Wide spread = uncertainty → push confidence toward 0.5
         if features.spread_pct > 0.10:
-            spread_penalty = min(features.spread_pct * 0.3, 0.15)
+            spread_penalty = min(features.spread_pct * 0.25, 0.12)
             prob_yes = prob_yes * (1.0 - spread_penalty) + 0.5 * spread_penalty
 
         prob_yes = max(0.05, min(0.95, prob_yes))

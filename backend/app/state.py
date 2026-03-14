@@ -35,6 +35,9 @@ class AppState:
     prediction_model: Any | None = None  # PredictionModel
     autonomous_agent: Any | None = None  # AutonomousAgent (legacy)
 
+    # 📊 Strategy Engine (pre-built trading strategies)
+    strategy_engine: Any | None = None  # StrategyEngine
+
     # 🧟 FRANKENSTEIN — The unified AI brain
     frankenstein: Any | None = None  # Frankenstein
 

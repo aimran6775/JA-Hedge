@@ -247,3 +247,15 @@ export function IconSports({ className = "", size = 20 }: IconProps) {
     </svg>
   );
 }
+
+export function IconStrategy({ className = "", size = 20 }: IconProps) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2 20h.01" />
+      <path d="M7 20v-4" />
+      <path d="M12 20v-8" />
+      <path d="M17 20V8" />
+      <path d="M22 4v16" />
+    </svg>
+  );
+}

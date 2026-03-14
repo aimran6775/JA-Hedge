@@ -204,6 +204,55 @@ export interface RiskStatus {
   recent_violations: string[];
 }
 
+// Strategy Engine types
+export interface StrategyInfo {
+  name: string;
+  display_name: string;
+  description: string;
+  risk_level: string;
+  enabled: boolean;
+  config: {
+    min_confidence: number;
+    min_edge: number;
+    max_position_pct: number;
+    kelly_fraction: number;
+    max_positions: number;
+    enabled: boolean;
+    description: string;
+  };
+  stats: {
+    scans: number;
+    signals: number;
+    trades: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+  };
+}
+
+export interface StrategyEngineStatus {
+  enabled_strategies: number;
+  total_strategies: number;
+  total_signals_generated: number;
+  strategies: StrategyInfo[];
+  recent_signals: StrategySignalItem[];
+}
+
+export interface StrategySignalItem {
+  ticker: string;
+  side: string;
+  confidence: number;
+  edge: number;
+  strategy: string;
+  reasoning: string;
+  recommended_count: number;
+  expected_profit: number;
+  predicted_prob: number;
+  price_cents: number;
+  urgency: number;
+  timestamp: number;
+}
+
 // Sports types
 export interface SportsMarket {
   ticker: string;
@@ -426,6 +475,30 @@ export const api = {
     chatHistory: (n?: number) =>
       apiFetch<Record<string, unknown>[]>(
         `/frankenstein/chat/history${n ? `?n=${n}` : ""}`,
+      ),
+  },
+
+  // Strategy Engine (pre-built trading strategies)
+  strategies: {
+    status: () => apiFetch<StrategyEngineStatus>("/strategies/status"),
+    signals: (n?: number) =>
+      apiFetch<{ total_signals: number; signals: StrategySignalItem[] }>(
+        `/strategies/signals${n ? `?n=${n}` : ""}`,
+      ),
+    toggle: (strategy: string, enabled: boolean) =>
+      apiFetch<{ status: string; strategy: string; enabled: boolean }>(
+        "/strategies/toggle",
+        { method: "POST", body: JSON.stringify({ strategy, enabled }) },
+      ),
+    config: (strategy: string, config: Record<string, unknown>) =>
+      apiFetch<{ status: string }>("/strategies/config", {
+        method: "POST",
+        body: JSON.stringify({ strategy, ...config }),
+      }),
+    scan: () =>
+      apiFetch<{ markets_scanned: number; total_signals: number; signals: StrategySignalItem[] }>(
+        "/strategies/scan",
+        { method: "POST" },
       ),
   },
 

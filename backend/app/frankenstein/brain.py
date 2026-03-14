@@ -417,6 +417,62 @@ class Frankenstein:
             })
 
         # Phase 9: Rank by expected value and take top opportunities
+        # ── Strategy Engine Signals ─────────────────────────────────
+        # Merge signals from the pre-built strategy engine alongside
+        # the model-based signals evaluated above.
+        try:
+            from app.state import state as _app_state
+
+            if _app_state.strategy_engine:
+                from app.pipeline.portfolio_tracker import portfolio_state as _ps
+
+                balance_cents = _ps.balance_cents or 1000000
+                strat_signals = _app_state.strategy_engine.scan_all_markets(
+                    candidates,
+                    {m.ticker: self._features.compute(m) for m in candidates},
+                    {m.ticker: pred for m, pred in zip(candidates, predictions)},
+                    balance_cents,
+                )
+                for sig in strat_signals[:20]:
+                    # Avoid duplicate tickers already in trade_candidates
+                    existing_tickers = {c["market"].ticker for c in trade_candidates}
+                    if sig.ticker in existing_tickers:
+                        continue
+
+                    # Find corresponding market
+                    market_match = next((m for m in candidates if m.ticker == sig.ticker), None)
+                    if not market_match:
+                        continue
+
+                    feat = self._features.compute(market_match)
+                    pred_for_sig = Prediction(
+                        predicted_prob=sig.confidence,
+                        confidence=sig.confidence,
+                        side=sig.side,
+                        edge=sig.edge,
+                        features_hash="strategy_engine",
+                        model_name=sig.strategy,
+                    )
+
+                    count = max(1, sig.recommended_count)
+                    price_cents = self._compute_price(pred_for_sig, feat)
+                    cost_frac = price_cents / 100.0
+                    ev = abs(sig.edge) * count * (1.0 - cost_frac)
+
+                    trade_candidates.append({
+                        "market": market_match,
+                        "prediction": pred_for_sig,
+                        "features": feat,
+                        "count": count,
+                        "price_cents": price_cents,
+                        "kelly": sig.edge * 0.25,
+                        "ev": ev,
+                    })
+                    signals_generated += 1
+                    self._state.total_signals += 1
+        except Exception as e:
+            log.debug("strategy_engine_merge_error", error=str(e))
+
         trade_candidates.sort(key=lambda c: c["ev"], reverse=True)
         max_trades_per_scan = min(
             params.max_simultaneous_positions - self._count_open_positions(),

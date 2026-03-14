@@ -13,6 +13,7 @@ from app.routes.agent import router as agent_router
 from app.routes.frankenstein import router as frankenstein_router
 from app.routes.sports import router as sports_router
 from app.routes.dashboard import router as dashboard_router
+from app.routes.strategies import router as strategies_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(markets_router)
@@ -26,3 +27,4 @@ api_router.include_router(agent_router)
 api_router.include_router(frankenstein_router)
 api_router.include_router(sports_router)
 api_router.include_router(dashboard_router)
+api_router.include_router(strategies_router)
