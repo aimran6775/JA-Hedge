@@ -56,6 +56,7 @@ class PerformanceSnapshot:
 
     # Volume
     total_trades: int = 0
+    real_trades: int = 0            # Excludes bootstrap/synthetic trades
     trades_today: int = 0
     trades_this_hour: int = 0
     unique_markets: int = 0
@@ -154,8 +155,9 @@ class PerformanceTracker:
         # Consecutive losses
         consecutive_losses, max_consecutive = self._compute_streaks(resolved)
 
-        # Prediction accuracy
-        with_outcomes = [t for t in resolved if t.was_correct is not None]
+        # Prediction accuracy (exclude bootstrap/synthetic trades)
+        real_trades = [t for t in resolved if not t.model_version.startswith("bootstrap")]
+        with_outcomes = [t for t in real_trades if t.was_correct is not None]
         accuracy = (
             sum(1 for t in with_outcomes if t.was_correct) / len(with_outcomes)
             if with_outcomes else 0.0
@@ -204,6 +206,7 @@ class PerformanceTracker:
             confidence_calibration=calibration,
             edge_capture=edge_capture,
             total_trades=len(resolved),
+            real_trades=len(real_trades),
             trades_today=len(today_trades),
             trades_this_hour=len(hour_trades),
             unique_markets=unique_markets,
@@ -312,8 +315,8 @@ class PerformanceTracker:
         if latest.max_drawdown < -1500:  # -$15 of $100 simulated
             return True, f"max_drawdown_${abs(latest.max_drawdown):.0f}"
 
-        # Rule 4: Model accuracy tanked below 35%
-        if latest.total_trades >= 20 and latest.prediction_accuracy < 0.35:
+        # Rule 4: Model accuracy tanked below 35% (only count real trades)
+        if latest.real_trades >= 20 and latest.prediction_accuracy < 0.35:
             return True, f"low_accuracy_{latest.prediction_accuracy:.1%}"
 
         return False, "ok"
