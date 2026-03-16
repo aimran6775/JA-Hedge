@@ -28,9 +28,9 @@ log = get_logger("frankenstein.strategy")
 class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
-    # Signal filters (lowered for heuristic/untrained model to generate trades)
-    min_confidence: float = 0.52
-    min_edge: float = 0.02
+    # Signal filters — require meaningful confidence & edge
+    min_confidence: float = 0.58
+    min_edge: float = 0.04
 
     # Position sizing
     kelly_fraction: float = 0.25
@@ -93,9 +93,9 @@ class AdaptiveStrategy:
         self.adaptation_interval = adaptation_interval
 
         # Defaults (never go below/above these)
-        self._MIN_CONFIDENCE = 0.50
+        self._MIN_CONFIDENCE = 0.55
         self._MAX_CONFIDENCE = 0.85
-        self._MIN_EDGE = 0.02
+        self._MIN_EDGE = 0.03
         self._MAX_EDGE = 0.15
         self._MIN_KELLY = 0.05
         self._MAX_KELLY = 0.50

@@ -352,11 +352,21 @@ class EnsemblePredictor(PredictionModel):
         self._calibrator.save(str(base / "calibrator.pkl"))
 
     def load(self, path: str) -> None:
-        """Load all ensemble components."""
+        """Load all ensemble components (graceful if LR/calibrator missing)."""
         self._xgb.load(path)
         base = Path(path).parent
-        self._lr.load(str(base / "lr_model.pkl"))
-        self._calibrator.load(str(base / "calibrator.pkl"))
+        try:
+            lr_path = base / "lr_model.pkl"
+            if lr_path.exists():
+                self._lr.load(str(lr_path))
+        except Exception:
+            pass  # XGBoost alone is fine
+        try:
+            cal_path = base / "calibrator.pkl"
+            if cal_path.exists():
+                self._calibrator.load(str(cal_path))
+        except Exception:
+            pass  # uncalibrated is fine
 
 
 def walk_forward_validate(

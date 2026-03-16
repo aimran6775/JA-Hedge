@@ -239,8 +239,11 @@ class Frankenstein:
             name="frankenstein_scan",
         )
 
-        # Auto-bootstrap if model is untrained (cold-start fix)
-        if self._state.model_version == "untrained":
+        # Try loading latest checkpoint before deciding to bootstrap
+        self._try_load_latest_checkpoint()
+
+        # Auto-bootstrap if model is STILL untrained after checkpoint load
+        if not self._model.is_trained:
             asyncio.create_task(
                 self._auto_bootstrap(),
                 name="frankenstein_bootstrap",
@@ -377,15 +380,20 @@ class Frankenstein:
                         continue
 
             # Apply adaptive thresholds
-            # 🏀 Sports markets get slightly relaxed thresholds when
-            # no Vegas data is available (base model is still useful)
             effective_min_conf = params.min_confidence
             effective_min_edge = params.min_edge
+
+            # 🛡️ HEURISTIC GUARD: When model isn't trained, require
+            # much higher thresholds — the heuristic has no real edge.
+            if not self._model.is_trained:
+                effective_min_conf = max(effective_min_conf, 0.65)
+                effective_min_edge = max(effective_min_edge, 0.08)
+
+            # 🏀 Sports WITHOUT Vegas data → be STRICTER, not looser.
+            # Without Vegas lines, we're missing critical information.
             if self._sports_only and sports_pred is None:
-                # Without Vegas, base model produces smaller edges.
-                # Lower threshold so we can at least paper trade and learn.
-                effective_min_conf = min(params.min_confidence, 0.50)
-                effective_min_edge = min(params.min_edge, 0.015)
+                effective_min_conf = max(effective_min_conf, 0.60)
+                effective_min_edge = max(effective_min_edge, 0.05)
 
             if prediction.confidence < effective_min_conf:
                 continue
@@ -963,6 +971,54 @@ class Frankenstein:
         return max(1, min(99, int(price_frac * 100)))
 
     # ── Scheduled Tasks ───────────────────────────────────────────────
+
+    def _try_load_latest_checkpoint(self) -> None:
+        """Try to load the latest model checkpoint from disk.
+
+        This is critical: without this, every restart loses the trained model
+        and falls back to the heuristic (which has no real predictive power).
+        """
+        try:
+            ckpt_dir = Path(self.config.checkpoint_dir)
+            if not ckpt_dir.exists():
+                log.info("no_checkpoint_dir", path=str(ckpt_dir))
+                return
+
+            pkl_files = sorted(
+                ckpt_dir.glob("frankenstein_gen*.pkl"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if not pkl_files:
+                log.info("no_checkpoints_found", path=str(ckpt_dir))
+                return
+
+            latest = pkl_files[0]
+            self._model.load(str(latest))
+
+            # Extract generation from filename (frankenstein_genN_...)
+            name = latest.stem
+            gen_str = name.split("_")[1].replace("gen", "")
+            try:
+                gen = int(gen_str)
+            except ValueError:
+                gen = 1
+
+            version_part = "_".join(name.split("_")[2:])
+            self._state.generation = gen
+            self._state.model_version = version_part or name
+            self.learner._generation = gen
+            self.learner._total_promotions = gen
+
+            log.info(
+                "\U0001f9df\u2705 CHECKPOINT RESTORED",
+                path=str(latest),
+                generation=gen,
+                version=self._state.model_version,
+                is_trained=self._model.is_trained,
+            )
+        except Exception as e:
+            log.error("checkpoint_load_failed", error=str(e))
 
     async def _auto_bootstrap(self) -> None:
         """Auto-bootstrap training data on cold start (runs once at startup)."""
