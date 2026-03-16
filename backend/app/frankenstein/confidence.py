@@ -186,34 +186,75 @@ class ConfidenceScorer:
         has_vegas: bool,
         is_sports: bool,
     ) -> ConfidenceFactor:
+        """
+        Score model strength using REAL uncertainty metrics:
+        - Tree agreement (how much individual trees agree)
+        - Calibration quality (is the model well-calibrated?)
+        - Prediction standard deviation (raw variance)
+        - Model training status
+        """
         score = 0.0
         reasons = []
 
+        # ── Base: trained vs heuristic ──────────────────────
         if model_trained:
-            score += 60
+            score += 35
             reasons.append("Trained ML model active")
         else:
-            score += 15
+            score += 10
             reasons.append("Heuristic only (no ML)")
 
-        if has_vegas and is_sports:
+        # ── Tree Agreement (0–1, from individual tree variance) ──
+        agreement = getattr(prediction, "tree_agreement", 1.0)
+        if agreement >= 0.85:
             score += 25
+            reasons.append(f"High tree agreement ({agreement:.0%})")
+        elif agreement >= 0.65:
+            score += 15
+            reasons.append(f"Moderate tree agreement ({agreement:.0%})")
+        elif agreement >= 0.45:
+            score += 5
+            reasons.append(f"Low tree agreement ({agreement:.0%})")
+        else:
+            score -= 10
+            reasons.append(f"Poor tree agreement ({agreement:.0%})")
+
+        # ── Prediction Std (lower = more certain) ───────────
+        pred_std = getattr(prediction, "prediction_std", 0.0)
+        if pred_std < 0.03:
+            score += 10
+            reasons.append(f"Low prediction variance (σ={pred_std:.3f})")
+        elif pred_std < 0.07:
+            score += 5
+            reasons.append(f"Moderate variance (σ={pred_std:.3f})")
+        elif pred_std > 0.10:
+            score -= 10
+            reasons.append(f"High variance (σ={pred_std:.3f})")
+
+        # ── Calibration quality ─────────────────────────────
+        is_calibrated = getattr(prediction, "is_calibrated", False)
+        cal_error = getattr(prediction, "calibration_error", 0.0)
+        if is_calibrated:
+            if cal_error < 0.05:
+                score += 15
+                reasons.append(f"Well-calibrated (ECE={cal_error:.1%})")
+            elif cal_error < 0.10:
+                score += 8
+                reasons.append(f"Decent calibration (ECE={cal_error:.1%})")
+            else:
+                score += 0
+                reasons.append(f"Poor calibration (ECE={cal_error:.1%})")
+        else:
+            score += 0
+            reasons.append("Not yet calibrated")
+
+        # ── Vegas/sports modifiers ──────────────────────────
+        if has_vegas and is_sports:
+            score += 15
             reasons.append("Vegas odds data available")
         elif is_sports and not has_vegas:
-            score += 5
+            score += 3
             reasons.append("Sports market but no Vegas data")
-
-        # Bonus for high model confidence
-        conf = prediction.confidence
-        if conf >= 0.80:
-            score += 15
-            reasons.append(f"Very high model confidence ({conf:.0%})")
-        elif conf >= 0.65:
-            score += 8
-            reasons.append(f"Good model confidence ({conf:.0%})")
-        elif conf < 0.55:
-            score -= 10
-            reasons.append(f"Low model confidence ({conf:.0%})")
 
         score = max(0, min(100, score))
         w = FACTOR_WEIGHTS["model_strength"]
@@ -496,8 +537,8 @@ def explain_decision_logic() -> dict[str, Any]:
             },
             {
                 "step": 3,
-                "name": "ML Prediction",
-                "description": "The XGBoost model (or heuristic fallback) predicts P(YES outcome) for each market. The side (YES/NO) and edge (prediction − market price) are derived from this probability.",
+                "name": "ML Prediction + Uncertainty",
+                "description": "The XGBoost model predicts P(YES) for each market. Predictions are sampled at ~10 tree checkpoints to compute variance (uncertainty). Calibration data adjusts probabilities based on historical accuracy. Confidence = entropy + edge + tree agreement + calibration quality.",
                 "icon": "🧠",
             },
             {
@@ -547,9 +588,9 @@ def explain_decision_logic() -> dict[str, Any]:
             {
                 "name": "Model Strength",
                 "weight": "25%",
-                "description": "Is the trained XGBoost model making the prediction, or the heuristic fallback? Is Vegas odds data available for sports markets?",
-                "best_case": "Trained ML model + Vegas odds data → 100",
-                "worst_case": "Heuristic only, no additional data → 15",
+                "description": "Uses real ML uncertainty metrics: tree agreement (do individual XGBoost trees agree?), prediction variance (σ), calibration quality (ECE), plus training status and Vegas data availability.",
+                "best_case": "Trained model + high tree agreement + well-calibrated + Vegas data → 100",
+                "worst_case": "Heuristic only + high variance + no calibration → 10",
             },
             {
                 "name": "Edge Quality",

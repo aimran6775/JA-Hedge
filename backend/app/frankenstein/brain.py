@@ -446,6 +446,16 @@ class Frankenstein:
             cost_frac = price_cents / 100.0
             ev = abs(prediction.edge) * count * (1.0 - cost_frac)
 
+            # Enrich confidence breakdown with uncertainty metrics
+            breakdown_dict = conf_breakdown.to_dict()
+            breakdown_dict["uncertainty"] = {
+                "tree_agreement": round(prediction.tree_agreement, 3),
+                "prediction_std": round(prediction.prediction_std, 4),
+                "is_calibrated": prediction.is_calibrated,
+                "calibration_error": round(prediction.calibration_error, 4),
+                "calibrated_prob": round(prediction.calibrated_prob, 4) if prediction.calibrated_prob is not None else None,
+            }
+
             trade_candidates.append({
                 "market": market,
                 "prediction": prediction,
@@ -454,7 +464,7 @@ class Frankenstein:
                 "price_cents": price_cents,
                 "kelly": kelly,
                 "ev": ev,
-                "confidence_breakdown": conf_breakdown.to_dict(),
+                "confidence_breakdown": breakdown_dict,
             })
 
         # Phase 9: Rank by expected value and take top opportunities
@@ -1161,6 +1171,13 @@ class Frankenstein:
                 if settlement and settlement.market_result is not None:
                     result_str = settlement.market_result.value.lower()
                     correct = trade.predicted_side == result_str
+
+                    # ── Record calibration data ─────────────────────
+                    # The model predicted P(YES) = trade.predicted_prob.
+                    # Actual outcome: YES resolved → 1, NO resolved → 0.
+                    if result_str in ("yes", "no") and hasattr(self._model, 'calibration'):
+                        actual_yes = 1 if result_str == "yes" else 0
+                        self._model.calibration.record(trade.predicted_prob, actual_yes)
 
                     if result_str == "void":
                         self.memory.resolve_trade(

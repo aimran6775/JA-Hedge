@@ -902,6 +902,40 @@ function TradeDetailPopup({ trade, title, onClose }: { trade: FrankensteinTrade;
           </div>
         </div>
 
+        {/* Uncertainty Metrics (new) */}
+        {trade.confidence_breakdown?.uncertainty && (
+          <div className="mx-6 mt-3 rounded-xl bg-white/[0.02] border border-white/[0.04] p-4 space-y-2.5">
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Model Uncertainty</div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[var(--text-muted)]">Tree Agreement</span>
+              <div className="flex items-center gap-2">
+                <div className="h-1.5 w-16 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${(trade.confidence_breakdown.uncertainty.tree_agreement ?? 0) * 100}%` }} />
+                </div>
+                <span className="text-xs font-bold tabular-nums text-accent">{((trade.confidence_breakdown.uncertainty.tree_agreement ?? 0) * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[var(--text-muted)]">Prediction Std</span>
+              <span className="text-xs font-bold tabular-nums text-[var(--text-primary)]">σ = {(trade.confidence_breakdown.uncertainty.prediction_std ?? 0).toFixed(4)}</span>
+            </div>
+            {trade.confidence_breakdown.uncertainty.is_calibrated && (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[var(--text-muted)]">Calibrated Prob</span>
+                  <span className="text-xs font-bold tabular-nums text-[var(--text-primary)]">{((trade.confidence_breakdown.uncertainty.calibrated_prob ?? 0) * 100).toFixed(1)}%</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[var(--text-muted)]">Calibration Error</span>
+                  <span className={`text-xs font-bold tabular-nums ${(trade.confidence_breakdown.uncertainty.calibration_error ?? 0) < 0.05 ? "text-accent" : "text-[var(--warning)]"}`}>
+                    {((trade.confidence_breakdown.uncertainty.calibration_error ?? 0) * 100).toFixed(1)}%
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Confidence Breakdown (multi-factor) */}
         {trade.confidence_breakdown && trade.confidence_breakdown.factors && trade.confidence_breakdown.factors.length > 0 && (
           <div className="mx-6 mt-3 rounded-xl bg-white/[0.02] border border-white/[0.04] p-4 space-y-3">

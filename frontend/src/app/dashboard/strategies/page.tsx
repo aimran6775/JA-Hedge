@@ -45,7 +45,7 @@ const STRATEGY_DESCRIPTIONS: Record<string, string> = {
 };
 
 export default function StrategiesPage() {
-  const [activeTab, setActiveTab] = useState<"strategies" | "decision-engine">("strategies");
+  const [activeTab, setActiveTab] = useState<"strategies" | "decision-engine" | "model-intelligence">("strategies");
   const [engineStatus, setEngineStatus] = useState<StrategyEngineStatus | null>(null);
   const [signals, setSignals] = useState<StrategySignalItem[]>([]);
   const [scanResult, setScanResult] = useState<{ markets_scanned: number; total_signals: number; signals: StrategySignalItem[] } | null>(null);
@@ -164,6 +164,16 @@ export default function StrategiesPage() {
         >
           <span className="flex items-center gap-2"><IconTarget size={14} /> Decision Engine</span>
         </button>
+        <button
+          onClick={() => setActiveTab("model-intelligence")}
+          className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "model-intelligence"
+              ? "bg-accent/15 text-accent border border-accent/20"
+              : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04] border border-transparent"
+          }`}
+        >
+          <span className="flex items-center gap-2"><IconZap size={14} /> Model Intelligence</span>
+        </button>
       </div>
 
       {activeTab === "strategies" ? (
@@ -180,8 +190,10 @@ export default function StrategiesPage() {
           togglingStrategy={togglingStrategy}
           handleToggle={handleToggle}
         />
-      ) : (
+      ) : activeTab === "decision-engine" ? (
         <DecisionEngineTab />
+      ) : (
+        <ModelIntelligenceTab />
       )}
     </div>
   );
@@ -644,6 +656,186 @@ function SignalRow({ signal }: { signal: StrategySignalItem }) {
           {signal.reasoning}
         </p>
       )}
+    </div>
+  );
+}
+
+
+/* ── Model Intelligence Tab ──────────────────────────────────────── */
+
+function ModelIntelligenceTab() {
+  const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await api.frankenstein.modelIntelligence();
+        if (!cancelled) setData(result);
+      } catch {
+        if (!cancelled) setError(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) {
+    return (
+      <Card className="p-8 text-center">
+        <div className="animate-pulse text-[var(--text-muted)]">
+          Loading model intelligence…
+        </div>
+      </Card>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <Card className="p-8 text-center text-[var(--text-muted)]">
+        Model intelligence data unavailable — is the backend running?
+      </Card>
+    );
+  }
+
+  const ensemble = (data.ensemble || {}) as Record<string, unknown>;
+  const calibration = (data.calibration || {}) as Record<string, unknown>;
+  const features = (data.features || {}) as Record<string, unknown>;
+  const binDetails = (calibration.bin_details || []) as { range: string; count: number; actual_rate: number }[];
+
+  return (
+    <div className="space-y-6">
+      {/* Model Overview */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard
+          label="Model"
+          value={String(data.model_name || "—")}
+          suffix={`v${data.model_version || "?"}`}
+        />
+        <StatCard
+          label="Status"
+          value={data.is_trained ? "Trained" : "Untrained"}
+          trend={data.is_trained ? "up" : "down"}
+        />
+        <StatCard
+          label="Trees"
+          value={Number(ensemble.num_trees) || 0}
+        />
+        <StatCard
+          label="Features"
+          value={Number(features.count) || 0}
+        />
+      </div>
+
+      {/* Uncertainty Estimation */}
+      <Card className="p-5">
+        <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2">
+          <IconZap size={16} className="text-accent" />
+          Tree-Variance Uncertainty Estimation
+        </h3>
+        <p className="text-xs text-[var(--text-muted)] mb-4">
+          Instead of trusting a single probability, we measure how much individual trees in the XGBoost ensemble
+          <strong className="text-[var(--text-secondary)]"> agree or disagree</strong>. High agreement → high confidence. Disagreement → uncertainty.
+          This is sampled at ~10 checkpoints across the boosting iterations to detect instability.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3">
+            <div className="text-[10px] text-[var(--text-muted)] mb-1">Ensemble Trees</div>
+            <div className="text-lg font-bold text-[var(--text-primary)] tabular-nums">{String(ensemble.num_trees || 0)}</div>
+          </div>
+          <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3">
+            <div className="text-[10px] text-[var(--text-muted)] mb-1">Checkpoint Samples</div>
+            <div className="text-lg font-bold text-[var(--text-primary)] tabular-nums">{String(ensemble.checkpoint_sampling || 0)}</div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Confidence Formula */}
+      <Card className="p-5">
+        <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2">
+          <IconTarget size={16} className="text-accent" />
+          Real Confidence Formula
+        </h3>
+        <p className="text-xs text-[var(--text-muted)] mb-4">
+          Confidence is no longer just the predicted probability. It&apos;s a weighted combination of 4 real intelligence signals:
+        </p>
+        <div className="space-y-2">
+          {[
+            { label: "Decisiveness", weight: "30%", desc: "Entropy-based: how far from 50/50 the prediction is (p=0.95 → high, p=0.52 → low)" },
+            { label: "Edge Signal", weight: "30%", desc: "How large the edge is relative to uncertainty (normalized to 20% max)" },
+            { label: "Tree Agreement", weight: "25%", desc: "Variance across individual XGBoost trees — do they agree on the prediction?" },
+            { label: "Calibration Quality", weight: "15%", desc: "Is the model well-calibrated? Penalizes if predicted ≠ actual outcome rates" },
+          ].map((item) => (
+            <div key={item.label} className="flex items-start gap-3 rounded-lg bg-white/[0.02] border border-white/[0.04] p-3">
+              <div className="flex-shrink-0 w-14 text-center">
+                <span className="text-xs font-bold text-accent">{item.weight}</span>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-[var(--text-primary)]">{item.label}</div>
+                <div className="text-[10px] text-[var(--text-muted)] mt-0.5">{item.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Calibration Health */}
+      <Card className="p-5">
+        <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2">
+          <IconShield size={16} className="text-accent" />
+          Calibration Tracker
+        </h3>
+        <p className="text-xs text-[var(--text-muted)] mb-4">
+          Tracks predicted probabilities vs actual outcomes. When enough data accumulates (30+ trades),
+          future predictions are adjusted to match real hit rates — making the model honest about what it knows.
+        </p>
+
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3 text-center">
+            <div className="text-[10px] text-[var(--text-muted)]">Samples</div>
+            <div className="text-lg font-bold text-[var(--text-primary)] tabular-nums">{String(calibration.total_samples || 0)}</div>
+          </div>
+          <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3 text-center">
+            <div className="text-[10px] text-[var(--text-muted)]">ECE</div>
+            <div className="text-lg font-bold text-[var(--text-primary)] tabular-nums">{String(calibration.ece || "—")}</div>
+          </div>
+          <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3 text-center">
+            <div className="text-[10px] text-[var(--text-muted)]">Status</div>
+            <div className={`text-lg font-bold tabular-nums ${calibration.is_ready ? "text-accent" : "text-[var(--warning)]"}`}>
+              {calibration.is_ready ? "Active" : "Collecting"}
+            </div>
+          </div>
+        </div>
+
+        {/* Calibration bins */}
+        {binDetails.length > 0 && (
+          <div>
+            <div className="text-[10px] text-[var(--text-muted)] mb-2 font-semibold">Predicted vs Actual by Bin</div>
+            <div className="grid grid-cols-5 md:grid-cols-10 gap-1">
+              {binDetails.map((bin) => {
+                const maxCount = Math.max(...binDetails.map(b => b.count), 1);
+                const height = Math.max(4, (bin.count / maxCount) * 48);
+                return (
+                  <div key={bin.range} className="flex flex-col items-center gap-1">
+                    <div className="w-full flex flex-col items-center justify-end" style={{ height: 52 }}>
+                      <div
+                        className="w-full rounded-t bg-accent/30 border border-accent/20"
+                        style={{ height }}
+                        title={`${bin.range}: ${bin.count} trades, ${(bin.actual_rate * 100).toFixed(0)}% actual YES`}
+                      />
+                    </div>
+                    <span className="text-[8px] text-[var(--text-muted)] tabular-nums">{bin.range}</span>
+                    <span className="text-[8px] text-accent tabular-nums">{bin.count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

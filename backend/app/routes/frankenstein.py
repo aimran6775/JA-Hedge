@@ -633,3 +633,67 @@ async def update_settings(body: dict) -> dict:
 async def decision_engine() -> dict:
     """Return the full decision pipeline explanation and confidence factor docs."""
     return explain_decision_logic()
+
+
+# ── Model Intelligence ────────────────────────────────────────────────────────
+
+@router.get("/model/calibration")
+async def model_calibration() -> dict:
+    """Get model calibration health: predicted vs actual outcome tracking."""
+    frank = _get_frank()
+    model = frank._model
+    if not hasattr(model, "calibration"):
+        return {"available": False, "reason": "Model has no calibration tracker"}
+    return {
+        "available": True,
+        **model.calibration.summary(),
+    }
+
+
+@router.get("/model/intelligence")
+async def model_intelligence() -> dict:
+    """
+    Comprehensive view of the model's intelligence metrics:
+    - Training status and version
+    - Calibration health
+    - Tree ensemble stats
+    - Uncertainty estimation capability
+    """
+    frank = _get_frank()
+    model = frank._model
+
+    result: dict = {
+        "model_name": model.name if hasattr(model, "name") else "unknown",
+        "model_version": model.version if hasattr(model, "version") else "unknown",
+        "is_trained": model.is_trained if hasattr(model, "is_trained") else False,
+        "generation": frank._state.generation,
+    }
+
+    # Tree ensemble info
+    if hasattr(model, "_model") and model._model is not None:
+        try:
+            n_trees = model._model.num_boosted_rounds()
+            result["ensemble"] = {
+                "num_trees": n_trees,
+                "uncertainty_estimation": n_trees > 1,
+                "checkpoint_sampling": min(10, n_trees),
+            }
+        except Exception:
+            result["ensemble"] = {"num_trees": 0, "uncertainty_estimation": False}
+    else:
+        result["ensemble"] = {"num_trees": 0, "uncertainty_estimation": False}
+
+    # Calibration info
+    if hasattr(model, "calibration"):
+        result["calibration"] = model.calibration.summary()
+    else:
+        result["calibration"] = {"available": False}
+
+    # Feature info
+    if hasattr(model, "_feature_names"):
+        result["features"] = {
+            "count": len(model._feature_names),
+            "names": model._feature_names[:10],  # first 10
+        }
+
+    return result

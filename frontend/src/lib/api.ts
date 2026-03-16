@@ -306,12 +306,21 @@ export interface ConfidenceFactorDetail {
   reason: string;
 }
 
+export interface UncertaintyMetrics {
+  tree_agreement: number;
+  prediction_std: number;
+  is_calibrated: boolean;
+  calibration_error: number;
+  calibrated_prob: number | null;
+}
+
 export interface ConfidenceBreakdown {
   composite_score: number;
   grade: string;
   grade_label: string;
   should_trade: boolean;
   factors: ConfidenceFactorDetail[];
+  uncertainty?: UncertaintyMetrics;
 }
 
 export interface FrankensteinTrade {
@@ -659,6 +668,10 @@ export const api = {
       ),
     decisionEngine: () =>
       apiFetch<Record<string, unknown>>("/frankenstein/decision-engine"),
+    modelIntelligence: () =>
+      apiFetch<Record<string, unknown>>("/frankenstein/model/intelligence"),
+    modelCalibration: () =>
+      apiFetch<Record<string, unknown>>("/frankenstein/model/calibration"),
     // Simulation reset & settings
     resetSimulation: (opts?: { balance_cents?: number; clear_memory?: boolean; restart_brain?: boolean }) =>
       apiFetch<{
