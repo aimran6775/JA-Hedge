@@ -1,0 +1,19 @@
+;;
+;; Cloudflare DNS Import for frankensteintrading.com
+;; Import: Cloudflare Dashboard → DNS → Records → Import and Export → Import
+;;
+
+;; ── Traffic routing (Railway custom domains) ──────────────────
+;; Root domain → frontend
+frankensteintrading.com.	1	IN	CNAME	d2lb0dzv.up.railway.app.
+
+;; www → frontend
+www.frankensteintrading.com.	1	IN	CNAME	hxgx64t1.up.railway.app.
+
+;; api → backend
+api.frankensteintrading.com.	1	IN	CNAME	ns6ytvme.up.railway.app.
+
+;; ── Railway domain verification TXT records ───────────────────
+_railway-verify.frankensteintrading.com.	1	IN	TXT	"railway-verify=a416c2cc249c2c9c7d645a873c5b407a46466b219bb2747e2c704cfa21445689"
+_railway-verify.www.frankensteintrading.com.	1	IN	TXT	"railway-verify=d7ef8217d1f1baaa59c8f05d48b1efaf44bf8713aa5082ae505eb03116596a75"
+_railway-verify.api.frankensteintrading.com.	1	IN	TXT	"railway-verify=339aa46ba410cc5da59348f0aeeffb950f2feff58e3d9f97fb9599787b55315a"

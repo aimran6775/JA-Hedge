@@ -419,6 +419,8 @@ import os as _os
 _cors_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://frankensteintrading.com",
+    "https://www.frankensteintrading.com",
 ]
 # Allow Railway frontend domain(s) via env var
 _extra = _os.environ.get("CORS_ORIGINS", "")
