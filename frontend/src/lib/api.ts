@@ -298,6 +298,22 @@ export interface FrankensteinStatus {
   sports_predictor: Record<string, unknown> | null;
 }
 
+export interface ConfidenceFactorDetail {
+  name: string;
+  score: number;
+  weight: number;
+  weighted: number;
+  reason: string;
+}
+
+export interface ConfidenceBreakdown {
+  composite_score: number;
+  grade: string;
+  grade_label: string;
+  should_trade: boolean;
+  factors: ConfidenceFactorDetail[];
+}
+
 export interface FrankensteinTrade {
   trade_id: string;
   ticker: string;
@@ -312,6 +328,7 @@ export interface FrankensteinTrade {
   outcome: string;
   pnl_cents: number;
   timestamp: string;
+  confidence_breakdown?: ConfidenceBreakdown | null;
 }
 
 export interface FrankensteinHealth {
@@ -640,6 +657,8 @@ export const api = {
       apiFetch<Record<string, unknown>[]>(
         `/frankenstein/chat/history${n ? `?n=${n}` : ""}`,
       ),
+    decisionEngine: () =>
+      apiFetch<Record<string, unknown>>("/frankenstein/decision-engine"),
     // Simulation reset & settings
     resetSimulation: (opts?: { balance_cents?: number; clear_memory?: boolean; restart_brain?: boolean }) =>
       apiFetch<{

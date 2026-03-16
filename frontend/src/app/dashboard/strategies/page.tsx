@@ -45,6 +45,7 @@ const STRATEGY_DESCRIPTIONS: Record<string, string> = {
 };
 
 export default function StrategiesPage() {
+  const [activeTab, setActiveTab] = useState<"strategies" | "decision-engine">("strategies");
   const [engineStatus, setEngineStatus] = useState<StrategyEngineStatus | null>(null);
   const [signals, setSignals] = useState<StrategySignalItem[]>([]);
   const [scanResult, setScanResult] = useState<{ markets_scanned: number; total_signals: number; signals: StrategySignalItem[] } | null>(null);
@@ -118,25 +119,103 @@ export default function StrategiesPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={handleScan}
-            disabled={scanning}
-            className="glass rounded-xl px-4 py-2 text-xs font-medium text-accent hover:bg-accent/10 transition-all border border-accent/20 flex items-center gap-2"
-          >
-            <IconZap size={14} className={scanning ? "animate-pulse" : ""} />
-            {scanning ? "Scanning..." : "Manual Scan"}
-          </button>
-          <button
-            onClick={refresh}
-            disabled={loading}
-            className="glass rounded-xl px-4 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all hover:border-white/10 flex items-center gap-2"
-          >
-            <IconRefresh size={14} className={loading ? "animate-spin" : ""} />
-            Refresh
-          </button>
+          {activeTab === "strategies" && (
+            <>
+              <button
+                onClick={handleScan}
+                disabled={scanning}
+                className="glass rounded-xl px-4 py-2 text-xs font-medium text-accent hover:bg-accent/10 transition-all border border-accent/20 flex items-center gap-2"
+              >
+                <IconZap size={14} className={scanning ? "animate-pulse" : ""} />
+                {scanning ? "Scanning..." : "Manual Scan"}
+              </button>
+              <button
+                onClick={refresh}
+                disabled={loading}
+                className="glass rounded-xl px-4 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all hover:border-white/10 flex items-center gap-2"
+              >
+                <IconRefresh size={14} className={loading ? "animate-spin" : ""} />
+                Refresh
+              </button>
+            </>
+          )}
         </div>
       </div>
 
+      {/* Tab Switcher */}
+      <div className="flex gap-1 p-1 rounded-xl bg-white/[0.02] border border-white/[0.06] w-fit">
+        <button
+          onClick={() => setActiveTab("strategies")}
+          className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "strategies"
+              ? "bg-accent/15 text-accent border border-accent/20"
+              : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04] border border-transparent"
+          }`}
+        >
+          <span className="flex items-center gap-2"><IconStrategy size={14} /> Strategies</span>
+        </button>
+        <button
+          onClick={() => setActiveTab("decision-engine")}
+          className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "decision-engine"
+              ? "bg-accent/15 text-accent border border-accent/20"
+              : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04] border border-transparent"
+          }`}
+        >
+          <span className="flex items-center gap-2"><IconTarget size={14} /> Decision Engine</span>
+        </button>
+      </div>
+
+      {activeTab === "strategies" ? (
+        <StrategiesTab
+          engineStatus={engineStatus}
+          strategies={strategies}
+          signals={signals}
+          scanResult={scanResult}
+          activeCount={activeCount}
+          totalSignals={totalSignals}
+          overallWinRate={overallWinRate}
+          totalWins={totalWins}
+          totalLosses={totalLosses}
+          togglingStrategy={togglingStrategy}
+          handleToggle={handleToggle}
+        />
+      ) : (
+        <DecisionEngineTab />
+      )}
+    </div>
+  );
+}
+
+/* ── Strategies Tab (original content) ────────────────────────── */
+
+function StrategiesTab({
+  engineStatus,
+  strategies,
+  signals,
+  scanResult,
+  activeCount,
+  totalSignals,
+  overallWinRate,
+  totalWins,
+  totalLosses,
+  togglingStrategy,
+  handleToggle,
+}: {
+  engineStatus: StrategyEngineStatus | null;
+  strategies: StrategyInfo[];
+  signals: StrategySignalItem[];
+  scanResult: { markets_scanned: number; total_signals: number; signals: StrategySignalItem[] } | null;
+  activeCount: number;
+  totalSignals: number;
+  overallWinRate: number;
+  totalWins: number;
+  totalLosses: number;
+  togglingStrategy: string | null;
+  handleToggle: (name: string, enabled: boolean) => void;
+}) {
+  return (
+    <>
       {/* Stats Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -222,7 +301,201 @@ export default function StrategiesPage() {
           </div>
         </Card>
       </div>
-    </div>
+    </>
+  );
+}
+
+/* ── Decision Engine Tab ──────────────────────────────────────── */
+
+interface PipelineStep {
+  step: number;
+  name: string;
+  description: string;
+  icon: string;
+}
+interface FactorInfo {
+  name: string;
+  weight: string;
+  description: string;
+  best_case: string;
+  worst_case: string;
+}
+interface GradeInfo {
+  grade: string;
+  min_score: number;
+  description: string;
+}
+
+const GRADE_BG: Record<string, string> = {
+  "A+": "bg-accent/20 text-accent border-accent/30",
+  "A": "bg-accent/15 text-accent border-accent/25",
+  "B+": "bg-blue-500/15 text-blue-400 border-blue-400/25",
+  "B": "bg-blue-500/10 text-blue-400 border-blue-400/20",
+  "C+": "bg-[var(--warning)]/15 text-[var(--warning)] border-[var(--warning)]/25",
+  "C": "bg-[var(--warning)]/10 text-[var(--warning)] border-[var(--warning)]/20",
+  "D": "bg-orange-500/10 text-orange-400 border-orange-400/20",
+  "F": "bg-loss/10 text-loss border-loss/20",
+};
+
+function DecisionEngineTab() {
+  const [data, setData] = useState<{
+    pipeline: PipelineStep[];
+    confidence_factors: FactorInfo[];
+    grade_scale: GradeInfo[];
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.frankenstein
+      .decisionEngine()
+      .then((res) =>
+        setData(res as { pipeline: PipelineStep[]; confidence_factors: FactorInfo[]; grade_scale: GradeInfo[] }),
+      )
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="py-20 text-center text-sm text-[var(--text-muted)] animate-pulse">
+        Loading decision engine…
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="py-20 text-center text-sm text-[var(--text-muted)]">
+        Decision engine data unavailable — is the backend running?
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {/* Pipeline Flow */}
+      <div>
+        <h2 className="text-sm font-semibold text-[var(--text-secondary)] mb-1">
+          How Frankenstein Decides to Trade
+        </h2>
+        <p className="text-xs text-[var(--text-muted)] mb-4">
+          Every 30 seconds, each potential trade goes through this 10-step pipeline.
+        </p>
+        <div className="relative">
+          {/* Vertical connecting line */}
+          <div className="absolute left-6 top-4 bottom-4 w-px bg-gradient-to-b from-accent/40 via-accent/20 to-transparent hidden md:block" />
+
+          <div className="space-y-2">
+            {data.pipeline.map((step, i) => (
+              <div
+                key={step.step}
+                className="relative flex items-start gap-4 rounded-xl bg-white/[0.02] border border-white/[0.04] p-4 hover:bg-white/[0.04] transition-colors group"
+              >
+                {/* Step number circle */}
+                <div className="relative z-10 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-accent/10 border border-accent/20 text-xl group-hover:scale-105 transition-transform">
+                  {step.icon}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] font-bold text-accent/60 tabular-nums">STEP {step.step}</span>
+                    <span className="text-sm font-semibold text-[var(--text-primary)]">{step.name}</span>
+                  </div>
+                  <p className="text-xs text-[var(--text-muted)] leading-relaxed">{step.description}</p>
+                </div>
+                {/* Arrow indicator */}
+                {i < data.pipeline.length - 1 && (
+                  <div className="absolute -bottom-2 left-[1.45rem] z-20 text-accent/30 text-xs hidden md:block">▼</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Confidence Factors */}
+      <div>
+        <h2 className="text-sm font-semibold text-[var(--text-secondary)] mb-1">
+          6-Factor Confidence Scoring
+        </h2>
+        <p className="text-xs text-[var(--text-muted)] mb-4">
+          Each trade is scored 0–100 on six weighted dimensions. The composite score produces a letter grade.
+        </p>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {data.confidence_factors.map((factor) => (
+            <div
+              key={factor.name}
+              className="rounded-2xl glass border border-white/[0.06] p-5 hover:border-white/[0.10] transition-all"
+            >
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-bold text-[var(--text-primary)]">{factor.name}</h3>
+                <span className="text-xs font-bold text-accent tabular-nums bg-accent/10 rounded-md px-2 py-0.5">
+                  {factor.weight}
+                </span>
+              </div>
+              <p className="text-xs text-[var(--text-muted)] leading-relaxed mb-3">
+                {factor.description}
+              </p>
+              <div className="space-y-1.5">
+                <div className="flex items-start gap-2">
+                  <span className="text-accent text-xs mt-0.5">▲</span>
+                  <span className="text-[11px] text-[var(--text-secondary)]">{factor.best_case}</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="text-loss text-xs mt-0.5">▼</span>
+                  <span className="text-[11px] text-[var(--text-secondary)]">{factor.worst_case}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Grade Scale */}
+      <div>
+        <h2 className="text-sm font-semibold text-[var(--text-secondary)] mb-1">
+          Grade Scale
+        </h2>
+        <p className="text-xs text-[var(--text-muted)] mb-4">
+          The weighted composite score maps to a letter grade. Trades must be grade C or above to execute.
+        </p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+          {data.grade_scale.map((g) => {
+            const colorClass = GRADE_BG[g.grade] || GRADE_BG["C"];
+            return (
+              <div
+                key={g.grade}
+                className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.03] ${colorClass}`}
+              >
+                <div className="text-2xl font-black mb-1">{g.grade}</div>
+                <div className="text-[10px] font-semibold tabular-nums mb-1">≥ {g.min_score}</div>
+                <div className="text-[9px] opacity-70 leading-tight">{g.description.split("—")[0].trim()}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Quick Summary */}
+      <Card title="Trade Gate Summary">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 p-2">
+          <div className="text-center">
+            <div className="text-2xl font-black text-accent">58%</div>
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-1">Min Confidence</div>
+            <div className="text-[10px] text-[var(--text-secondary)]">Raised to 65% when ML model isn&apos;t trained</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-black text-accent">4%</div>
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-1">Min Edge</div>
+            <div className="text-[10px] text-[var(--text-secondary)]">Raised to 8% when ML model isn&apos;t trained</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-black text-accent">C</div>
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-1">Min Grade</div>
+            <div className="text-[10px] text-[var(--text-secondary)]">Composite score must be ≥ 40 across all 6 factors</div>
+          </div>
+        </div>
+      </Card>
+    </>
   );
 }
 

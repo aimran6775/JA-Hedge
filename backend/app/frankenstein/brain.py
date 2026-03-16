@@ -40,6 +40,7 @@ from app.frankenstein.performance import PerformanceTracker, PerformanceSnapshot
 from app.frankenstein.scheduler import FrankensteinScheduler
 from app.frankenstein.strategy import AdaptiveStrategy, StrategyParams
 from app.frankenstein.categories import CategoryStrategyRegistry
+from app.frankenstein.confidence import ConfidenceScorer, ConfidenceBreakdown
 from app.kalshi.models import Market, MarketStatus, OrderAction, OrderSide, OrderType
 from app.logging_config import get_logger
 from app.pipeline import market_cache
@@ -400,6 +401,21 @@ class Frankenstein:
             if abs(prediction.edge) < effective_min_edge:
                 continue
 
+            # ⭐ Multi-factor confidence scoring (Phase 11)
+            conf_scorer = ConfidenceScorer(
+                portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
+                current_drawdown_pct=self._adv_risk.current_drawdown_pct if hasattr(self._adv_risk, 'current_drawdown_pct') else 0.0,
+                open_positions=self._count_open_positions(),
+                max_positions=params.max_simultaneous_positions,
+            )
+            conf_breakdown = conf_scorer.score(
+                prediction, features,
+                model_trained=self._model.is_trained,
+                has_vegas=sports_pred is not None,
+                is_sports=bool(self._sports_detector and self._sports_detector.detect(market).is_sports) if self._sports_detector else False,
+                exchange_session=self._schedule.current_session() if hasattr(self._schedule, 'current_session') else "regular",
+            )
+
             signals_generated += 1
             self._state.total_signals += 1
 
@@ -430,6 +446,7 @@ class Frankenstein:
                 "price_cents": price_cents,
                 "kelly": kelly,
                 "ev": ev,
+                "confidence_breakdown": conf_breakdown.to_dict(),
             })
 
         # Phase 9: Rank by expected value and take top opportunities
@@ -589,6 +606,7 @@ class Frankenstein:
                     market_bid=int((market.yes_bid or 0) * 100) if isinstance(market.yes_bid, float) else (market.yes_bid or 0),
                     market_ask=int((market.yes_ask or 0) * 100) if isinstance(market.yes_ask, float) else (market.yes_ask or 0),
                     model_version=self.learner.current_version,
+                    confidence_breakdown=candidate.get("confidence_breakdown"),
                 )
 
                 # Phase 10: Persist to SQLite

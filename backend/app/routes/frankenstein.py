@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.state import state
 from app.logging_config import get_logger
+from app.frankenstein.confidence import explain_decision_logic
 
 log = get_logger("routes.frankenstein")
 router = APIRouter(prefix="/frankenstein", tags=["frankenstein"])
@@ -624,3 +625,11 @@ async def update_settings(body: dict) -> dict:
         "updated": updated,
         "message": f"Updated {len(updated)} settings",
     }
+
+
+# ── Decision Engine ───────────────────────────────────────────────────────────
+
+@router.get("/decision-engine")
+async def decision_engine() -> dict:
+    """Return the full decision pipeline explanation and confidence factor docs."""
+    return explain_decision_logic()

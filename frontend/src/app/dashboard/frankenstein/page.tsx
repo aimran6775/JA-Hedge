@@ -902,6 +902,42 @@ function TradeDetailPopup({ trade, title, onClose }: { trade: FrankensteinTrade;
           </div>
         </div>
 
+        {/* Confidence Breakdown (multi-factor) */}
+        {trade.confidence_breakdown && trade.confidence_breakdown.factors && trade.confidence_breakdown.factors.length > 0 && (
+          <div className="mx-6 mt-3 rounded-xl bg-white/[0.02] border border-white/[0.04] p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Confidence Breakdown</div>
+              <GradeBadge grade={trade.confidence_breakdown.grade} score={trade.confidence_breakdown.composite_score} />
+            </div>
+
+            {/* Factor Bars */}
+            <div className="space-y-2">
+              {trade.confidence_breakdown.factors.map((factor) => (
+                <div key={factor.name}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="text-[11px] text-[var(--text-secondary)] capitalize">{factor.name.replace(/_/g, " ")}</span>
+                    <span className="text-[10px] font-bold tabular-nums text-[var(--text-primary)]">{factor.score.toFixed(0)}/100</span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-white/[0.06] overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        factor.score >= 70 ? "bg-accent" : factor.score >= 40 ? "bg-[var(--warning)]" : "bg-loss"
+                      }`}
+                      style={{ width: `${Math.min(factor.score, 100)}%` }}
+                    />
+                  </div>
+                  <p className="text-[9px] text-[var(--text-muted)] mt-0.5 leading-tight">{factor.reason}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Grade Label */}
+            <div className="pt-1 border-t border-white/[0.04] text-center">
+              <span className="text-[10px] text-[var(--text-muted)]">{trade.confidence_breakdown.grade_label}</span>
+            </div>
+          </div>
+        )}
+
         {/* Outcome & PnL */}
         <div className="flex items-center justify-between px-6 py-4">
           <div>
@@ -935,6 +971,27 @@ function MetricBox({ label, value, color }: { label: string; value: string; colo
     <div className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-3 text-center">
       <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-0.5">{label}</div>
       <div className={`text-sm font-bold tabular-nums ${color ?? "text-[var(--text-primary)]"}`}>{value}</div>
+    </div>
+  );
+}
+
+const GRADE_COLORS: Record<string, string> = {
+  "A+": "bg-accent/20 text-accent border-accent/30",
+  "A": "bg-accent/15 text-accent border-accent/25",
+  "B+": "bg-blue-500/15 text-blue-400 border-blue-400/25",
+  "B": "bg-blue-500/10 text-blue-400 border-blue-400/20",
+  "C+": "bg-[var(--warning)]/15 text-[var(--warning)] border-[var(--warning)]/25",
+  "C": "bg-[var(--warning)]/10 text-[var(--warning)] border-[var(--warning)]/20",
+  "D": "bg-orange-500/10 text-orange-400 border-orange-400/20",
+  "F": "bg-loss/10 text-loss border-loss/20",
+};
+
+function GradeBadge({ grade, score }: { grade: string; score: number }) {
+  const colorClass = GRADE_COLORS[grade] || GRADE_COLORS["C"];
+  return (
+    <div className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 ${colorClass}`}>
+      <span className="text-sm font-black">{grade}</span>
+      <span className="text-[10px] font-semibold tabular-nums opacity-80">{score.toFixed(0)}</span>
     </div>
   );
 }

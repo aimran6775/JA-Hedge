@@ -97,6 +97,9 @@ class TradeRecord:
     regret: float = 0.0           # difference between optimal and actual
     epoch: int = 0                 # which training epoch used this
 
+    # Multi-factor confidence breakdown (Phase 11)
+    confidence_breakdown: dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize for JSON storage."""
         d = {}
@@ -186,6 +189,7 @@ class TradeMemory:
         market_bid: int = 0,
         market_ask: int = 0,
         model_version: str = "",
+        confidence_breakdown: dict | None = None,
     ) -> TradeRecord:
         """Record a new trade in memory."""
         record = TradeRecord(
@@ -209,6 +213,7 @@ class TradeMemory:
             market_ask_cents=market_ask,
             market_volume=features.volume,
             hours_to_expiry=features.hours_to_expiry,
+            confidence_breakdown=confidence_breakdown or {},
         )
 
         self._trades.append(record)
