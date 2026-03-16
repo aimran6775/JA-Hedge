@@ -60,6 +60,7 @@ class TradeRecord:
     predicted_side: str = ""       # "yes" or "no"
     confidence: float = 0.0
     predicted_prob: float = 0.0
+    raw_predicted_prob: float = 0.0  # pre-calibration prob (for calibration tracking)
     edge: float = 0.0
     model_version: str = ""
 
@@ -197,6 +198,7 @@ class TradeMemory:
             predicted_side=prediction.side,
             confidence=prediction.confidence,
             predicted_prob=prediction.predicted_prob,
+            raw_predicted_prob=getattr(prediction, 'raw_prob', prediction.predicted_prob),
             edge=prediction.edge,
             model_version=model_version or prediction.model_version,
             features=features.to_array().tolist(),

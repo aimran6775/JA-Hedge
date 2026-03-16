@@ -40,6 +40,7 @@ class Prediction:
     raw_output: Any = None
 
     # ── New: Real uncertainty metrics ──────────────────────
+    raw_prob: float = 0.0              # pre-calibration model probability (for calibration feedback)
     tree_agreement: float = 1.0        # 0–1, how much individual trees agree
     prediction_std: float = 0.0        # std dev across individual trees
     calibrated_prob: float | None = None  # probability adjusted by calibration
@@ -102,6 +103,7 @@ class CalibrationTracker:
     def __init__(self) -> None:
         self._bin_counts = np.zeros(self.N_BINS, dtype=np.int64)   # predictions in each bin
         self._bin_positives = np.zeros(self.N_BINS, dtype=np.int64)  # actual YES outcomes
+        self._bin_pred_sum = np.zeros(self.N_BINS, dtype=np.float64)  # sum of predicted probs per bin
         self._total_samples = 0
         self._ece: float = 0.0  # Expected Calibration Error
 
@@ -130,6 +132,7 @@ class CalibrationTracker:
         idx = self._bin_index(predicted_prob)
         self._bin_counts[idx] += 1
         self._bin_positives[idx] += actual_outcome
+        self._bin_pred_sum[idx] += predicted_prob
         self._total_samples += 1
 
         # Re-compute ECE every 10 samples
@@ -143,10 +146,10 @@ class CalibrationTracker:
         for i in range(self.N_BINS):
             if self._bin_counts[i] < self.MIN_SAMPLES_PER_BIN:
                 continue
-            bin_center = (i + 0.5) / self.N_BINS
+            avg_pred = self._bin_pred_sum[i] / self._bin_counts[i]
             actual_rate = self._bin_positives[i] / self._bin_counts[i]
             weight = self._bin_counts[i] / total
-            ece += weight * abs(actual_rate - bin_center)
+            ece += weight * abs(actual_rate - avg_pred)
         self._ece = ece
 
     def calibrate(self, prob: float) -> float:
@@ -164,14 +167,13 @@ class CalibrationTracker:
         if self._bin_counts[idx] < self.MIN_SAMPLES_PER_BIN:
             return prob
 
-        bin_center = (idx + 0.5) / self.N_BINS
         actual_rate = float(self._bin_positives[idx] / self._bin_counts[idx])
 
-        # Blend raw prediction toward observed rate
+        # Blend raw prediction toward observed actual rate
         # Weight the adjustment by sample confidence
         n = self._bin_counts[idx]
         blend_weight = min(n / (n + 20), 0.7)  # max 70% correction
-        adjusted = prob + blend_weight * (actual_rate - bin_center)
+        adjusted = prob + blend_weight * (actual_rate - prob)
         return max(0.01, min(0.99, adjusted))
 
     def expected_error(self, prob: float) -> float:
@@ -186,9 +188,9 @@ class CalibrationTracker:
         if self._bin_counts[idx] < self.MIN_SAMPLES_PER_BIN:
             return self._ece  # fallback to global ECE
 
-        bin_center = (idx + 0.5) / self.N_BINS
+        avg_pred = float(self._bin_pred_sum[idx] / self._bin_counts[idx])
         actual_rate = float(self._bin_positives[idx] / self._bin_counts[idx])
-        return abs(actual_rate - bin_center)
+        return abs(actual_rate - avg_pred)
 
     def summary(self) -> dict:
         """Return calibration health summary."""
@@ -214,6 +216,7 @@ class CalibrationTracker:
         return {
             "bin_counts": self._bin_counts.tolist(),
             "bin_positives": self._bin_positives.tolist(),
+            "bin_pred_sum": self._bin_pred_sum.tolist(),
             "total_samples": self._total_samples,
             "ece": self._ece,
         }
@@ -224,6 +227,7 @@ class CalibrationTracker:
         ct = cls()
         ct._bin_counts = np.array(data.get("bin_counts", [0] * cls.N_BINS), dtype=np.int64)
         ct._bin_positives = np.array(data.get("bin_positives", [0] * cls.N_BINS), dtype=np.int64)
+        ct._bin_pred_sum = np.array(data.get("bin_pred_sum", [0.0] * cls.N_BINS), dtype=np.float64)
         ct._total_samples = data.get("total_samples", 0)
         ct._ece = data.get("ece", 0.0)
         return ct
@@ -288,12 +292,15 @@ class XGBoostPredictor(PredictionModel):
         # Sample at multiple checkpoints to measure how stable the prediction is
         checkpoints = []
         step = max(1, n_trees // 10)  # sample ~10 points
+        last_checkpoint_iter = 0
         for i in range(max(1, n_trees // 2), n_trees + 1, step):
             p = self._model.predict(dmatrix, iteration_range=(0, i))
             checkpoints.append(p)
-        # Always include full model
+            last_checkpoint_iter = i
+        # Include full model prediction only if not already the last checkpoint
         full_pred = self._model.predict(dmatrix)
-        checkpoints.append(full_pred)
+        if last_checkpoint_iter != n_trees:
+            checkpoints.append(full_pred)
 
         all_preds = np.array(checkpoints)  # shape: (n_checkpoints, n_samples)
 
@@ -595,6 +602,7 @@ class XGBoostPredictor(PredictionModel):
         return Prediction(
             side=side,
             confidence=confidence,
+            raw_prob=prob_yes,            # pre-calibration probability (for calibration feedback)
             predicted_prob=effective_prob,
             edge=effective_edge,
             model_name=self.name,
@@ -692,8 +700,10 @@ class XGBoostPredictor(PredictionModel):
             prob_yes = prob_yes * (1.0 - spread_penalty) + 0.5 * spread_penalty
 
         prob_yes = max(0.05, min(0.95, prob_yes))
-        return self._build_prediction(
+        pred = self._build_prediction(
             prob_yes, features,
             prediction_std=0.15,  # high uncertainty for heuristic
             tree_agreement=0.3,   # low agreement — no real model
         )
+        pred.raw_prob = prob_yes  # heuristic: raw = predicted
+        return pred

@@ -345,6 +345,16 @@ class Frankenstein:
         trades_rejected = 0
         trade_candidates: list[dict[str, Any]] = []
 
+        # ⭐ Multi-factor confidence scorer (Phase 11)
+        # Created ONCE outside the loop for performance.
+        conf_scorer = ConfidenceScorer(
+            min_grade="A",
+            portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
+            current_drawdown_pct=self._adv_risk.current_drawdown_pct if hasattr(self._adv_risk, 'current_drawdown_pct') else 0.0,
+            open_positions=self._count_open_positions(),
+            max_positions=params.max_simultaneous_positions,
+        )
+
         for market, features, prediction in zip(candidates, features_list, predictions):
             # Phase 8: Apply category-specific adjustments
             prediction, cat_adj = self.categories.adjust_prediction(
@@ -381,35 +391,26 @@ class Frankenstein:
                         continue
 
             # Apply adaptive thresholds
-            effective_min_conf = params.min_confidence
             effective_min_edge = params.min_edge
 
             # 🛡️ HEURISTIC GUARD: When model isn't trained, require
-            # much higher thresholds — the heuristic has no real edge.
+            # much higher edge — the heuristic has no real edge.
+            # (The ConfidenceScorer grade gate handles quality filtering
+            #  via _score_model_strength which penalises untrained models.)
             if not self._model.is_trained:
-                effective_min_conf = max(effective_min_conf, 0.75)
                 effective_min_edge = max(effective_min_edge, 0.12)
 
-            # 🏀 Sports WITHOUT Vegas data → be STRICTER, not looser.
+            # 🏀 Sports WITHOUT Vegas data → be STRICTER on edge.
             # Without Vegas lines, we're missing critical information.
             if self._sports_only and sports_pred is None:
-                effective_min_conf = max(effective_min_conf, 0.68)
                 effective_min_edge = max(effective_min_edge, 0.08)
 
-            if prediction.confidence < effective_min_conf:
-                continue
+            # Gate: minimum edge (absolute value)
             if abs(prediction.edge) < effective_min_edge:
                 continue
 
             # ⭐ Multi-factor confidence scoring (Phase 11)
             # Only A-grade trades are executed — prioritise quality over quantity.
-            conf_scorer = ConfidenceScorer(
-                min_grade="A",
-                portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
-                current_drawdown_pct=self._adv_risk.current_drawdown_pct if hasattr(self._adv_risk, 'current_drawdown_pct') else 0.0,
-                open_positions=self._count_open_positions(),
-                max_positions=params.max_simultaneous_positions,
-            )
             conf_breakdown = conf_scorer.score(
                 prediction, features,
                 model_trained=self._model.is_trained,
@@ -1173,11 +1174,12 @@ class Frankenstein:
                     correct = trade.predicted_side == result_str
 
                     # ── Record calibration data ─────────────────────
-                    # The model predicted P(YES) = trade.predicted_prob.
-                    # Actual outcome: YES resolved → 1, NO resolved → 0.
+                    # Feed the RAW (pre-calibration) probability into the tracker
+                    # so we don't create a feedback loop with calibrated values.
                     if result_str in ("yes", "no") and hasattr(self._model, 'calibration'):
                         actual_yes = 1 if result_str == "yes" else 0
-                        self._model.calibration.record(trade.predicted_prob, actual_yes)
+                        raw_p = getattr(trade, 'raw_predicted_prob', 0.0) or trade.predicted_prob
+                        self._model.calibration.record(raw_p, actual_yes)
 
                     if result_str == "void":
                         self.memory.resolve_trade(
