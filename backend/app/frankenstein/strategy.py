@@ -28,9 +28,9 @@ log = get_logger("frankenstein.strategy")
 class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
-    # Signal filters — require meaningful confidence & edge
-    min_confidence: float = 0.58
-    min_edge: float = 0.04
+    # Signal filters — A-grade only: require high confidence & edge
+    min_confidence: float = 0.65
+    min_edge: float = 0.06
 
     # Position sizing
     kelly_fraction: float = 0.25
@@ -93,9 +93,9 @@ class AdaptiveStrategy:
         self.adaptation_interval = adaptation_interval
 
         # Defaults (never go below/above these)
-        self._MIN_CONFIDENCE = 0.55
+        self._MIN_CONFIDENCE = 0.62
         self._MAX_CONFIDENCE = 0.85
-        self._MIN_EDGE = 0.03
+        self._MIN_EDGE = 0.05
         self._MAX_EDGE = 0.15
         self._MIN_KELLY = 0.05
         self._MAX_KELLY = 0.50
@@ -168,29 +168,29 @@ class AdaptiveStrategy:
 
         if regime == "volatile":
             # High vol: widen thresholds, reduce size
-            events.extend(self._adjust("min_confidence", 0.70, "volatile_regime"))
-            events.extend(self._adjust("min_edge", 0.08, "volatile_regime"))
+            events.extend(self._adjust("min_confidence", 0.78, "volatile_regime"))
+            events.extend(self._adjust("min_edge", 0.10, "volatile_regime"))
             events.extend(self._adjust("kelly_fraction", 0.15, "volatile_regime"))
             events.extend(self._adjust("max_position_size", 5, "volatile_regime"))
 
         elif regime == "quiet":
-            # Low vol: tighten entry, can be more aggressive on size
-            events.extend(self._adjust("min_confidence", 0.55, "quiet_regime"))
-            events.extend(self._adjust("min_edge", 0.04, "quiet_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.35, "quiet_regime"))
-            events.extend(self._adjust("max_position_size", 15, "quiet_regime"))
+            # Low vol: still require strong signals, can be more aggressive on size
+            events.extend(self._adjust("min_confidence", 0.62, "quiet_regime"))
+            events.extend(self._adjust("min_edge", 0.06, "quiet_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.30, "quiet_regime"))
+            events.extend(self._adjust("max_position_size", 12, "quiet_regime"))
 
         elif regime == "trending":
-            # Trending: follow momentum, moderate sizing
-            events.extend(self._adjust("min_confidence", 0.58, "trending_regime"))
-            events.extend(self._adjust("min_edge", 0.05, "trending_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.30, "trending_regime"))
+            # Trending: follow momentum, but still require high confidence
+            events.extend(self._adjust("min_confidence", 0.65, "trending_regime"))
+            events.extend(self._adjust("min_edge", 0.07, "trending_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.25, "trending_regime"))
 
         elif regime == "mean_reverting":
             # Mean-revert: tighter entry, higher confidence required
-            events.extend(self._adjust("min_confidence", 0.65, "mean_reverting_regime"))
-            events.extend(self._adjust("min_edge", 0.06, "mean_reverting_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.20, "mean_reverting_regime"))
+            events.extend(self._adjust("min_confidence", 0.72, "mean_reverting_regime"))
+            events.extend(self._adjust("min_edge", 0.08, "mean_reverting_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.18, "mean_reverting_regime"))
 
         return [e for e in events if e is not None]
 
@@ -204,14 +204,14 @@ class AdaptiveStrategy:
             return events  # Not enough data
 
         if snap.win_rate > 0.65:
-            # Winning streak: loosen entry, increase size
-            events.extend(self._adjust("min_confidence", max(self.params.min_confidence - 0.02, self._MIN_CONFIDENCE), "high_win_rate"))
-            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.03, self._MAX_KELLY), "high_win_rate"))
+            # Winning streak: slightly loosen entry, increase size (but never below floor)
+            events.extend(self._adjust("min_confidence", max(self.params.min_confidence - 0.01, self._MIN_CONFIDENCE), "high_win_rate"))
+            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.02, self._MAX_KELLY), "high_win_rate"))
 
         elif snap.win_rate < 0.40:
-            # Losing: tighten everything
-            events.extend(self._adjust("min_confidence", min(self.params.min_confidence + 0.03, self._MAX_CONFIDENCE), "low_win_rate"))
-            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.01, self._MAX_EDGE), "low_win_rate"))
+            # Losing: tighten everything hard
+            events.extend(self._adjust("min_confidence", min(self.params.min_confidence + 0.04, self._MAX_CONFIDENCE), "low_win_rate"))
+            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.02, self._MAX_EDGE), "low_win_rate"))
             events.extend(self._adjust("kelly_fraction", max(self.params.kelly_fraction - 0.05, self._MIN_KELLY), "low_win_rate"))
 
         return [e for e in events if e is not None]
@@ -247,15 +247,15 @@ class AdaptiveStrategy:
             return events
 
         if snap.prediction_accuracy < 0.45:
-            # Model is barely better than coin flip — be very careful
-            events.extend(self._adjust("min_confidence", 0.75, "poor_accuracy"))
-            events.extend(self._adjust("min_edge", 0.10, "poor_accuracy"))
-            events.extend(self._adjust("kelly_fraction", 0.10, "poor_accuracy"))
+            # Model is barely better than coin flip — be extremely careful
+            events.extend(self._adjust("min_confidence", 0.80, "poor_accuracy"))
+            events.extend(self._adjust("min_edge", 0.12, "poor_accuracy"))
+            events.extend(self._adjust("kelly_fraction", 0.08, "poor_accuracy"))
 
         elif snap.prediction_accuracy > 0.60:
-            # Model is good — trust it more
-            events.extend(self._adjust("min_confidence", 0.55, "good_accuracy"))
-            events.extend(self._adjust("min_edge", 0.04, "good_accuracy"))
+            # Model is good — trust it, but still require strong signals
+            events.extend(self._adjust("min_confidence", 0.62, "good_accuracy"))
+            events.extend(self._adjust("min_edge", 0.06, "good_accuracy"))
 
         # Confidence calibration: if model is overconfident, require more edge
         if snap.confidence_calibration > 0.15:

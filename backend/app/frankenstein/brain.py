@@ -387,14 +387,14 @@ class Frankenstein:
             # 🛡️ HEURISTIC GUARD: When model isn't trained, require
             # much higher thresholds — the heuristic has no real edge.
             if not self._model.is_trained:
-                effective_min_conf = max(effective_min_conf, 0.65)
-                effective_min_edge = max(effective_min_edge, 0.08)
+                effective_min_conf = max(effective_min_conf, 0.75)
+                effective_min_edge = max(effective_min_edge, 0.12)
 
             # 🏀 Sports WITHOUT Vegas data → be STRICTER, not looser.
             # Without Vegas lines, we're missing critical information.
             if self._sports_only and sports_pred is None:
-                effective_min_conf = max(effective_min_conf, 0.60)
-                effective_min_edge = max(effective_min_edge, 0.05)
+                effective_min_conf = max(effective_min_conf, 0.68)
+                effective_min_edge = max(effective_min_edge, 0.08)
 
             if prediction.confidence < effective_min_conf:
                 continue
@@ -402,7 +402,9 @@ class Frankenstein:
                 continue
 
             # ⭐ Multi-factor confidence scoring (Phase 11)
+            # Only A-grade trades are executed — prioritise quality over quantity.
             conf_scorer = ConfidenceScorer(
+                min_grade="A",
                 portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
                 current_drawdown_pct=self._adv_risk.current_drawdown_pct if hasattr(self._adv_risk, 'current_drawdown_pct') else 0.0,
                 open_positions=self._count_open_positions(),
@@ -415,6 +417,12 @@ class Frankenstein:
                 is_sports=bool(self._sports_detector and self._sports_detector.detect(market).is_sports) if self._sports_detector else False,
                 exchange_session=self._schedule.current_session() if hasattr(self._schedule, 'current_session') else "regular",
             )
+
+            # 🚫 GRADE GATE: reject anything below A-grade
+            if not conf_breakdown.should_trade:
+                log.debug("grade_rejected", ticker=market.get("ticker"),
+                          grade=conf_breakdown.grade, score=round(conf_breakdown.composite_score, 1))
+                continue
 
             signals_generated += 1
             self._state.total_signals += 1

@@ -456,7 +456,7 @@ function DecisionEngineTab() {
           Grade Scale
         </h2>
         <p className="text-xs text-[var(--text-muted)] mb-4">
-          The weighted composite score maps to a letter grade. Trades must be grade C or above to execute.
+          The weighted composite score maps to a letter grade. Only A-grade (≥ 80) and A+ trades are executed.
         </p>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
           {data.grade_scale.map((g) => {
@@ -479,19 +479,19 @@ function DecisionEngineTab() {
       <Card title="Trade Gate Summary">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 p-2">
           <div className="text-center">
-            <div className="text-2xl font-black text-accent">58%</div>
+            <div className="text-2xl font-black text-accent">65%</div>
             <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-1">Min Confidence</div>
-            <div className="text-[10px] text-[var(--text-secondary)]">Raised to 65% when ML model isn&apos;t trained</div>
+            <div className="text-[10px] text-[var(--text-secondary)]">Raised to 75% when ML model isn&apos;t trained</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-black text-accent">4%</div>
+            <div className="text-2xl font-black text-accent">6%</div>
             <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-1">Min Edge</div>
-            <div className="text-[10px] text-[var(--text-secondary)]">Raised to 8% when ML model isn&apos;t trained</div>
+            <div className="text-[10px] text-[var(--text-secondary)]">Raised to 12% when ML model isn&apos;t trained</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-black text-accent">C</div>
+            <div className="text-2xl font-black text-accent">A</div>
             <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-1">Min Grade</div>
-            <div className="text-[10px] text-[var(--text-secondary)]">Composite score must be ≥ 40 across all 6 factors</div>
+            <div className="text-[10px] text-[var(--text-secondary)]">Only A and A+ trades execute — composite score ≥ 80</div>
           </div>
         </div>
       </Card>

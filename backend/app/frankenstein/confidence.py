@@ -82,7 +82,7 @@ class ConfidenceBreakdown:
     grade_label: str = ""
     factors: list[ConfidenceFactor] = field(default_factory=list)
     should_trade: bool = False
-    min_grade_to_trade: str = "C"
+    min_grade_to_trade: str = "A"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,7 +107,7 @@ class ConfidenceScorer:
 
     def __init__(
         self,
-        min_grade: str = "C",
+        min_grade: str = "A",
         portfolio_heat: float = 0.0,
         current_drawdown_pct: float = 0.0,
         open_positions: int = 0,
@@ -503,13 +503,13 @@ def explain_decision_logic() -> dict[str, Any]:
             {
                 "step": 4,
                 "name": "Confidence Scoring",
-                "description": "Each signal is scored across 6 factors: Model Strength, Edge Quality, Liquidity, Timing, Volume Signal, and Risk Context. A weighted composite produces a letter grade (A+ to F).",
+                "description": "Each signal is scored across 6 factors: Model Strength, Edge Quality, Liquidity, Timing, Volume Signal, and Risk Context. A weighted composite produces a letter grade (A+ to F). Only A-grade or higher trades are executed.",
                 "icon": "⭐",
             },
             {
                 "step": 5,
                 "name": "Threshold Gate",
-                "description": "Signals must meet minimum confidence (58%) and minimum edge (4%). When the model isn't trained, thresholds are raised to 65%/8%. Sports without Vegas data require 60%/5%.",
+                "description": "Signals must meet minimum confidence (65%) and minimum edge (6%). When the model isn't trained, thresholds are raised to 75%/12%. Sports without Vegas data require 68%/8%. Only A-grade signals (composite ≥ 80) pass.",
                 "icon": "🚦",
             },
             {
@@ -589,12 +589,12 @@ def explain_decision_logic() -> dict[str, Any]:
         ],
         "grade_scale": [
             {"grade": "A+", "min_score": 90, "description": "Excellent — very high conviction, full position"},
-            {"grade": "A",  "min_score": 80, "description": "Strong — high conviction trade"},
-            {"grade": "B+", "min_score": 70, "description": "Good — solid signal with minor concerns"},
-            {"grade": "B",  "min_score": 60, "description": "Decent — above average confidence"},
-            {"grade": "C+", "min_score": 50, "description": "Fair — moderate confidence"},
-            {"grade": "C",  "min_score": 40, "description": "Marginal — proceed with caution"},
-            {"grade": "D",  "min_score": 30, "description": "Weak — usually rejected"},
-            {"grade": "F",  "min_score": 0,  "description": "Fail — never traded"},
+            {"grade": "A",  "min_score": 80, "description": "Strong — minimum grade to trade"},
+            {"grade": "B+", "min_score": 70, "description": "Good — REJECTED, below A-grade cutoff"},
+            {"grade": "B",  "min_score": 60, "description": "Decent — REJECTED"},
+            {"grade": "C+", "min_score": 50, "description": "Fair — REJECTED"},
+            {"grade": "C",  "min_score": 40, "description": "Marginal — REJECTED"},
+            {"grade": "D",  "min_score": 30, "description": "Weak — REJECTED"},
+            {"grade": "F",  "min_score": 0,  "description": "Fail — REJECTED"},
         ],
     }
