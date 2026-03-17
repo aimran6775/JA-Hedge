@@ -197,6 +197,7 @@ class SportsPredictor:
             "predictions": 0,
             "vegas_used": 0,
             "ml_used": 0,
+            "kalshi_only_used": 0,
         }
     
     def predict(
@@ -210,7 +211,7 @@ class SportsPredictor:
         Priority:
           1. If XGBoost model is trained and ready → use it
           2. Otherwise → use Vegas baseline
-          3. If no Vegas data → return None (don't trade)
+          3. If no Vegas data → Kalshi-only mean-reversion fallback
         """
         self._stats["predictions"] += 1
         
@@ -237,7 +238,9 @@ class SportsPredictor:
                 self._stats["vegas_used"] += 1
                 return pred
         
-        return None
+        # Kalshi-only fallback: trade extreme mispricing using market
+        # microstructure signals when Vegas odds are unavailable.
+        return self._predict_kalshi_only(sports_features, base_features)
     
     def _predict_xgb(self, sports_features: Any) -> SportsPrediction | None:
         """Use trained XGBoost model for prediction."""
@@ -275,6 +278,86 @@ class SportsPredictor:
         except Exception as e:
             log.debug("xgb_error", error=str(e))
             return None
+    
+    def _predict_kalshi_only(
+        self,
+        sports_features: Any,
+        base_features: Any = None,
+    ) -> SportsPrediction | None:
+        """
+        Kalshi-only fallback when Vegas odds are unavailable.
+        
+        Uses conservative mean-reversion logic on extreme prices:
+          - Prices very close to 0 or 1 tend to revert
+          - High volume + extreme price = more reliable signal
+          - Only trades when the edge is large enough to overcome noise
+        
+        This is intentionally conservative (high threshold) because we
+        lack the Vegas anchor that provides our strongest signal.
+        """
+        price = sports_features.kalshi_price
+        if not base_features or price <= 0.02 or price >= 0.98:
+            return None
+        
+        # Only trade extreme mispricings with enough liquidity
+        volume = getattr(base_features, "volume", 0)
+        hours = getattr(base_features, "hours_to_expiry", 0)
+        spread = getattr(base_features, "spread", 1.0)
+        
+        # Require minimum liquidity for Kalshi-only trades
+        if volume < 50 or spread > 0.10 or hours < 2.0:
+            return None
+        
+        # Mean-reversion: extreme prices with good volume
+        # Prices below 0.15 or above 0.85 with decent volume tend to revert
+        if price < 0.15:
+            # Very cheap YES — potential value buy
+            # Fair value estimate: regress toward 0.50 by 20%
+            fair_est = price + (0.50 - price) * 0.20
+            side = "yes"
+            predicted_prob = fair_est
+            cost = price
+        elif price > 0.85:
+            # Very expensive YES — buy NO (cheap)
+            fair_est = price - (price - 0.50) * 0.20
+            side = "no"
+            predicted_prob = 1.0 - fair_est
+            cost = 1.0 - price
+        else:
+            # Price is in normal range — no Kalshi-only edge
+            return None
+        
+        edge = predicted_prob - cost
+        
+        # Require larger edge than Vegas strategy (7% vs 5%)
+        # because we're less confident without an anchor
+        if edge < 0.07:
+            return None
+        
+        # Conservative confidence — lower than Vegas-backed trades
+        confidence = 0.35 + min(edge / 0.30, 0.20)  # 0.35 to 0.55
+        
+        # Boost slightly for high volume (more reliable price discovery)
+        if volume > 500:
+            confidence += 0.05
+        
+        confidence = max(0.30, min(0.60, confidence))
+        
+        self._stats["kalshi_only_used"] = self._stats.get("kalshi_only_used", 0) + 1
+        
+        return SportsPrediction(
+            side=side,
+            confidence=confidence,
+            predicted_prob=predicted_prob,
+            edge=edge,
+            model_name="kalshi_only_mean_revert",
+            model_version="v1",
+            vegas_prob=0.0,
+            kalshi_price=price,
+            discrepancy=0.0,
+            strategy_used="kalshi_only",
+            sport_id=sports_features.sport_id,
+        )
     
     def record_training_sample(
         self,

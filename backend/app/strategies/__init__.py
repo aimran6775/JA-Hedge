@@ -161,7 +161,7 @@ class TradingStrategyBase(ABC):
         cost_per = price_cents
         max_contracts = int(max_cost / cost_per) if cost_per > 0 else 0
         count = max(1, int(adjusted * max_contracts))
-        return min(count, 50)  # hard cap
+        return min(count, 10)  # hard cap — must match risk manager max_position_size
 
 
 # ── Strategy 1: Momentum Chaser ──────────────────────────────────────────

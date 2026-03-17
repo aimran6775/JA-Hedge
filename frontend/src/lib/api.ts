@@ -235,6 +235,7 @@ export interface FrankensteinStatus {
     snapshot: {
       total_trades: number;
       real_trades: number;
+      bootstrap_trades: number;
       win_rate: number;
       prediction_accuracy: number;
       total_pnl: number;

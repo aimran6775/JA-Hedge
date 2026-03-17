@@ -507,7 +507,12 @@ class Frankenstein:
                         model_name=sig.strategy,
                     )
 
-                    count = max(1, sig.recommended_count)
+                    # Clamp to risk manager's position limit to avoid
+                    # silent rejections at execution time.
+                    risk_limit = 10
+                    if self._execution._risk_manager:
+                        risk_limit = self._execution._risk_manager.limits.max_position_size
+                    count = max(1, min(sig.recommended_count, risk_limit))
                     price_cents = self._compute_price(pred_for_sig, feat)
                     cost_frac = price_cents / 100.0
                     ev = abs(sig.edge) * count * (1.0 - cost_frac)

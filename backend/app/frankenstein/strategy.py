@@ -175,10 +175,11 @@ class AdaptiveStrategy:
 
         elif regime == "quiet":
             # Low vol: still require strong signals, can be more aggressive on size
+            # NOTE: max_position_size must never exceed risk manager's limit (10)
             events.extend(self._adjust("min_confidence", 0.30, "quiet_regime"))
             events.extend(self._adjust("min_edge", 0.06, "quiet_regime"))
             events.extend(self._adjust("kelly_fraction", 0.30, "quiet_regime"))
-            events.extend(self._adjust("max_position_size", 12, "quiet_regime"))
+            events.extend(self._adjust("max_position_size", 10, "quiet_regime"))
 
         elif regime == "trending":
             # Trending: follow momentum, but still require high confidence

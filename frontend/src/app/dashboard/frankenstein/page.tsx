@@ -348,6 +348,9 @@ export default function FrankensteinPage() {
               <StateRow label="Avg Loss" value={snap ? `$${snap.avg_loss.toFixed(2)}` : "—"} />
               <StateRow label="Regime" value={snap?.regime ?? "unknown"} />
               <StateRow label="Real Trades" value={`${snap?.real_trades ?? 0} resolved`} />
+              {(snap?.bootstrap_trades ?? 0) > 0 && (
+                <StateRow label="Bootstrap (training)" value={`${snap?.bootstrap_trades} synthetic`} />
+              )}
             </div>
           </Card>
 

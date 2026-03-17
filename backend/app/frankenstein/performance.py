@@ -57,6 +57,7 @@ class PerformanceSnapshot:
     # Volume
     total_trades: int = 0
     real_trades: int = 0            # Excludes bootstrap/synthetic trades
+    bootstrap_trades: int = 0       # Synthetic trades (training data only)
     trades_today: int = 0
     trades_this_hour: int = 0
     unique_markets: int = 0
@@ -118,8 +119,9 @@ class PerformanceTracker:
         if not resolved:
             snap = PerformanceSnapshot(
                 timestamp=now,
-                total_trades=len(all_resolved),
+                total_trades=len(all_resolved),  # includes bootstrap (for reference)
                 real_trades=0,
+                bootstrap_trades=len(all_resolved),
             )
             self._snapshots.append(snap)
             return snap
@@ -214,6 +216,7 @@ class PerformanceTracker:
             edge_capture=edge_capture,
             total_trades=len(all_resolved),
             real_trades=len(resolved),
+            bootstrap_trades=len(all_resolved) - len(resolved),
             trades_today=len(today_trades),
             trades_this_hour=len(hour_trades),
             unique_markets=unique_markets,
