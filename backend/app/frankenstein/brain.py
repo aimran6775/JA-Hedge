@@ -313,6 +313,8 @@ class Frankenstein:
         should_trade, session = ExchangeSchedule.should_trade()
         if not should_trade:
             log.debug("scan_skipped_schedule", reason=session)
+            # Back off during off-hours to avoid thousands of useless log lines
+            await asyncio.sleep(270)  # extra 4.5 min (+ normal 30s = ~5 min between checks)
             return
 
         # Liquidity factor for position sizing adjustment

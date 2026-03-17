@@ -469,6 +469,8 @@ class TradeMemory:
                 if record.outcome == TradeOutcome.PENDING:
                     self._pending_trades[record.trade_id] = record
                 self._by_ticker.setdefault(record.ticker, []).append(record.trade_id)
+                # Rebuild outcome counters
+                self._by_outcome[record.outcome] = self._by_outcome.get(record.outcome, 0) + 1
 
             for td in data.get("important_trades", []):
                 self._important_trades.append(TradeRecord.from_dict(td))

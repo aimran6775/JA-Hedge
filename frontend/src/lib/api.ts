@@ -546,8 +546,16 @@ export const api = {
       };
     },
     limits: async (): Promise<RiskLimits> => {
-      // No GET endpoint exists; return defaults
-      return { max_positions: 10, max_exposure_cents: 5000, max_daily_loss_cents: 500 };
+      try {
+        const data = await apiFetch<{ max_position_size: number; max_daily_loss: number; max_portfolio_exposure: number; max_spread_cents: number }>("/risk/limits");
+        return {
+          max_positions: data.max_position_size,
+          max_exposure_cents: Math.round(data.max_portfolio_exposure * 100),
+          max_daily_loss_cents: Math.round(data.max_daily_loss * 100),
+        };
+      } catch {
+        return { max_positions: 10, max_exposure_cents: 5000, max_daily_loss_cents: 500 };
+      }
     },
     activateKillSwitch: () =>
       apiFetch<{ kill_switch_active: boolean }>(
@@ -588,9 +596,21 @@ export const api = {
         return { model_loaded: false, model_name: "XGBoost", last_prediction: null, total_signals: 0, signals_executed: 0, features_count: 29 };
       }
     },
-    signals: async (_params?: { limit?: number }): Promise<AISignal[]> => {
-      // No dedicated signals endpoint — return empty
-      return [];
+    signals: async (params?: { limit?: number }): Promise<AISignal[]> => {
+      try {
+        const trades = await apiFetch<FrankensteinTrade[]>(
+          `/frankenstein/memory/recent?n=${params?.limit ?? 20}`,
+        );
+        return trades.map((t) => ({
+          ticker: t.ticker,
+          direction: t.side,
+          confidence: t.confidence,
+          edge: t.edge,
+          timestamp: t.timestamp,
+        }));
+      } catch {
+        return [];
+      }
     },
   },
 

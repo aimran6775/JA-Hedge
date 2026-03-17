@@ -492,9 +492,9 @@ class XGBoostPredictor(PredictionModel):
 
         # Extract metrics
         val_auc = final_evals["val"]["auc"][-1] if "auc" in final_evals.get("val", {}) else best_auc
+        train_auc = final_evals["train"]["auc"][-1] if "auc" in final_evals.get("train", {}) else 0.0
         metrics = {
-            "train_logloss": final_evals["train"]["auc"][-1] if "auc" in final_evals.get("train", {}) else 0.0,
-            "val_logloss": 0.0,
+            "train_auc": train_auc,
             "val_auc": val_auc,
             "best_iteration": self._model.best_iteration,
             "cv_best_auc": best_auc,

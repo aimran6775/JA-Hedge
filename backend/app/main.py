@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ───────────────────────────────────────────
     try:
         await init_db()
+        state.db_available = True
     except Exception as e:
         log.warning("db_init_skipped", error=str(e), hint="Database not available — running without persistence")
 
@@ -431,8 +432,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
 )
 
 # ── API Routes ────────────────────────────────────────────────────────────────
@@ -463,7 +464,7 @@ async def health_check() -> dict:
         "version": "0.2.0",
         "paper_trading": paper_info or {"enabled": False},
         "components": {
-            "database": "connected",
+            "database": "connected" if app_state.db_available else "unavailable",
             "kalshi_api": "ready" if app_state.kalshi_api else "not_initialized",
             "execution_engine": "ready" if app_state.execution_engine else "not_initialized",
             "risk_manager": "ready" if app_state.risk_manager else "not_initialized",

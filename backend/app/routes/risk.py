@@ -80,6 +80,20 @@ async def toggle_kill_switch(activate: bool = True) -> dict:
     }
 
 
+@router.get("/limits")
+async def get_limits() -> dict:
+    """Get current risk limits."""
+    if not state.risk_manager:
+        return {"max_position_size": 10, "max_daily_loss": 50.0, "max_portfolio_exposure": 500.0, "max_spread_cents": 20}
+    lim = state.risk_manager.limits
+    return {
+        "max_position_size": lim.max_position_size,
+        "max_daily_loss": float(lim.max_daily_loss),
+        "max_portfolio_exposure": float(lim.max_portfolio_exposure),
+        "max_spread_cents": lim.max_spread_cents,
+    }
+
+
 @router.put("/limits")
 async def update_limits(body: RiskLimitsBody) -> dict:
     """Update risk limits at runtime."""

@@ -94,8 +94,8 @@ class Settings(BaseSettings):
         return p  # fallback to original
 
     # ── Database ──────────────────────────────────────────
-    postgres_user: str = "jahedge"
-    postgres_password: str = "jahedge_dev_2026"
+    postgres_user: str = ""
+    postgres_password: str = ""
     postgres_db: str = "jahedge"
     postgres_host: str = "localhost"
     postgres_port: int = 5432

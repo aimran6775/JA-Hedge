@@ -38,8 +38,7 @@ class ModelCheckpoint:
     timestamp: float = field(default_factory=time.time)
     train_samples: int = 0
     val_auc: float = 0.0
-    val_logloss: float = 0.0
-    train_logloss: float = 0.0
+    train_auc: float = 0.0
     best_iteration: int = 0
     feature_importance: dict[str, float] = field(default_factory=dict)
     live_accuracy: float = 0.0
@@ -159,8 +158,7 @@ class OnlineLearner:
             version=version,
             train_samples=len(X),
             val_auc=metrics.get("val_auc", 0.0),
-            val_logloss=metrics.get("val_logloss", 999.0),
-            train_logloss=metrics.get("train_logloss", 999.0),
+            train_auc=metrics.get("train_auc", 0.0),
             best_iteration=int(metrics.get("best_iteration", 0)),
             feature_importance=self._extract_importance(challenger),
         )
@@ -189,10 +187,6 @@ class OnlineLearner:
         if challenger.val_auc > self._champion.val_auc + self.challenger_must_beat_by:
             return True
 
-        # Also promote if challenger has much lower logloss
-        if challenger.val_logloss < self._champion.val_logloss * 0.95:
-            return True
-
         # Promote if trained on significantly more data (2x)
         if challenger.train_samples >= self._champion.train_samples * 2:
             # Accept if AUC is at least as good
@@ -203,9 +197,11 @@ class OnlineLearner:
 
     def _promote(self, model: XGBoostPredictor, checkpoint: ModelCheckpoint) -> None:
         """Promote a challenger model to champion."""
-        # Update the main model in-place
+        # Update the main model in-place — keep existing calibration tracker
+        # (the challenger's calibration is empty; the champion's has real data)
         self.model._model = model._model
         self.model._version = checkpoint.version
+        # NOTE: self.model._calibration is intentionally NOT replaced
 
         checkpoint.is_champion = True
         self._champion = checkpoint
