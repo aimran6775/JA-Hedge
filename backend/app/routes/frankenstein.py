@@ -707,80 +707,85 @@ async def debug_scan() -> dict:
     Diagnostic: run one scan step and report where it stops.
     Does NOT execute trades — just reports the funnel.
     """
-    from app.pipeline import market_cache
-    from app.kalshi.models import MarketStatus
+    try:
+        from app.pipeline import market_cache
+        from app.kalshi.models import MarketStatus
+        from collections import Counter
 
-    frank = _get_frank()
-    result: dict = {"code_version": "e8114e1"}
+        frank = _get_frank()
+        result: dict = {"code_version": "34f7a86"}
 
-    # 1. Cache state
-    all_markets = market_cache.get_all()
-    active_markets = market_cache.get_active()
-    result["cache"] = {
-        "total": len(all_markets),
-        "active": len(active_markets),
-        "status_distribution": {},
-    }
+        # 1. Cache state
+        all_markets = market_cache.get_all()
+        active_markets = market_cache.get_active()
+        statuses = Counter(str(m.status) for m in all_markets[:1000])
+        result["cache"] = {
+            "total": len(all_markets),
+            "active": len(active_markets),
+            "status_distribution": dict(statuses),
+        }
 
-    # Status distribution
-    from collections import Counter
-    statuses = Counter(str(m.status) for m in all_markets[:1000])
-    result["cache"]["status_distribution"] = dict(statuses)
+        if not active_markets:
+            result["exit"] = "no_active_markets"
+            result["sample_statuses"] = [
+                {"ticker": m.ticker[:30], "status_str": str(m.status), "status_type": type(m.status).__name__}
+                for m in all_markets[:5]
+            ]
+            return result
 
-    if not active_markets:
-        result["exit"] = "no_active_markets"
-        # Sample first 5 market statuses for debugging
-        result["sample_statuses"] = [
-            {"ticker": m.ticker[:30], "status": str(m.status), "status_value": m.status.value if hasattr(m.status, "value") else str(m.status)}
-            for m in all_markets[:5]
-        ]
-        return result
+        # 2. Filter candidates
+        try:
+            candidates = frank._filter_candidates(active_markets)
+        except Exception as e:
+            result["filter_error"] = str(e)
+            import traceback
+            result["filter_traceback"] = traceback.format_exc()
+            return result
 
-    # 2. Filter candidates
-    candidates = frank._filter_candidates(active_markets)
-    result["filter"] = {
-        "input_markets": len(active_markets),
-        "output_candidates": len(candidates),
-        "sports_only": frank._sports_only,
-    }
-
-    if not candidates:
-        result["exit"] = "no_candidates_after_filter"
-        # Analyze WHY filter removed everything
         params = frank.strategy.params
         max_spread = params.max_spread_cents
         if frank._execution._risk_manager:
             risk_spread = frank._execution._risk_manager.limits.max_spread_cents
             max_spread = min(max_spread, risk_spread)
-        result["filter"]["max_spread_cents"] = max_spread
-        result["filter"]["spread_analysis"] = _analyze_spreads(active_markets[:500], max_spread)
-        return result
 
-    # 3. Sample candidate details
-    result["candidates"] = {
-        "count": len(candidates),
-        "sample": [
-            {"ticker": c.ticker[:40], "spread": float(c.spread) if c.spread else None, "midpoint": float(c.midpoint) if c.midpoint else None}
-            for c in candidates[:10]
-        ],
-    }
-
-    # 4. Try predictions on first candidate
-    try:
-        feat = frank._features.compute(candidates[0])
-        pred = frank._model.predict(feat)
-        result["prediction_sample"] = {
-            "ticker": candidates[0].ticker[:40],
-            "predicted_prob": round(pred.predicted_prob, 4),
-            "edge": round(pred.edge, 4),
-            "side": pred.side,
-            "confidence": round(pred.confidence, 4),
-            "model_trained": frank._model.is_trained,
+        result["filter"] = {
+            "input_markets": len(active_markets),
+            "output_candidates": len(candidates),
+            "sports_only": frank._sports_only,
+            "max_spread_cents": max_spread,
         }
-    except Exception as e:
-        result["prediction_error"] = str(e)
 
-    return result
+        if not candidates:
+            result["exit"] = "no_candidates_after_filter"
+            result["filter"]["spread_analysis"] = _analyze_spreads(active_markets[:500], max_spread)
+            return result
+
+        # 3. Sample candidates
+        result["candidates_sample"] = [
+            {"ticker": c.ticker[:40], "spread": float(c.spread) if c.spread is not None else None, "mid": float(c.midpoint) if c.midpoint is not None else None}
+            for c in candidates[:5]
+        ]
+
+        # 4. Try a prediction
+        try:
+            feat = frank._features.compute(candidates[0])
+            pred = frank._model.predict(feat)
+            result["prediction_sample"] = {
+                "ticker": candidates[0].ticker[:40],
+                "prob": round(pred.predicted_prob, 4),
+                "edge": round(pred.edge, 4),
+                "side": pred.side,
+                "model_trained": frank._model.is_trained,
+            }
+        except Exception as e:
+            result["prediction_error"] = str(e)
+            import traceback
+            result["prediction_traceback"] = traceback.format_exc()
+
+        return result
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 def _analyze_spreads(markets, max_spread: int) -> dict:
