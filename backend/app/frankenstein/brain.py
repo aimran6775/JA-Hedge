@@ -445,9 +445,9 @@ class Frankenstein:
                 exchange_session=self._schedule.current_session() if hasattr(self._schedule, 'current_session') else "regular",
             )
 
-            # 🚫 GRADE GATE: reject anything below A-grade
+            # 🚫 GRADE GATE: reject anything below minimum grade
             if not conf_breakdown.should_trade:
-                log.debug("grade_rejected", ticker=market.get("ticker"),
+                log.debug("grade_rejected", ticker=market.ticker,
                           grade=conf_breakdown.grade, score=round(conf_breakdown.composite_score, 1))
                 continue
 
