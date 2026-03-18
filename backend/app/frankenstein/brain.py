@@ -966,6 +966,17 @@ class Frankenstein:
             if spread_cents > max_spread:
                 continue
 
+            # Reject degenerate books: bid=0 AND ask=0 means nobody is quoting.
+            # These show spread=0 (fake tight) but are actually illiquid.
+            bid = float(m.yes_bid or 0)
+            ask = float(m.yes_ask or 0)
+            if bid <= 0 and ask <= 0:
+                continue
+            # Also reject if midpoint is too extreme (< 2¢ or > 98¢)
+            mid = float(m.midpoint or m.last_price or 0)
+            if mid < 0.02 or mid > 0.98:
+                continue
+
             # Sports-preferred mode: try sports first, but accept
             # non-sports if no sports candidates pass the filter.
             # (Tracked via is_sports flag for later prioritisation.)
