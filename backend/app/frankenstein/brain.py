@@ -584,7 +584,8 @@ class Frankenstein:
             # ── PRE-EXEC SPREAD RECHECK ──────────────────────────────
             # The spread may have widened since the candidate filter ran.
             # Recheck from the live cache before spending an API call.
-            from app.pipeline import market_cache
+            # NOTE: use the module-level market_cache import (line 46),
+            # do NOT re-import locally — it causes UnboundLocalError.
             fresh = market_cache.get(market.ticker)
             if fresh and fresh.spread is not None:
                 fresh_spread = int(fresh.spread * 100) if isinstance(fresh.spread, float) else fresh.spread
