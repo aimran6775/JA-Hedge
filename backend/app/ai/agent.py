@@ -499,7 +499,7 @@ class AutonomousAgent:
 
         for market in markets:
             # Skip non-active
-            if market.status != MarketStatus.ACTIVE:
+            if market.status not in (MarketStatus.ACTIVE, MarketStatus.OPEN):
                 continue
 
             # Skip markets with no price data

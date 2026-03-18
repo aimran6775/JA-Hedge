@@ -190,7 +190,7 @@ class TradingStrategy:
         """Filter markets to only tradeable candidates."""
         candidates = []
         for m in markets:
-            if m.status != MarketStatus.ACTIVE:
+            if m.status not in (MarketStatus.ACTIVE, MarketStatus.OPEN):
                 continue
             # Skip markets with no price data
             if m.yes_bid is None and m.yes_ask is None and m.last_price is None:

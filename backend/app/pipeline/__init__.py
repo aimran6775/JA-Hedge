@@ -56,7 +56,11 @@ class MarketCache:
         return list(self._markets.values())
 
     def get_active(self) -> list[Market]:
-        return [m for m in self._markets.values() if m.status == MarketStatus.ACTIVE]
+        # Kalshi API returns "open"; ACTIVE is a legacy alias — accept both
+        return [
+            m for m in self._markets.values()
+            if m.status in (MarketStatus.ACTIVE, MarketStatus.OPEN)
+        ]
 
     def get_by_event(self, event_ticker: str) -> list[Market]:
         return [m for m in self._markets.values() if m.event_ticker == event_ticker]

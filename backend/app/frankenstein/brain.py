@@ -323,6 +323,10 @@ class Frankenstein:
         # 1. Get active markets
         markets = market_cache.get_active()
         if not markets:
+            self._state.last_scan_debug = {
+                "exit": "no_active_markets",
+                "cache_total": market_cache.count,
+            }
             return
 
         # ── PHASE 2: Manage existing positions (exits) ────
@@ -331,6 +335,12 @@ class Frankenstein:
         # 2. Filter candidates
         candidates = self._filter_candidates(markets)
         if not candidates:
+            self._state.last_scan_debug = {
+                "exit": "no_candidates_after_filter",
+                "active_markets": len(markets),
+                "session": session,
+                "sports_only": self._sports_only,
+            }
             log.debug("scan_no_candidates", total_markets=len(markets),
                       session=session, sports_only=self._sports_only)
             return
@@ -351,8 +361,12 @@ class Frankenstein:
 
         # ⭐ Multi-factor confidence scorer (Phase 11)
         # Created ONCE outside the loop for performance.
+        # When model is untrained, the model_strength factor caps at 0/100
+        # making A-grade (≥80) mathematically impossible (max composite ~75).
+        # Use B-grade minimum when untrained so we can still trade.
+        min_grade = "B" if not self._model.is_trained else "A"
         conf_scorer = ConfidenceScorer(
-            min_grade="A",
+            min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
             current_drawdown_pct=self._adv_risk.current_drawdown_pct if hasattr(self._adv_risk, 'current_drawdown_pct') else 0.0,
             open_positions=self._count_open_positions(),
@@ -930,7 +944,7 @@ class Frankenstein:
             max_spread = min(max_spread, risk_spread)
 
         for m in markets:
-            if m.status != MarketStatus.ACTIVE:
+            if m.status not in (MarketStatus.ACTIVE, MarketStatus.OPEN):
                 continue
             if m.yes_bid is None and m.yes_ask is None and m.last_price is None:
                 continue
