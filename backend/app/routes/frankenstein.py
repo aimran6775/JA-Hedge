@@ -26,6 +26,30 @@ def _get_frank():
 
 # ── Status ────────────────────────────────────────────────────────────────────
 
+@router.get("/cache-check")
+async def cache_check() -> dict:
+    """Minimal cache diagnostic."""
+    try:
+        from app.pipeline import market_cache
+        all_m = market_cache.get_all()
+        active_m = market_cache.get_active()
+        sample = []
+        for m in all_m[:3]:
+            sample.append({
+                "ticker": m.ticker[:30],
+                "status_type": type(m.status).__name__,
+                "status_val": str(m.status),
+            })
+        return {
+            "total": len(all_m),
+            "active": len(active_m),
+            "sample": sample,
+        }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "tb": traceback.format_exc()}
+
+
 @router.get("/status")
 async def frankenstein_status() -> dict:
     """Get full Frankenstein status — the brain's self-report."""
