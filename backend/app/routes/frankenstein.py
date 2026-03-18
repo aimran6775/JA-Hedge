@@ -697,3 +697,109 @@ async def model_intelligence() -> dict:
         }
 
     return result
+
+
+# ── Scan Diagnostics ──────────────────────────────────────────────────────────
+
+@router.get("/debug-scan")
+async def debug_scan() -> dict:
+    """
+    Diagnostic: run one scan step and report where it stops.
+    Does NOT execute trades — just reports the funnel.
+    """
+    from app.pipeline import market_cache
+    from app.kalshi.models import MarketStatus
+
+    frank = _get_frank()
+    result: dict = {"code_version": "e8114e1"}
+
+    # 1. Cache state
+    all_markets = market_cache.get_all()
+    active_markets = market_cache.get_active()
+    result["cache"] = {
+        "total": len(all_markets),
+        "active": len(active_markets),
+        "status_distribution": {},
+    }
+
+    # Status distribution
+    from collections import Counter
+    statuses = Counter(str(m.status) for m in all_markets[:1000])
+    result["cache"]["status_distribution"] = dict(statuses)
+
+    if not active_markets:
+        result["exit"] = "no_active_markets"
+        # Sample first 5 market statuses for debugging
+        result["sample_statuses"] = [
+            {"ticker": m.ticker[:30], "status": str(m.status), "status_value": m.status.value if hasattr(m.status, "value") else str(m.status)}
+            for m in all_markets[:5]
+        ]
+        return result
+
+    # 2. Filter candidates
+    candidates = frank._filter_candidates(active_markets)
+    result["filter"] = {
+        "input_markets": len(active_markets),
+        "output_candidates": len(candidates),
+        "sports_only": frank._sports_only,
+    }
+
+    if not candidates:
+        result["exit"] = "no_candidates_after_filter"
+        # Analyze WHY filter removed everything
+        params = frank.strategy.params
+        max_spread = params.max_spread_cents
+        if frank._execution._risk_manager:
+            risk_spread = frank._execution._risk_manager.limits.max_spread_cents
+            max_spread = min(max_spread, risk_spread)
+        result["filter"]["max_spread_cents"] = max_spread
+        result["filter"]["spread_analysis"] = _analyze_spreads(active_markets[:500], max_spread)
+        return result
+
+    # 3. Sample candidate details
+    result["candidates"] = {
+        "count": len(candidates),
+        "sample": [
+            {"ticker": c.ticker[:40], "spread": float(c.spread) if c.spread else None, "midpoint": float(c.midpoint) if c.midpoint else None}
+            for c in candidates[:10]
+        ],
+    }
+
+    # 4. Try predictions on first candidate
+    try:
+        feat = frank._features.compute(candidates[0])
+        pred = frank._model.predict(feat)
+        result["prediction_sample"] = {
+            "ticker": candidates[0].ticker[:40],
+            "predicted_prob": round(pred.predicted_prob, 4),
+            "edge": round(pred.edge, 4),
+            "side": pred.side,
+            "confidence": round(pred.confidence, 4),
+            "model_trained": frank._model.is_trained,
+        }
+    except Exception as e:
+        result["prediction_error"] = str(e)
+
+    return result
+
+
+def _analyze_spreads(markets, max_spread: int) -> dict:
+    """Analyze spread distribution for debugging."""
+    no_spread = 0
+    within_limit = 0
+    above_limit = 0
+    for m in markets:
+        if m.spread is None:
+            no_spread += 1
+            continue
+        spread_cents = int(m.spread * 100) if isinstance(m.spread, float) else m.spread
+        if spread_cents <= max_spread:
+            within_limit += 1
+        else:
+            above_limit += 1
+    return {
+        "no_spread": no_spread,
+        "within_limit": within_limit,
+        "above_limit": above_limit,
+        "max_spread_cents": max_spread,
+    }
