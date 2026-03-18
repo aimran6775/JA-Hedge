@@ -150,10 +150,13 @@ class NewsSentimentEngine(DataSource):
             return []
 
         # Fetch from all sources concurrently
+        async def _noop():
+            return []
+
         results = await asyncio.gather(
             self._fetch_rss(),
             self._fetch_gdelt(),
-            self._fetch_newsapi() if self._newsapi_key else asyncio.coroutine(lambda: [])(),
+            self._fetch_newsapi() if self._newsapi_key else _noop(),
             return_exceptions=True,
         )
 

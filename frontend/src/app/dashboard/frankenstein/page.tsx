@@ -297,7 +297,7 @@ export default function FrankensteinPage() {
       {/* ── Top Stats Row ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Balance" value={balance ? `$${balance.balance_dollars}` : "—"} icon={<IconShield size={16} />} />
-        <StatCard label="Trades" value={s ? `${s.total_trades_executed}` : "—"} suffix={s ? ` / ${s.total_trades_rejected} rej` : ""} icon={<IconZap size={16} />} />
+        <StatCard label="Trades" value={s ? `${s.total_trades_executed}` : "—"} icon={<IconZap size={16} />} />
         <StatCard label="Signals" value={s ? `${s.total_signals}` : "—"} icon={<IconMarkets size={16} />} />
         <StatCard label="Positions" value={`${positions.length}`} suffix=" open" icon={<IconTarget size={16} />} />
         <StatCard label="P&L" value={snap ? pnlSign(snap.total_pnl) : "—"} icon={<IconTrendUp size={16} />} />

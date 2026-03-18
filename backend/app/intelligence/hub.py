@@ -228,13 +228,9 @@ class DataSourceHub:
                 signals.append(sig)
         return signals
 
-    def get_all_signals(self) -> dict[str, list[SourceSignal]]:
-        """Get all cached signals grouped by ticker."""
-        by_ticker: dict[str, list[SourceSignal]] = defaultdict(list)
-        for source_name, ticker_map in self._signal_cache.items():
-            for ticker, sig in ticker_map.items():
-                by_ticker[ticker].append(sig)
-        return dict(by_ticker)
+    def get_all_signals(self) -> dict[str, dict[str, SourceSignal]]:
+        """Get all cached signals: source_name → ticker → SourceSignal."""
+        return dict(self._signal_cache)
 
     def get_features_for_ticker(self, ticker: str) -> dict[str, float]:
         """Get merged alt-data features for a ticker.
