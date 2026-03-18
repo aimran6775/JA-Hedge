@@ -462,6 +462,49 @@ export interface SportsSignal {
   age_seconds: number;
 }
 
+// ── Intelligence System Types ────────────────────────────────────────────
+
+export interface IntelligenceSource {
+  name: string;
+  type: string;
+  enabled: boolean;
+  healthy: boolean;
+  fetch_count: number;
+  error_count: number;
+  signal_count: number;
+  avg_latency_ms: number;
+  uptime_pct: number;
+  last_fetch_time: number | null;
+  quality_score: number;
+  weight: number;
+  reliability: Record<string, number>;
+}
+
+export interface IntelligenceSignal {
+  source: string;
+  type: string;
+  ticker: string;
+  signal_value: number;
+  confidence: number;
+  edge_estimate: number;
+  category: string;
+  headline: string;
+  features: Record<string, number>;
+}
+
+export interface IntelligenceAlert {
+  alert_type: string;
+  severity: string;
+  title: string;
+  message: string;
+  source_name: string;
+  category: string;
+  ticker: string;
+  data: Record<string, unknown>;
+  timestamp: number;
+  acknowledged: boolean;
+}
+
 // ── API Functions ────────────────────────────────────────────────────────
 
 export const api = {
@@ -805,5 +848,59 @@ export const api = {
       apiFetch<Record<string, unknown>>("/sports/odds/refresh", {
         method: "POST",
       }),
+  },
+
+  // Intelligence System (multi-source data)
+  intelligence: {
+    dashboard: () =>
+      apiFetch<{
+        initialized: boolean;
+        status: string;
+        sources: IntelligenceSource[];
+        summary: {
+          total_sources: number;
+          active_sources: number;
+          total_signals: number;
+          signals_by_category: Record<string, number>;
+          overall_quality: number;
+        };
+        alerts: {
+          stats: Record<string, unknown>;
+          recent: IntelligenceAlert[];
+        };
+        message?: string;
+      }>("/intelligence/dashboard"),
+    status: () => apiFetch<Record<string, unknown>>("/intelligence/status"),
+    sources: () =>
+      apiFetch<{ sources: IntelligenceSource[] }>("/intelligence/sources"),
+    signals: (ticker?: string, category?: string) => {
+      const params = new URLSearchParams();
+      if (ticker) params.set("ticker", ticker);
+      if (category) params.set("category", category);
+      const qs = params.toString();
+      return apiFetch<{ signals: IntelligenceSignal[]; count: number }>(
+        `/intelligence/signals${qs ? `?${qs}` : ""}`,
+      );
+    },
+    alerts: (limit?: number) =>
+      apiFetch<{ alerts: IntelligenceAlert[]; stats: Record<string, unknown> }>(
+        `/intelligence/alerts${limit ? `?limit=${limit}` : ""}`,
+      ),
+    acknowledgeAlerts: () =>
+      apiFetch<{ acknowledged: number }>("/intelligence/alerts/acknowledge-all", {
+        method: "POST",
+      }),
+    features: (ticker: string) =>
+      apiFetch<Record<string, unknown>>(`/intelligence/features/${ticker}`),
+    correlation: () =>
+      apiFetch<Record<string, unknown>>("/intelligence/correlation"),
+    timeline: (hours?: number) =>
+      apiFetch<{ timeline: Record<string, unknown>[]; hours: number }>(
+        `/intelligence/timeline${hours ? `?hours=${hours}` : ""}`,
+      ),
+    quality: () =>
+      apiFetch<Record<string, unknown>>("/intelligence/quality"),
+    weights: () =>
+      apiFetch<{ weights: Record<string, number> }>("/intelligence/weights"),
   },
 };

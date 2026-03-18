@@ -152,6 +152,13 @@ class Settings(BaseSettings):
     sports_odds_cache_ttl: float = 300.0       # 5 min cache for odds
     sports_min_vegas_discrepancy: float = 0.05 # 5% minimum edge to trade
 
+    # ── Intelligence System API Keys (all optional) ───────
+    newsapi_key: str = ""                     # NewsAPI.org API key
+    openweathermap_key: str = ""              # OpenWeatherMap API key
+    fred_api_key: str = ""                    # FRED (Federal Reserve) API key
+    congress_api_key: str = ""                # Congress.gov API key
+    intelligence_enabled: bool = True         # Enable multi-source intelligence system
+
     # ── Celery ────────────────────────────────────────────
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"

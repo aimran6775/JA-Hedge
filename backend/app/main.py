@@ -307,6 +307,87 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         log.error("frankenstein_awaken_failed", error=str(e))
 
+    # ── 🧠 Multi-Source Intelligence System ───────────────
+    intel_hub = None
+    try:
+        if settings.intelligence_enabled:
+            from app.intelligence.hub import DataSourceHub
+            from app.intelligence.fusion import FeatureFusionEngine
+            from app.intelligence.confidence import SourceConfidenceTracker, AdaptiveWeightEngine
+            from app.intelligence.alerts import AlertPipeline
+            from app.intelligence.backfill import HistoricalBackfillEngine
+            from app.intelligence.correlation import SourceCorrelationMatrix
+            from app.intelligence.quality import DataQualityMonitor
+
+            # Core hub
+            intel_hub = DataSourceHub()
+            state.intelligence_hub = intel_hub
+
+            # Register all data sources
+            from app.intelligence.sources.sports_odds import SportsOddsScraper
+            from app.intelligence.sources.news_sentiment import NewsSentimentEngine
+            from app.intelligence.sources.social_twitter import SocialSignalSource
+            from app.intelligence.sources.weather import WeatherDataFeed
+            from app.intelligence.sources.crypto import CryptoPriceFeed
+            from app.intelligence.sources.polymarket import PolymarketSource
+            from app.intelligence.sources.economic import EconomicDataFeed
+            from app.intelligence.sources.political import PoliticalDataFeed
+            from app.intelligence.sources.google_trends import GoogleTrendsSource
+
+            intel_hub.register(SportsOddsScraper())
+            intel_hub.register(NewsSentimentEngine(
+                newsapi_key=settings.newsapi_key,
+            ))
+            intel_hub.register(SocialSignalSource())
+            intel_hub.register(WeatherDataFeed(
+                openweathermap_key=settings.openweathermap_key,
+            ))
+            intel_hub.register(CryptoPriceFeed())
+            intel_hub.register(PolymarketSource())
+            intel_hub.register(EconomicDataFeed(
+                fred_api_key=settings.fred_api_key,
+            ))
+            intel_hub.register(PoliticalDataFeed(
+                congress_api_key=settings.congress_api_key,
+            ))
+            intel_hub.register(GoogleTrendsSource())
+
+            # Subsystems
+            conf_tracker = SourceConfidenceTracker()
+            adaptive_wt = AdaptiveWeightEngine(tracker=conf_tracker)
+            state.confidence_tracker = conf_tracker
+            state.adaptive_weights = adaptive_wt
+
+            fusion = FeatureFusionEngine(hub=intel_hub)
+            state.feature_fusion = fusion
+
+            alert_pipe = AlertPipeline()
+            state.alert_pipeline = alert_pipe
+
+            backfill = HistoricalBackfillEngine(
+                persist_dir=f"{settings.persist_dir}/intelligence",
+            )
+            state.backfill_engine = backfill
+
+            corr_matrix = SourceCorrelationMatrix()
+            state.correlation_matrix = corr_matrix
+
+            quality_mon = DataQualityMonitor()
+            state.quality_monitor = quality_mon
+
+            # Start everything
+            await intel_hub.start_all()
+            await alert_pipe.start(intel_hub, check_interval=30.0)
+            await backfill.start(intel_hub)
+
+            log.info(
+                "🧠 intelligence_system_started",
+                sources=len(intel_hub._sources),
+                subsystems=["fusion", "alerts", "backfill", "correlation", "quality", "confidence"],
+            )
+    except Exception as e:
+        log.warning("intelligence_system_failed", error=str(e), hint="Intelligence system not available — continuing without it")
+
     # ── Start Sports background tasks ─────────────────────
     try:
         await _sports_collector.start()
@@ -327,6 +408,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── Shutdown ──────────────────────────────────────────
     log.info("shutting_down")
+
+    # Stop Intelligence System
+    if state.alert_pipeline:
+        try:
+            await state.alert_pipeline.stop()
+        except Exception:
+            pass
+    if state.backfill_engine:
+        try:
+            await state.backfill_engine.stop()
+        except Exception:
+            pass
+    if state.intelligence_hub:
+        try:
+            await state.intelligence_hub.stop_all()
+        except Exception:
+            pass
 
     # Stop sports module
     if state.sports_collector:
@@ -474,6 +572,7 @@ async def health_check() -> dict:
             "sports_detector": "ready" if app_state.sports_detector else "not_initialized",
             "odds_client": "ready" if (app_state.odds_client and app_state.odds_client.is_available) else "no_key",
             "sports_predictor": "ready" if app_state.sports_predictor else "not_initialized",
+            "intelligence_hub": "active" if (app_state.intelligence_hub and app_state.intelligence_hub._running) else "not_initialized",
         },
     }
 

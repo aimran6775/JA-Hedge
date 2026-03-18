@@ -35,6 +35,13 @@ if TYPE_CHECKING:
     from app.sports.collector import SportsDataCollector
     from app.sports.monitor import SportsMonitor
     from app.alerts import AlertManager
+    from app.intelligence.hub import DataSourceHub
+    from app.intelligence.fusion import FeatureFusionEngine
+    from app.intelligence.confidence import SourceConfidenceTracker, AdaptiveWeightEngine
+    from app.intelligence.alerts import AlertPipeline as IntelAlertPipeline
+    from app.intelligence.backfill import HistoricalBackfillEngine
+    from app.intelligence.correlation import SourceCorrelationMatrix
+    from app.intelligence.quality import DataQualityMonitor
 
 
 @dataclass
@@ -78,6 +85,16 @@ class AppState:
 
     # Alerts
     alert_manager: AlertManager | None = None
+
+    # 🧠 Intelligence System (multi-source data)
+    intelligence_hub: DataSourceHub | None = None
+    feature_fusion: FeatureFusionEngine | None = None
+    confidence_tracker: SourceConfidenceTracker | None = None
+    adaptive_weights: AdaptiveWeightEngine | None = None
+    alert_pipeline: IntelAlertPipeline | None = None
+    backfill_engine: HistoricalBackfillEngine | None = None
+    correlation_matrix: SourceCorrelationMatrix | None = None
+    quality_monitor: DataQualityMonitor | None = None
 
     # Flags
     ready: bool = False
