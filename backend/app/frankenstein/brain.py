@@ -331,6 +331,8 @@ class Frankenstein:
         # 2. Filter candidates
         candidates = self._filter_candidates(markets)
         if not candidates:
+            log.debug("scan_no_candidates", total_markets=len(markets),
+                      session=session, sports_only=self._sports_only)
             return
 
         # 3. Compute features for all candidates
@@ -556,6 +558,26 @@ class Frankenstein:
             features = candidate["features"]
             count = candidate["count"]
             price_cents = candidate["price_cents"]
+
+            # ── PRE-EXEC SPREAD RECHECK ──────────────────────────────
+            # The spread may have widened since the candidate filter ran.
+            # Recheck from the live cache before spending an API call.
+            from app.pipeline import market_cache
+            fresh = market_cache.get(market.ticker)
+            if fresh and fresh.spread is not None:
+                fresh_spread = int(fresh.spread * 100) if isinstance(fresh.spread, float) else fresh.spread
+                if fresh_spread > params.max_spread_cents:
+                    trades_rejected += 1
+                    self._state.total_trades_rejected += 1
+                    scan_debug["exec_rejections"] += 1
+                    scan_debug["top_candidates"].append({
+                        "ticker": market.ticker, "stage": "spread_recheck_rejected",
+                        "spread": fresh_spread, "limit": params.max_spread_cents,
+                        "count": count, "price": price_cents,
+                    })
+                    log.info("spread_recheck_rejected", ticker=market.ticker,
+                             spread_cents=fresh_spread, limit=params.max_spread_cents)
+                    continue
 
             # Phase 7: Portfolio-level risk check before trade
             passed, reject_reason = self._adv_risk.portfolio_check(
@@ -890,14 +912,22 @@ class Frankenstein:
     # ── Signal Processing Helpers ─────────────────────────────────────
 
     def _filter_candidates(self, markets: list[Market]) -> list[Market]:
-        """Filter markets to tradeable candidates — SPORTS FOCUSED."""
+        """Filter markets to tradeable candidates.
+
+        Uses strategy params max_spread_cents (tighter) for pre-filtering,
+        not the risk manager limit (which is the hard safety wall).
+        Markets with unknown spread are rejected — if we can't see the
+        book, we shouldn't trade it.
+        """
         params = self.strategy.params
         candidates = []
 
-        # Get spread limit from execution risk manager
-        max_spread = 40  # default
+        # Use the TIGHTER of strategy spread limit and risk limit.
+        # Strategy params (15¢) is for signal quality; risk (40¢) is the hard wall.
+        max_spread = params.max_spread_cents
         if self._execution._risk_manager:
-            max_spread = self._execution._risk_manager.limits.max_spread_cents
+            risk_spread = self._execution._risk_manager.limits.max_spread_cents
+            max_spread = min(max_spread, risk_spread)
 
         for m in markets:
             if m.status != MarketStatus.ACTIVE:
@@ -905,16 +935,17 @@ class Frankenstein:
             if m.yes_bid is None and m.yes_ask is None and m.last_price is None:
                 continue
 
-            # Pre-filter: skip markets with spread wider than risk limit
-            if m.spread is not None:
-                spread_cents = int(m.spread * 100) if isinstance(m.spread, float) else m.spread
-                if spread_cents > max_spread:
-                    continue
+            # STRICT spread filter: reject unknown spread (was bypassing)
+            # and reject anything wider than the strategy limit.
+            if m.spread is None:
+                continue  # no book data → untradeable
+            spread_cents = int(m.spread * 100) if isinstance(m.spread, float) else m.spread
+            if spread_cents > max_spread:
+                continue
 
-            # 🏀 Sports-only mode: skip non-sports markets
-            if self._sports_only and self._sports_detector:
-                if not self._sports_detector.is_sports_market(m):
-                    continue
+            # Sports-preferred mode: try sports first, but accept
+            # non-sports if no sports candidates pass the filter.
+            # (Tracked via is_sports flag for later prioritisation.)
 
             # Skip if we're at position limit for this market
             from app.pipeline.portfolio_tracker import portfolio_state
@@ -923,6 +954,16 @@ class Frankenstein:
                 continue
 
             candidates.append(m)
+
+        # If sports-only mode is on, prefer sports candidates.
+        # But if ZERO sports candidates have acceptable spreads,
+        # fall through to all markets so we're not completely idle.
+        if self._sports_only and self._sports_detector:
+            sports_cands = [c for c in candidates if self._sports_detector.is_sports_market(c)]
+            if sports_cands:
+                return sports_cands[:self.config.max_candidates]
+            # No sports markets with good spread — use all markets
+            log.debug("no_liquid_sports", total_candidates=len(candidates))
 
         return candidates[:self.config.max_candidates]
 

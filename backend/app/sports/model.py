@@ -299,27 +299,28 @@ class SportsPredictor:
         if not base_features or price <= 0.02 or price >= 0.98:
             return None
         
-        # Only trade extreme mispricings with enough liquidity
+        # Only trade mispricings with enough liquidity
         volume = getattr(base_features, "volume", 0)
         hours = getattr(base_features, "hours_to_expiry", 0)
         spread = getattr(base_features, "spread", 1.0)
         
         # Require minimum liquidity for Kalshi-only trades
-        if volume < 50 or spread > 0.10 or hours < 2.0:
+        # Spread limit matches strategy params (15¢)
+        if volume < 20 or spread > 0.15 or hours < 1.0:
             return None
         
-        # Mean-reversion: extreme prices with good volume
-        # Prices below 0.15 or above 0.85 with decent volume tend to revert
-        if price < 0.15:
-            # Very cheap YES — potential value buy
-            # Fair value estimate: regress toward 0.50 by 20%
-            fair_est = price + (0.50 - price) * 0.20
+        # Mean-reversion: prices outside 0.25-0.75 with decent volume
+        # have positive expected reversion when the book is tight enough.
+        if price < 0.25:
+            # Cheap YES — potential value buy
+            # Fair value estimate: regress toward 0.50 by 15%
+            fair_est = price + (0.50 - price) * 0.15
             side = "yes"
             predicted_prob = fair_est
             cost = price
-        elif price > 0.85:
-            # Very expensive YES — buy NO (cheap)
-            fair_est = price - (price - 0.50) * 0.20
+        elif price > 0.75:
+            # Expensive YES — buy NO (cheap)
+            fair_est = price - (price - 0.50) * 0.15
             side = "no"
             predicted_prob = 1.0 - fair_est
             cost = 1.0 - price
