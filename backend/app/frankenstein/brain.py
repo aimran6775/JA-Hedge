@@ -297,7 +297,15 @@ class Frankenstein:
                     if self._state.is_trading and not self._state.is_paused:
                         await self._scan_and_trade()
                 except Exception as e:
-                    log.error("scan_error", error=str(e))
+                    import traceback
+                    tb_str = traceback.format_exc()[-500:]
+                    log.error("scan_error", error=str(e), traceback=tb_str)
+                    # Record error in scan debug so it's visible via status API
+                    self._state.last_scan_debug = {
+                        "exit": "scan_exception",
+                        "error": str(e),
+                        "traceback": tb_str,
+                    }
 
                 interval = self.strategy.params.scan_interval
                 await asyncio.sleep(interval)
