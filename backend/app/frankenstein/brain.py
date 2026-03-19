@@ -387,6 +387,7 @@ class Frankenstein:
                 prediction, features,
                 market_title=market.title or "",
                 category_hint=market.category or "",
+                ticker=market.ticker,
             )
 
             # 🏀 Sports: use sports predictor (Vegas baseline) if available
@@ -420,16 +421,27 @@ class Frankenstein:
             effective_min_edge = params.min_edge
 
             # 🛡️ HEURISTIC GUARD: When model isn't trained, require
-            # much higher edge — the heuristic has no real edge.
-            # (The ConfidenceScorer grade gate handles quality filtering
-            #  via _score_model_strength which penalises untrained models.)
+            # higher edge — the heuristic has no real edge.
             if not self._model.is_trained:
-                effective_min_edge = max(effective_min_edge, 0.12)
+                effective_min_edge = max(effective_min_edge, 0.10)
 
-            # 🏀 Sports WITHOUT Vegas data → be STRICTER on edge.
-            # Without Vegas lines, we're missing critical information.
-            if self._sports_only and sports_pred is None:
-                effective_min_edge = max(effective_min_edge, 0.08)
+            # Category-aware edge thresholds:
+            # - Sports with Vegas data: lower edge OK (strong external signal)
+            # - Crypto: higher edge needed (volatile)
+            # - Finance: higher edge needed (very efficient markets)
+            from app.frankenstein.categories import detect_category
+            cat = detect_category(market.title or "", market.category or "", ticker=market.ticker)
+            
+            if cat == "sports" and sports_pred is not None:
+                effective_min_edge = max(effective_min_edge, 0.03)  # Vegas gives strong signal
+            elif cat == "crypto":
+                effective_min_edge = max(effective_min_edge, 0.06)  # High volatility
+            elif cat == "finance":
+                effective_min_edge = max(effective_min_edge, 0.05)  # Efficient markets
+            elif cat == "weather":
+                effective_min_edge = max(effective_min_edge, 0.04)  # Weather forecasts OK
+            elif cat == "politics":
+                effective_min_edge = max(effective_min_edge, 0.05)  # Narrative-driven
 
             # Gate: minimum edge (absolute value)
             if abs(prediction.edge) < effective_min_edge:
@@ -455,9 +467,17 @@ class Frankenstein:
             self._state.total_signals += 1
 
             # Kelly criterion position sizing (binary contract formula)
+            # 🎯 Phase 2: Confidence-driven sizing — scale Kelly by confidence grade
             kelly = self._kelly_size(prediction, features, params)
             if kelly <= 0:
                 continue
+
+            # Confidence-based position scaling:
+            # A+ → 100%, A → 85%, B+ → 65%, B → 45%, C+ → 25%
+            confidence_scale = {
+                "A+": 1.0, "A": 0.85, "B+": 0.65, "B": 0.45, "C+": 0.25, "C": 0.15,
+            }.get(conf_breakdown.grade, 0.10)
+            kelly *= confidence_scale
 
             # Phase 7: Adjust Kelly with advanced risk (drawdown/position scaling)
             kelly = self._adv_risk.adjusted_kelly(kelly)
@@ -790,15 +810,22 @@ class Frankenstein:
                 info = self._sports_detector.detect(market)
                 if info.is_sports:
                     stop_loss_pct = self._sports_risk.get_stop_loss(info.is_live)
+
+            # Adaptive stop-loss: tighter as expiry approaches
+            if features.hours_to_expiry < 4:
+                stop_loss_pct *= 0.75  # Tighter near expiry
             if unrealized_pnl_pct < -stop_loss_pct:
                 should_exit = True
-                exit_reason = f"stop_loss ({unrealized_pnl_pct:.1%})"
+                exit_reason = f"stop_loss ({unrealized_pnl_pct:.1%} < -{stop_loss_pct:.1%})"
 
             # ── Take-profit check ─────────────────────────
-            take_profit_pct = getattr(params, 'take_profit_pct', 0.50) or 0.50
+            take_profit_pct = getattr(params, 'take_profit_pct', 0.40) or 0.40
+            # Earlier take-profit near expiry (lock in gains)
+            if features.hours_to_expiry < 4:
+                take_profit_pct *= 0.60
             if unrealized_pnl_pct > take_profit_pct:
                 should_exit = True
-                exit_reason = f"take_profit ({unrealized_pnl_pct:.1%})"
+                exit_reason = f"take_profit ({unrealized_pnl_pct:.1%} > {take_profit_pct:.1%})"
 
             # ── Edge reversal check ───────────────────────
             if not should_exit:
@@ -995,8 +1022,9 @@ class Frankenstein:
         if self._sports_only and self._sports_detector:
             sports_cands = [c for c in candidates if self._sports_detector.is_sports_market(c)]
             if sports_cands:
-                return sports_cands[:self.config.max_candidates]
-            # No sports markets with good spread — use all markets
+                # Mix sports with some non-sports for diversification
+                non_sports = [c for c in candidates if c not in sports_cands]
+                return (sports_cands + non_sports[:50])[:self.config.max_candidates]
             log.debug("no_liquid_sports", total_candidates=len(candidates))
 
         return candidates[:self.config.max_candidates]
@@ -1055,37 +1083,46 @@ class Frankenstein:
         """
         Compute optimal order price — spread-aware placement.
 
-        Strategy: place orders as maker (inside the spread) when possible
-        to capture the spread instead of paying it.
-
-        For BUY YES:  bid at (yes_bid + 1¢) — one tick inside the spread
-        For BUY NO:   bid at (no_bid + 1¢)  — one tick inside the spread
-
-        If spread is very tight (≤2¢), cross the spread for immediate fill.
+        Strategy for profitability:
+        - Always try to be maker (inside spread) to avoid paying spread
+        - Confidence-aware: high confidence → cross spread for fill
+        - Low confidence → post passive limit for better fill price
+        - Use actual bid/ask when available, not just midpoint math
         """
         mid = features.midpoint
         spread_cents = max(int(features.spread * 100), 1)
+        confidence = prediction.confidence
 
         if prediction.side == "yes":
+            bid = features.midpoint - features.spread / 2  # estimate yes_bid
+            ask = features.midpoint + features.spread / 2  # estimate yes_ask
+
             if spread_cents <= 2:
-                # Tight spread — just take the ask for guaranteed fill
-                price_frac = min(mid + features.spread / 2, 0.99)
-            elif spread_cents <= 6:
-                # Medium spread — place inside (closer to mid)
+                # Tight spread — take the ask for guaranteed fill
+                price_frac = min(ask, 0.99)
+            elif confidence >= 0.75:
+                # High confidence — cross spread, get filled quickly
                 price_frac = min(mid + 0.01, 0.99)
+            elif confidence >= 0.60:
+                # Medium confidence — place at midpoint
+                price_frac = mid
             else:
-                # Wide spread — be more aggressive as maker
-                # Place at mid - 1¢ to capture spread
-                price_frac = max(mid - 0.01, 0.01)
+                # Lower confidence — be passive, place near bid
+                price_frac = max(bid + 0.01, 0.01)
         else:
-            # For NO contracts
+            # For NO contracts: we're buying NO, so our cost is (1 - yes_price)
             no_mid = 1.0 - mid
+            no_bid = 1.0 - (mid + features.spread / 2)
+            no_ask = 1.0 - (mid - features.spread / 2)
+
             if spread_cents <= 2:
-                price_frac = min(no_mid + features.spread / 2, 0.99)
-            elif spread_cents <= 6:
+                price_frac = min(no_ask, 0.99)
+            elif confidence >= 0.75:
                 price_frac = min(no_mid + 0.01, 0.99)
+            elif confidence >= 0.60:
+                price_frac = no_mid
             else:
-                price_frac = max(no_mid - 0.01, 0.01)
+                price_frac = max(no_bid + 0.01, 0.01)
 
         return max(1, min(99, int(price_frac * 100)))
 
@@ -1228,13 +1265,17 @@ class Frankenstein:
     async def _resolve_outcomes_task(self) -> None:
         """Check for settled markets and resolve pending trades.
         
-        FIX #2: Uses Kalshi portfolio settlements API instead of
-        checking a non-existent market.result field.  Also checks
-        market status == 'settled' via direct API lookup.
+        Resolution strategy (tries multiple methods):
+        1. Kalshi settlements API (real/demo trading)
+        2. Market status check via API (checks if settled)
+        3. Paper trading: check market cache for settled/extreme prices
+        4. Timeout after 48 hours → expired
         """
         pending = self.memory.get_pending_trades()
         if not pending:
             return
+
+        resolved_count = 0
 
         # Batch-fetch recent settlements from Kalshi
         settlements_by_ticker: dict[str, Any] = {}
@@ -1249,15 +1290,20 @@ class Frankenstein:
 
         for trade in pending:
             try:
+                # Skip exit/sell records — they don't need resolution
+                if trade.action == "sell":
+                    self.memory.resolve_trade(
+                        trade.trade_id, TradeOutcome.BREAKEVEN,
+                    )
+                    continue
+
                 # Method 1: Check settlements API
                 settlement = settlements_by_ticker.get(trade.ticker)
                 if settlement and settlement.market_result is not None:
                     result_str = settlement.market_result.value.lower()
                     correct = trade.predicted_side == result_str
 
-                    # ── Record calibration data ─────────────────────
-                    # Feed the RAW (pre-calibration) probability into the tracker
-                    # so we don't create a feedback loop with calibrated values.
+                    # Record calibration data
                     if result_str in ("yes", "no") and hasattr(self._model, 'calibration'):
                         actual_yes = 1 if result_str == "yes" else 0
                         raw_p = getattr(trade, 'raw_predicted_prob', 0.0) or trade.predicted_prob
@@ -1273,7 +1319,6 @@ class Frankenstein:
                             trade.trade_id, TradeOutcome.WIN,
                             pnl_cents=pnl_cents, market_result=result_str,
                         )
-                        # FIX #7: Report to sports monitor
                         self._report_sports_outcome(trade, pnl_cents)
                     else:
                         pnl_cents = -trade.total_cost_cents
@@ -1282,31 +1327,97 @@ class Frankenstein:
                             pnl_cents=pnl_cents, market_result=result_str,
                         )
                         self._report_sports_outcome(trade, pnl_cents)
+                    resolved_count += 1
                     continue
 
-                # Method 2: Check market status via API
+                # Method 2: Check market status via API or cache
+                resolved_via_market = False
                 try:
-                    from app.state import state as _st
-                    if _st.kalshi_api:
-                        mkt = await _st.kalshi_api.markets.get_market(trade.ticker)
-                        if mkt.status.value == "settled":
-                            # Market settled but we didn't find in settlements
-                            # This happens with demo/paper trades
-                            # Mark as expired for now (better than permanent pending)
+                    # Check the market cache first (free, no API call)
+                    cached_market = market_cache.get(trade.ticker)
+                    market_settled = False
+                    market_result_str = None
+
+                    if cached_market:
+                        status_val = cached_market.status.value if hasattr(cached_market.status, 'value') else str(cached_market.status)
+                        if status_val.lower() in ("settled", "closed"):
+                            market_settled = True
+                            # Infer result from final price
+                            final_price = float(cached_market.last_price or cached_market.midpoint or 0.5)
+                            if isinstance(final_price, int):
+                                final_price = final_price / 100
+                            if final_price >= 0.95:
+                                market_result_str = "yes"
+                            elif final_price <= 0.05:
+                                market_result_str = "no"
+
+                    # If cache doesn't show settled, try API
+                    if not market_settled:
+                        from app.state import state as _st
+                        if _st.kalshi_api:
+                            mkt = await _st.kalshi_api.markets.get_market(trade.ticker)
+                            status_val = mkt.status.value if hasattr(mkt.status, 'value') else str(mkt.status)
+                            if status_val.lower() in ("settled", "closed"):
+                                market_settled = True
+                                result_attr = getattr(mkt, 'result', None) or getattr(mkt, 'market_result', None)
+                                if result_attr:
+                                    market_result_str = result_attr.value.lower() if hasattr(result_attr, 'value') else str(result_attr).lower()
+                                else:
+                                    fp = float(mkt.last_price or 0.5)
+                                    if isinstance(fp, int):
+                                        fp = fp / 100
+                                    if fp >= 0.95:
+                                        market_result_str = "yes"
+                                    elif fp <= 0.05:
+                                        market_result_str = "no"
+
+                    if market_settled and market_result_str:
+                        correct = trade.predicted_side == market_result_str
+
+                        if hasattr(self._model, 'calibration'):
+                            actual_yes = 1 if market_result_str == "yes" else 0
+                            raw_p = getattr(trade, 'raw_predicted_prob', 0.0) or trade.predicted_prob
+                            self._model.calibration.record(raw_p, actual_yes)
+
+                        if correct:
+                            pnl_cents = trade.count * 100 - trade.total_cost_cents
                             self.memory.resolve_trade(
-                                trade.trade_id, TradeOutcome.EXPIRED,
+                                trade.trade_id, TradeOutcome.WIN,
+                                pnl_cents=pnl_cents, market_result=market_result_str,
                             )
-                            continue
+                        else:
+                            pnl_cents = -trade.total_cost_cents
+                            self.memory.resolve_trade(
+                                trade.trade_id, TradeOutcome.LOSS,
+                                pnl_cents=pnl_cents, market_result=market_result_str,
+                            )
+                        self._report_sports_outcome(trade, pnl_cents)
+                        resolved_count += 1
+                        resolved_via_market = True
+                    elif market_settled:
+                        # Market settled but can't determine result
+                        self.memory.resolve_trade(
+                            trade.trade_id, TradeOutcome.EXPIRED,
+                        )
+                        resolved_count += 1
+                        resolved_via_market = True
                 except Exception:
                     pass
+
+                if resolved_via_market:
+                    continue
 
                 # Method 3: Timeout after 48 hours
                 if time.time() - trade.timestamp > 172800:  # 48 hours
                     self.memory.resolve_trade(
                         trade.trade_id, TradeOutcome.EXPIRED,
                     )
+                    resolved_count += 1
             except Exception as e:
                 log.debug("outcome_check_error", ticker=trade.ticker, error=str(e))
+
+        if resolved_count > 0:
+            log.info("🧟📊 OUTCOMES_RESOLVED", count=resolved_count, remaining=len(pending) - resolved_count)
 
     def _report_sports_outcome(self, trade: TradeRecord, pnl_cents: int) -> None:
         """FIX #7: Report trade outcome to sports monitor for performance tracking."""

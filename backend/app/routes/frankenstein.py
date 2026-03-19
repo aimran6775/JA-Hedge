@@ -308,6 +308,102 @@ async def pending_trades() -> list[dict]:
     return [t.to_dict() for t in trades]
 
 
+@router.get("/analytics")
+async def analytics() -> dict:
+    """Comprehensive PnL analytics, category breakdown, and performance metrics."""
+    frank = _get_frank()
+    from app.frankenstein.categories import detect_category
+    import time as _time
+
+    all_trades = frank.memory.get_recent_trades(n=10000)
+
+    # Overall stats
+    resolved = [t for t in all_trades if t.outcome.value != "pending" and t.action == "buy"]
+    pending = [t for t in all_trades if t.outcome.value == "pending" and t.action == "buy"]
+    wins = [t for t in resolved if t.outcome.value == "win"]
+    losses = [t for t in resolved if t.outcome.value == "loss"]
+
+    total_pnl_cents = sum(t.pnl_cents for t in resolved)
+    total_cost_cents = sum(t.total_cost_cents for t in resolved) or 1
+    win_rate = len(wins) / len(resolved) if resolved else 0
+    avg_win = sum(t.pnl_cents for t in wins) / len(wins) if wins else 0
+    avg_loss = sum(t.pnl_cents for t in losses) / len(losses) if losses else 0
+    profit_factor = abs(sum(t.pnl_cents for t in wins)) / abs(sum(t.pnl_cents for t in losses)) if losses and sum(t.pnl_cents for t in losses) != 0 else 0
+
+    # Category breakdown
+    cat_stats: dict[str, dict] = {}
+    for t in resolved:
+        cat = detect_category(t.market_title or "", t.category or "", ticker=t.ticker)
+        if cat not in cat_stats:
+            cat_stats[cat] = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0, "cost_cents": 0}
+        cat_stats[cat]["trades"] += 1
+        cat_stats[cat]["pnl_cents"] += t.pnl_cents
+        cat_stats[cat]["cost_cents"] += t.total_cost_cents
+        if t.outcome.value == "win":
+            cat_stats[cat]["wins"] += 1
+        elif t.outcome.value == "loss":
+            cat_stats[cat]["losses"] += 1
+    for cat, s in cat_stats.items():
+        s["win_rate"] = s["wins"] / s["trades"] if s["trades"] > 0 else 0
+        s["pnl_dollars"] = round(s["pnl_cents"] / 100, 2)
+        s["roi_pct"] = round(s["pnl_cents"] / s["cost_cents"] * 100, 1) if s["cost_cents"] > 0 else 0
+
+    # Confidence band performance
+    conf_bands: dict[str, dict] = {}
+    for t in resolved:
+        if t.confidence >= 0.8:
+            band = "0.80-1.00"
+        elif t.confidence >= 0.7:
+            band = "0.70-0.80"
+        elif t.confidence >= 0.6:
+            band = "0.60-0.70"
+        elif t.confidence >= 0.5:
+            band = "0.50-0.60"
+        else:
+            band = "0.00-0.50"
+        if band not in conf_bands:
+            conf_bands[band] = {"trades": 0, "wins": 0, "pnl_cents": 0}
+        conf_bands[band]["trades"] += 1
+        conf_bands[band]["pnl_cents"] += t.pnl_cents
+        if t.outcome.value == "win":
+            conf_bands[band]["wins"] += 1
+    for band, s in conf_bands.items():
+        s["win_rate"] = s["wins"] / s["trades"] if s["trades"] > 0 else 0
+        s["pnl_dollars"] = round(s["pnl_cents"] / 100, 2)
+
+    # Recent PnL curve (last 50 resolved trades)
+    pnl_curve = []
+    running_pnl = 0
+    for t in sorted(resolved, key=lambda x: x.timestamp):
+        running_pnl += t.pnl_cents
+        pnl_curve.append({
+            "timestamp": t.timestamp,
+            "pnl_cents": running_pnl,
+            "pnl_dollars": round(running_pnl / 100, 2),
+        })
+
+    return {
+        "overview": {
+            "total_trades": len(resolved),
+            "pending_trades": len(pending),
+            "win_rate": round(win_rate, 3),
+            "total_pnl_cents": total_pnl_cents,
+            "total_pnl_dollars": round(total_pnl_cents / 100, 2),
+            "avg_win_cents": round(avg_win, 1),
+            "avg_loss_cents": round(avg_loss, 1),
+            "profit_factor": round(profit_factor, 2),
+            "roi_pct": round(total_pnl_cents / total_cost_cents * 100, 1),
+            "total_cost_dollars": round(total_cost_cents / 100, 2),
+        },
+        "by_category": cat_stats,
+        "by_confidence": conf_bands,
+        "pnl_curve": pnl_curve[-200:],  # last 200 points
+        "category_distribution": frank.categories.stats().get("category_distribution", {}),
+        "model_version": frank.learner.current_version,
+        "generation": frank.learner.generation,
+    }
+
+
 # ── Strategy ──────────────────────────────────────────────────────────────────
 
 @router.get("/strategy")

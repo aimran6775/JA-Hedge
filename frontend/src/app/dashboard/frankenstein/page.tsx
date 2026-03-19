@@ -72,13 +72,23 @@ export default function FrankensteinPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
-  const [tab, setTab] = useState<"overview" | "trades" | "model" | "chat">("overview");
+  const [tab, setTab] = useState<"overview" | "trades" | "analytics" | "model" | "chat">("overview");
 
   // Trade detail popup
   const [selectedTrade, setSelectedTrade] = useState<FrankensteinTrade | null>(null);
 
   // Market title cache: ticker → human-readable title
   const [marketTitles, setMarketTitles] = useState<Record<string, string>>({});
+
+  // Analytics
+  const [analytics, setAnalytics] = useState<{
+    overview: { total_trades: number; pending_trades: number; win_rate: number; total_pnl_cents: number; total_pnl_dollars: number; avg_win_cents: number; avg_loss_cents: number; profit_factor: number; roi_pct: number; total_cost_dollars: number };
+    by_category: Record<string, { trades: number; wins: number; losses: number; pnl_cents: number; pnl_dollars: number; win_rate: number; roi_pct: number }>;
+    by_confidence: Record<string, { trades: number; wins: number; pnl_cents: number; pnl_dollars: number; win_rate: number }>;
+    pnl_curve: Array<{ timestamp: number; pnl_cents: number; pnl_dollars: number }>;
+    category_distribution: Record<string, number>;
+    model_version: string; generation: number;
+  } | null>(null);
 
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -91,16 +101,18 @@ export default function FrankensteinPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, t, b, p] = await Promise.all([
+      const [s, t, b, p, an] = await Promise.all([
         api.frankenstein.status().catch(() => null),
-        api.frankenstein.recentTrades(30).catch(() => []),
+        api.frankenstein.recentTrades(50).catch(() => []),
         api.portfolio.balance().catch(() => null),
         api.portfolio.positions().catch(() => []),
+        api.frankenstein.analytics().catch(() => null),
       ]);
       if (s) setStatus(s);
       setTrades(t);
       if (b) setBalance(b);
       setPositions(p);
+      if (an) setAnalytics(an);
     } finally {
       setLoading(false);
     }
@@ -295,22 +307,24 @@ export default function FrankensteinPage() {
       </div>
 
       {/* ── Top Stats Row ──────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
         <StatCard label="Balance" value={balance ? `$${balance.balance_dollars}` : "—"} icon={<IconShield size={16} />} />
+        <StatCard label="Total PnL" value={analytics ? pnlSign(analytics.overview.total_pnl_dollars) : (snap ? pnlSign(snap.total_pnl) : "—")} icon={<IconTrendUp size={16} />} />
+        <StatCard label="Win Rate" value={analytics ? `${(analytics.overview.win_rate * 100).toFixed(0)}%` : (snap && snap.real_trades > 0 ? `${(snap.win_rate * 100).toFixed(0)}%` : "—")} icon={<IconTarget size={16} />} />
+        <StatCard label="Profit Factor" value={analytics ? `${analytics.overview.profit_factor}x` : "—"} icon={<IconRocket size={16} />} />
         <StatCard label="Trades" value={s ? `${s.total_trades_executed}` : "—"} icon={<IconZap size={16} />} />
         <StatCard label="Signals" value={s ? `${s.total_signals}` : "—"} icon={<IconMarkets size={16} />} />
         <StatCard label="Positions" value={`${positions.length}`} suffix=" open" icon={<IconTarget size={16} />} />
-        <StatCard label="P&L" value={snap ? pnlSign(snap.total_pnl) : "—"} icon={<IconTrendUp size={16} />} />
-        <StatCard label="Win Rate" value={snap && snap.real_trades > 0 ? `${(snap.win_rate * 100).toFixed(0)}%` : "—"} suffix={snap ? ` (${snap.real_trades} resolved)` : ""} icon={<IconTarget size={16} />} />
+        <StatCard label="ROI" value={analytics ? `${analytics.overview.roi_pct}%` : "—"} icon={<IconTrendUp size={16} />} />
       </div>
 
       {/* ── Tab Navigation ─────────────────────────────────────────────────── */}
       <div className="flex gap-1 rounded-2xl glass p-1">
-        {(["overview", "trades", "model", "chat"] as const).map(t => (
+        {(["overview", "trades", "analytics", "model", "chat"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`flex-1 rounded-xl px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all
               ${tab === t ? "bg-accent/10 text-accent border border-accent/20" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] border border-transparent"}`}>
-            {t === "overview" ? "🧠 Overview" : t === "trades" ? "📊 Trades" : t === "model" ? "🧬 Model" : "💬 Chat"}
+            {t === "overview" ? "🧠 Overview" : t === "trades" ? "📊 Trades" : t === "analytics" ? "📈 Analytics" : t === "model" ? "🧬 Model" : "💬 Chat"}
           </button>
         ))}
       </div>
@@ -330,7 +344,7 @@ export default function FrankensteinPage() {
               <StateRow label="Last Scan" value={s?.last_scan_ms ? `${s.last_scan_ms}ms` : "—"} />
               <StateRow label="Exchange" value={s?.exchange_session ?? "—"} />
               <StateRow label="Liquidity" value={s ? `${(s.liquidity_factor * 100).toFixed(0)}%` : "—"} />
-              <StateRow label="Sports Only" value={s?.sports_only_mode ? "Yes" : "No"} />
+              <StateRow label="Market Mode" value={s?.sports_only_mode ? "Sports Only" : "All Markets"} />
             </div>
           </Card>
 
@@ -543,6 +557,199 @@ export default function FrankensteinPage() {
               </div>
             </Card>
           </div>
+        </div>
+      )}
+
+      {/* ════════════════ TAB: ANALYTICS ═════════════════════════════════════ */}
+      {tab === "analytics" && (
+        <div className="space-y-4">
+          {analytics ? (
+            <>
+              {/* Performance Summary Cards */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-4">
+                  <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Total PnL</div>
+                  <div className={`text-xl font-bold tabular-nums mt-1 ${pnlColor(analytics.overview.total_pnl_dollars)}`}>
+                    {pnlSign(analytics.overview.total_pnl_dollars)}
+                  </div>
+                </div>
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-4">
+                  <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Win Rate</div>
+                  <div className={`text-xl font-bold tabular-nums mt-1 ${analytics.overview.win_rate >= 0.5 ? "text-accent" : "text-loss"}`}>
+                    {(analytics.overview.win_rate * 100).toFixed(1)}%
+                  </div>
+                </div>
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-4">
+                  <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Profit Factor</div>
+                  <div className={`text-xl font-bold tabular-nums mt-1 ${analytics.overview.profit_factor >= 1 ? "text-accent" : "text-loss"}`}>
+                    {analytics.overview.profit_factor}x
+                  </div>
+                </div>
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-4">
+                  <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">ROI</div>
+                  <div className={`text-xl font-bold tabular-nums mt-1 ${analytics.overview.roi_pct >= 0 ? "text-accent" : "text-loss"}`}>
+                    {analytics.overview.roi_pct}%
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {/* Category Performance */}
+                <Card title="Performance by Category" action={<span className="text-xs text-[var(--text-muted)]">{Object.keys(analytics.by_category).length} categories</span>}>
+                  {Object.keys(analytics.by_category).length > 0 ? (
+                    <div className="space-y-2">
+                      {Object.entries(analytics.by_category)
+                        .sort(([, a], [, b]) => b.pnl_dollars - a.pnl_dollars)
+                        .map(([cat, data]) => {
+                          const emoji: Record<string, string> = { sports: "🏀", crypto: "₿", economics: "📊", weather: "🌤", politics: "🏛", finance: "📈", entertainment: "🎬", science: "🔬", general: "📋" };
+                          return (
+                            <div key={cat} className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm">{emoji[cat] || "📋"}</span>
+                                  <span className="text-sm font-semibold text-[var(--text-primary)] capitalize">{cat}</span>
+                                </div>
+                                <span className={`text-sm font-bold tabular-nums ${data.pnl_dollars >= 0 ? "text-accent" : "text-loss"}`}>
+                                  {data.pnl_dollars >= 0 ? "+" : ""}${data.pnl_dollars.toFixed(2)}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-4 mt-1.5 text-xs text-[var(--text-muted)]">
+                                <span>{data.trades} trades</span>
+                                <span>{data.wins}W / {data.losses}L</span>
+                                <span>{(data.win_rate * 100).toFixed(0)}% WR</span>
+                                <span>{data.roi_pct}% ROI</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  ) : (
+                    <div className="flex h-40 items-center justify-center text-sm text-[var(--text-muted)]">No category data yet</div>
+                  )}
+                </Card>
+
+                {/* Confidence Band Performance */}
+                <Card title="Performance by Confidence" action={<span className="text-xs text-[var(--text-muted)]">{Object.keys(analytics.by_confidence).length} bands</span>}>
+                  {Object.keys(analytics.by_confidence).length > 0 ? (
+                    <div className="space-y-2">
+                      {Object.entries(analytics.by_confidence)
+                        .sort(([a], [b]) => b.localeCompare(a))
+                        .map(([band, data]) => (
+                          <div key={band} className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium text-[var(--text-primary)]">{band}</span>
+                              <span className={`text-sm font-bold tabular-nums ${data.pnl_dollars >= 0 ? "text-accent" : "text-loss"}`}>
+                                {data.pnl_dollars >= 0 ? "+" : ""}${data.pnl_dollars.toFixed(2)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-4 mt-1.5 text-xs text-[var(--text-muted)]">
+                              <span>{data.trades} trades</span>
+                              <span>{(data.win_rate * 100).toFixed(0)}% WR</span>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <div className="flex h-40 items-center justify-center text-sm text-[var(--text-muted)]">No confidence data yet</div>
+                  )}
+                </Card>
+
+                {/* Category Distribution */}
+                <Card title="Market Distribution" action={<span className="text-xs text-[var(--text-muted)]">All markets mode</span>}>
+                  {analytics.category_distribution && Object.keys(analytics.category_distribution).length > 0 ? (
+                    <div className="space-y-2">
+                      {Object.entries(analytics.category_distribution)
+                        .sort(([, a], [, b]) => b - a)
+                        .map(([cat, count]) => {
+                          const total = Object.values(analytics.category_distribution).reduce((a, b) => a + b, 0);
+                          const pct = total > 0 ? (count / total * 100) : 0;
+                          const emoji: Record<string, string> = { sports: "🏀", crypto: "₿", economics: "📊", weather: "🌤", politics: "🏛", finance: "📈", entertainment: "🎬", science: "🔬", general: "📋" };
+                          return (
+                            <div key={cat}>
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs">{emoji[cat] || "📋"}</span>
+                                  <span className="text-xs text-[var(--text-secondary)] capitalize">{cat}</span>
+                                </div>
+                                <span className="text-xs tabular-nums text-[var(--text-primary)]">{count} <span className="text-[var(--text-muted)]">({pct.toFixed(0)}%)</span></span>
+                              </div>
+                              <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                                <div className="h-full rounded-full bg-accent/50 transition-all" style={{ width: `${pct}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  ) : (
+                    <div className="flex h-40 items-center justify-center text-sm text-[var(--text-muted)]">No distribution data</div>
+                  )}
+                </Card>
+
+                {/* PnL Curve */}
+                <Card title="PnL Curve" action={<span className="text-xs text-[var(--text-muted)]">{analytics.pnl_curve.length} points</span>}>
+                  {analytics.pnl_curve.length > 0 ? (
+                    <div className="space-y-3">
+                      <div className="h-48 flex items-end gap-[2px] px-2">
+                        {(() => {
+                          const pts = analytics.pnl_curve.slice(-80);
+                          const vals = pts.map(p => p.pnl_dollars);
+                          const maxAbs = Math.max(...vals.map(v => Math.abs(v)), 0.01);
+                          return pts.map((p, i) => {
+                            const h = Math.abs(p.pnl_dollars / maxAbs) * 90;
+                            return (
+                              <div key={i} className="flex-1 min-w-[2px] flex flex-col justify-center" style={{ height: "192px" }}>
+                                {p.pnl_dollars >= 0 ? (
+                                  <div className="flex flex-col justify-end" style={{ height: "96px" }}>
+                                    <div className="w-full rounded-t-sm bg-accent/60" style={{ height: `${h}px` }} />
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div style={{ height: "96px" }} />
+                                    <div className="w-full rounded-b-sm bg-loss/60" style={{ height: `${h}px` }} />
+                                  </>
+                                )}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                      <div className="flex items-center justify-between px-2 text-[10px] text-[var(--text-muted)]">
+                        <span>Oldest</span>
+                        <span className="text-[var(--text-secondary)]">
+                          Current: <span className={pnlColor(analytics.overview.total_pnl_dollars)}>{pnlSign(analytics.overview.total_pnl_dollars)}</span>
+                        </span>
+                        <span>Latest</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex h-48 items-center justify-center text-sm text-[var(--text-muted)]">No PnL data yet — needs resolved trades</div>
+                  )}
+                </Card>
+
+                {/* Detailed Stats */}
+                <Card title="Detailed Statistics" className="lg:col-span-2">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <StateRow label="Total Trades" value={`${analytics.overview.total_trades}`} />
+                    <StateRow label="Pending" value={`${analytics.overview.pending_trades}`} />
+                    <StateRow label="Avg Win" value={`${(analytics.overview.avg_win_cents / 100).toFixed(2)}¢`} color="text-accent" />
+                    <StateRow label="Avg Loss" value={`${(analytics.overview.avg_loss_cents / 100).toFixed(2)}¢`} color="text-loss" />
+                    <StateRow label="Total Cost" value={`$${analytics.overview.total_cost_dollars.toFixed(2)}`} />
+                    <StateRow label="Model" value={analytics.model_version} mono />
+                    <StateRow label="Generation" value={`Gen ${analytics.generation}`} />
+                    <StateRow label="P/L Ratio" value={analytics.overview.avg_loss_cents !== 0 ? `${(analytics.overview.avg_win_cents / Math.abs(analytics.overview.avg_loss_cents)).toFixed(2)}` : "∞"} />
+                  </div>
+                </Card>
+              </div>
+            </>
+          ) : (
+            <div className="flex h-60 items-center justify-center text-sm text-[var(--text-muted)]">
+              <div className="text-center space-y-2">
+                <div className="text-lg">📊</div>
+                <div>No analytics data yet</div>
+                <div className="text-xs">Analytics populate after trades are resolved</div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

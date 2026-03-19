@@ -28,26 +28,26 @@ log = get_logger("frankenstein.strategy")
 class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
-    # Signal filters — A-grade only: require high confidence & edge
-    min_confidence: float = 0.35     # entropy-based confidence floor (new scale: ~0.2-0.7)
-    min_edge: float = 0.06
+    # Signal filters — confidence-driven: model decides quality, we decide sizing
+    min_confidence: float = 0.30     # entropy-based confidence floor
+    min_edge: float = 0.04           # 4% minimum edge (model dependent)
 
     # Position sizing
     kelly_fraction: float = 0.25
     max_position_size: int = 10
-    max_simultaneous_positions: int = 20
+    max_simultaneous_positions: int = 30   # More positions for diversification
 
     # Timing
     scan_interval: float = 30.0  # seconds between scans
 
     # Risk overrides
-    max_daily_loss: float = 50.0
-    stop_loss_pct: float = 0.15
-    take_profit_pct: float = 0.30
+    max_daily_loss: float = 75.0     # Allow more daily room
+    stop_loss_pct: float = 0.20
+    take_profit_pct: float = 0.40
 
     # Model thresholds
-    max_spread_cents: int = 15   # Allow wider spreads in paper mode
-    min_volume: float = 10.0     # Allow lower-volume markets too
+    max_spread_cents: int = 20   # Allow wider spreads — confidence scaling handles risk
+    min_volume: float = 5.0      # Allow lower-volume markets — more opportunities
     min_hours_to_expiry: float = 0.5
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)

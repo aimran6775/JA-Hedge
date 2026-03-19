@@ -6,6 +6,7 @@ GET  /api/dashboard  — Single endpoint returning all overview data
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi import APIRouter
@@ -89,13 +90,26 @@ async def dashboard_overview() -> dict[str, Any]:
     frank_summary: dict[str, Any] = {"status": "not_initialized"}
     if state.frankenstein:
         try:
-            full_status = state.frankenstein.status()
+            f = state.frankenstein
+            s = f._state
+            mem = f.memory.stats()
             frank_summary = {
-                "is_alive": full_status.get("is_alive", False),
-                "is_trading": full_status.get("is_trading", False),
-                "total_scans": full_status.get("total_scans", 0),
-                "total_signals": full_status.get("total_signals", 0),
-                "total_trades": full_status.get("total_trades_executed", 0),
+                "is_alive": s.is_alive,
+                "is_trading": s.is_trading and not s.is_paused,
+                "is_paused": s.is_paused,
+                "total_scans": s.total_scans,
+                "total_signals": s.total_signals,
+                "total_trades": s.total_trades_executed,
+                "total_rejected": s.total_trades_rejected,
+                "generation": s.generation,
+                "model_version": s.model_version,
+                "uptime_seconds": time.time() - s.birth_time if s.birth_time else 0,
+                "last_scan_ms": s.current_scan_time_ms,
+                "win_rate": mem.get("win_rate", "0%"),
+                "total_pnl": mem.get("total_pnl", "$0"),
+                "pending_trades": mem.get("pending", 0),
+                "resolved_trades": mem.get("total_resolved", 0),
+                "categories": f.categories.stats().get("category_distribution", {}),
             }
         except Exception:
             frank_summary = {"status": "error"}

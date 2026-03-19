@@ -63,38 +63,94 @@ CATEGORY_KEYWORDS = {
         "mma", "super bowl", "world series", "playoffs", "championship",
         "game", "match", "score", "points", "touchdown", "home run",
         "win", "loss", "spread", "over/under", "moneyline",
+        "world baseball classic", "wbc", "march madness", "champions league",
+        "ucl", "premier league", "serie a", "la liga", "bundesliga",
+        "rebounds", "assists", "strikeouts", "goals", "saves",
     ],
     "economics": [
         "gdp", "cpi", "inflation", "unemployment", "fed", "fomc",
         "interest rate", "jobs", "payroll", "retail sales", "housing",
         "treasury", "yield", "recession", "pce", "consumer",
         "manufacturing", "ism", "pmi", "trade balance", "deficit",
+        "nonfarm", "initial claims", "jobless", "wage",
+        "consumer confidence", "michigan sentiment", "new home",
     ],
     "weather": [
         "temperature", "hurricane", "storm", "rain", "snow", "weather",
         "tornado", "flood", "heat", "cold", "celsius", "fahrenheit",
         "wind", "precipitation", "forecast", "noaa", "nws", "climate",
+        "tropical", "wildfire", "drought", "heatwave", "blizzard",
+        "high temperature", "low temperature", "rainfall", "snowfall",
     ],
     "politics": [
         "election", "vote", "poll", "president", "congress", "senate",
         "house", "governor", "democrat", "republican", "party",
         "approval", "impeach", "legislation", "bill", "law",
         "cabinet", "supreme court", "primary", "caucus",
+        "trump", "biden", "executive order", "tariff", "sanctions",
+        "veto", "nomination", "confirmation", "shutdown", "debt ceiling",
     ],
     "crypto": [
         "bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain",
         "defi", "token", "coin", "mining", "wallet", "exchange",
+        "solana", "sol", "xrp", "ripple", "dogecoin", "doge",
+        "stablecoin", "halving", "etf", "market cap", "altcoin",
     ],
     "entertainment": [
         "oscars", "grammy", "emmy", "golden globe", "box office",
         "movie", "film", "tv", "show", "album", "chart", "billboard",
         "streaming", "netflix", "spotify", "award",
+        "reality tv", "bachelor", "survivor", "american idol",
+    ],
+    "finance": [
+        "s&p", "sp500", "nasdaq", "dow jones", "stock", "index",
+        "rate cut", "rate hike", "basis points", "bond", "equity",
+        "ipo", "revenue", "volatility", "vix", "oil price",
+        "crude", "gold price",
+    ],
+    "science": [
+        "spacex", "nasa", "rocket", "launch", "orbit", "mars",
+        "moon", "satellite", "ai", "artificial intelligence",
+        "fda", "vaccine", "drug approval", "clinical trial",
     ],
 }
 
+# Kalshi ticker prefix → category mapping (fast path, no title NLP needed)
+KALSHI_PREFIX_CATEGORY = {
+    "KXNBA": "sports", "KXNFL": "sports", "KXMLB": "sports",
+    "KXNHL": "sports", "KXMLS": "sports", "KXNCAA": "sports",
+    "KXUCL": "sports", "KXWBC": "sports", "KXSOC": "sports",
+    "KXTEN": "sports", "KXGOL": "sports", "KXUFC": "sports",
+    "KXBOX": "sports", "KXF1": "sports", "KXCRIC": "sports",
+    "KXBTC": "crypto", "KXETH": "crypto", "KXSOL": "crypto",
+    "KXCRY": "crypto", "KXXRP": "crypto", "KXDOG": "crypto",
+    "KXCPI": "economics", "KXGDP": "economics", "KXJOB": "economics",
+    "KXFED": "economics", "KXINF": "economics", "KXPCE": "economics",
+    "KXGAS": "economics", "KXECON": "economics", "KXRATE": "economics",
+    "KXTEMP": "weather", "KXHUR": "weather", "KXWX": "weather",
+    "KXRAIN": "weather", "KXSNOW": "weather",
+    "KXELECT": "politics", "KXPOL": "politics", "KXGOV": "politics",
+    "KXTRUMP": "politics", "KXSEN": "politics",
+    "KXSP5": "finance", "KXNAS": "finance", "KXDOW": "finance",
+    "KXOIL": "finance", "KXGOLD": "finance", "KXVIX": "finance",
+    "KXSPX": "finance",
+}
 
-def detect_category(title: str, category_hint: str = "") -> str:
-    """Detect market category from title and metadata."""
+
+def detect_category(title: str, category_hint: str = "", ticker: str = "") -> str:
+    """Detect market category from ticker prefix, title, and metadata.
+    
+    Priority: 1) Kalshi ticker prefix (instant, deterministic)
+              2) Kalshi category_hint field
+              3) Title keyword matching (fuzzy)
+    """
+    # Fast path: ticker prefix mapping (deterministic, no NLP)
+    if ticker:
+        ticker_upper = ticker.upper()
+        for prefix, cat in KALSHI_PREFIX_CATEGORY.items():
+            if ticker_upper.startswith(prefix):
+                return cat
+
     if category_hint:
         # Some markets already have a category from Kalshi
         hint_lower = category_hint.lower()
@@ -382,6 +438,165 @@ class GeneralStrategy(CategoryStrategy):
         )
 
 
+# ── Crypto Strategy ──────────────────────────────────────────────────────
+
+
+class CryptoStrategy(CategoryStrategy):
+    """
+    Crypto market strategy.
+
+    Key insight: Crypto markets on Kalshi are typically price-range
+    or threshold bets (will BTC be above X?). Crypto is highly
+    volatile with strong momentum and mean-reversion patterns.
+
+    Approach:
+    - High-volume crypto markets are efficient (reduce edge)
+    - Very short expiry crypto = high gamma risk, reduce confidence
+    - Strong momentum (price_change_5m) increases confidence
+    - Extreme midpoints near 0/1 suggest convergence, boost confidence
+    """
+
+    @property
+    def category(self) -> str:
+        return "crypto"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        adjustment = 0.0
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # Crypto markets very short-dated = high gamma, reduce confidence
+        if features.hours_to_expiry < 1:
+            confidence_boost *= 0.65
+            reason_parts.append("ultra_short_expiry_gamma")
+        elif features.hours_to_expiry < 6:
+            confidence_boost *= 0.80
+            reason_parts.append("short_expiry_volatile")
+
+        # High-volume crypto = efficient pricing
+        if features.volume > 500:
+            confidence_boost *= 0.85
+            reason_parts.append("high_vol_efficient")
+
+        # Strong momentum signal → slight boost
+        if abs(features.price_change_5m) > 0.03:
+            confidence_boost *= 1.10
+            reason_parts.append("strong_momentum")
+
+        # Near-settled (extreme midpoint) → boost (likely converging)
+        if features.prob_distance_from_50 > 0.40:
+            confidence_boost *= 1.15
+            reason_parts.append("near_settled_convergence")
+
+        return CategoryAdjustment(
+            category="crypto",
+            adjustment=adjustment,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Finance Strategy ─────────────────────────────────────────────────────
+
+
+class FinanceStrategy(CategoryStrategy):
+    """
+    Finance/markets strategy (S&P, Nasdaq, VIX, oil, etc.).
+
+    Key insight: Financial index markets track real-time prices of
+    underlying assets. The Kalshi market is essentially a digital option.
+
+    Approach:
+    - Intraday financial markets are extremely efficient
+    - Near-expiry with extreme prices → likely settled, boost confidence
+    - Wide spreads in financial markets = arbitrage opportunity
+    - Volume ratio spikes = new information arriving
+    """
+
+    @property
+    def category(self) -> str:
+        return "finance"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        adjustment = 0.0
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # Financial markets are very efficient — be humble
+        confidence_boost *= 0.90
+        reason_parts.append("fin_market_efficient")
+
+        # Near-settled financial markets → boost (high conviction)
+        if features.hours_to_expiry < 2 and features.prob_distance_from_50 > 0.35:
+            confidence_boost *= 1.25
+            reason_parts.append("near_settled_high_conviction")
+
+        # Volume spike = new info
+        if features.volume_ratio > 3.0:
+            confidence_boost *= 0.85
+            reason_parts.append("volume_spike_uncertainty")
+
+        return CategoryAdjustment(
+            category="finance",
+            adjustment=adjustment,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Science Strategy ─────────────────────────────────────────────────────
+
+
+class ScienceStrategy(CategoryStrategy):
+    """Science/tech markets (SpaceX launches, FDA approvals, etc.)."""
+
+    @property
+    def category(self) -> str:
+        return "science"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        adjustment = 0.0
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # Space launches have binary outcomes — near launch = higher info
+        title_lower = (market_title or "").lower()
+        if any(w in title_lower for w in ["launch", "spacex", "rocket"]):
+            if features.hours_to_expiry < 24:
+                confidence_boost *= 1.10
+                reason_parts.append("near_launch_high_info")
+            else:
+                confidence_boost *= 0.75
+                reason_parts.append("distant_launch_uncertain")
+
+        # FDA approvals — typically well-telegraphed
+        if any(w in title_lower for w in ["fda", "drug", "approval"]):
+            confidence_boost *= 0.85
+            reason_parts.append("fda_binary_risk")
+
+        return CategoryAdjustment(
+            category="science",
+            adjustment=adjustment,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
 # ── Strategy Registry ────────────────────────────────────────────────────
 
 
@@ -396,9 +611,13 @@ class CategoryStrategyRegistry:
         self._default = GeneralStrategy()
 
         # Register built-in strategies
-        for cls in [SportsStrategy, EconomicsStrategy, WeatherStrategy, PoliticsStrategy]:
+        for cls in [SportsStrategy, EconomicsStrategy, WeatherStrategy,
+                     PoliticsStrategy, CryptoStrategy, FinanceStrategy,
+                     ScienceStrategy]:
             s = cls()
             self._strategies[s.category] = s
+        # Track category distribution for analytics
+        self._category_counts: dict[str, int] = {}
 
     def get(self, category: str) -> CategoryStrategy:
         """Get strategy for a category."""
@@ -410,13 +629,17 @@ class CategoryStrategyRegistry:
         features: MarketFeatures,
         market_title: str = "",
         category_hint: str = "",
+        ticker: str = "",
     ) -> tuple[Prediction, CategoryAdjustment]:
         """
         Apply category-specific adjustments to a prediction.
 
         Returns (adjusted_prediction, adjustment_details).
         """
-        category = detect_category(market_title, category_hint)
+        category = detect_category(market_title, category_hint, ticker=ticker)
+        # Track distribution
+        self._category_counts[category] = self._category_counts.get(category, 0) + 1
+
         strategy = self.get(category)
         adj = strategy.adjust_prediction(prediction, features, market_title)
 
@@ -440,4 +663,6 @@ class CategoryStrategyRegistry:
         return {
             "registered_categories": list(self._strategies.keys()),
             "default": self._default.category,
+            "category_distribution": dict(self._category_counts),
+            "total_classified": sum(self._category_counts.values()),
         }

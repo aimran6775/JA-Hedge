@@ -147,7 +147,7 @@ class Settings(BaseSettings):
 
     # ── Sports Trading ────────────────────────────────────
     the_odds_api_key: str = ""                # The Odds API v4 key
-    sports_only_mode: bool = True              # Only trade sports markets
+    sports_only_mode: bool = False             # Trade ALL markets, not just sports
     sports_scan_interval_live: float = 15.0    # Faster scan during live games
     sports_odds_cache_ttl: float = 300.0       # 5 min cache for odds
     sports_min_vegas_discrepancy: float = 0.05 # 5% minimum edge to trade

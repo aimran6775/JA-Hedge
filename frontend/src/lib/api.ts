@@ -730,6 +730,45 @@ export const api = {
       apiFetch<Record<string, unknown>[]>(
         `/frankenstein/chat/history${n ? `?n=${n}` : ""}`,
       ),
+    analytics: () =>
+      apiFetch<{
+        overview: {
+          total_trades: number;
+          pending_trades: number;
+          win_rate: number;
+          total_pnl_cents: number;
+          total_pnl_dollars: number;
+          avg_win_cents: number;
+          avg_loss_cents: number;
+          profit_factor: number;
+          roi_pct: number;
+          total_cost_dollars: number;
+        };
+        by_category: Record<string, {
+          trades: number;
+          wins: number;
+          losses: number;
+          pnl_cents: number;
+          pnl_dollars: number;
+          win_rate: number;
+          roi_pct: number;
+        }>;
+        by_confidence: Record<string, {
+          trades: number;
+          wins: number;
+          pnl_cents: number;
+          pnl_dollars: number;
+          win_rate: number;
+        }>;
+        pnl_curve: Array<{
+          timestamp: number;
+          pnl_cents: number;
+          pnl_dollars: number;
+        }>;
+        category_distribution: Record<string, number>;
+        model_version: string;
+        generation: number;
+      }>("/frankenstein/analytics"),
     decisionEngine: () =>
       apiFetch<Record<string, unknown>>("/frankenstein/decision-engine"),
     modelIntelligence: () =>
