@@ -168,6 +168,15 @@ class ConfidenceScorer:
         grade_order = ["F", "D", "C", "C+", "B", "B+", "A", "A+"]
         should_trade = grade_order.index(grade) >= grade_order.index(self.min_grade)
 
+        # ── LIQUIDITY VETO ───────────────────────────────────────
+        # Even if the composite grade is high, a liquidity score < 20
+        # means the book is too thin to trade reliably.  Markets with
+        # volume < 10 or spread > 30% are untradeable regardless.
+        liquidity_factor = next((f for f in factors if f.name == "Liquidity"), None)
+        if liquidity_factor and liquidity_factor.score < 20:
+            should_trade = False
+            grade_label = f"{grade_label} — VETOED by liquidity ({liquidity_factor.score:.0f}/100)"
+
         return ConfidenceBreakdown(
             composite_score=composite,
             grade=grade,

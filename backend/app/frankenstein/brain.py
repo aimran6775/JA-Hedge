@@ -176,6 +176,11 @@ class Frankenstein:
         self._sports_monitor = None
         self._sports_only = True  # default: only trade sports
 
+        # Duplicate market protection: {ticker: timestamp} of recent trades
+        # Prevents buying the same market every scan cycle.
+        self._recently_traded: dict[str, float] = {}
+        self._trade_cooldown_seconds: float = 600.0  # 10-minute cooldown per ticker
+
         # State
         self._state = FrankensteinState()
         self._scan_task: asyncio.Task | None = None
@@ -379,7 +384,24 @@ class Frankenstein:
             max_positions=params.max_simultaneous_positions,
         )
 
+        # Clean expired cooldowns
+        now_ts = time.time()
+        self._recently_traded = {
+            t: ts for t, ts in self._recently_traded.items()
+            if now_ts - ts < self._trade_cooldown_seconds
+        }
+        # Track tickers already selected THIS scan to prevent intra-scan dupes
+        tickers_this_scan: set[str] = set()
+
         for market, features, prediction in zip(candidates, features_list, predictions):
+            # ── DUPLICATE PROTECTION ──────────────────────────────
+            # Skip if we traded this ticker recently (cross-scan cooldown)
+            if market.ticker in self._recently_traded:
+                continue
+            # Skip if we already selected this ticker in THIS scan
+            if market.ticker in tickers_this_scan:
+                continue
+
             # Phase 8: Apply category-specific adjustments
             prediction, cat_adj = self.categories.adjust_prediction(
                 prediction, features,
@@ -483,8 +505,21 @@ class Frankenstein:
             # Phase 10: Scale by liquidity (reduce size in low-liquidity sessions)
             kelly *= liquidity
 
-            count = max(1, int(kelly * params.max_position_size))
+            # Position sizing: Kelly fraction × max position size
+            # Ensure meaningful size — 1 contract at 2¢ is only $0.02 exposure.
+            # Floor: at least 3 contracts for cheap (<30¢) markets,
+            #        at least 2 for mid-range, 1 for expensive.
+            raw_count = int(kelly * params.max_position_size)
             price_cents = self._compute_price(prediction, features)
+            if price_cents <= 30:
+                min_count = 3  # cheap markets: $0.90 max risk
+            elif price_cents <= 60:
+                min_count = 2  # mid-range: $1.20 max risk
+            else:
+                min_count = 1  # expensive: already meaningful
+            count = max(min_count, raw_count)
+            # Cap to risk manager's max position size
+            count = min(count, params.max_position_size)
 
             # Phase 9: Expected value for ranking
             # EV = edge * count * (1 - cost) — expected profit per trade
@@ -511,6 +546,8 @@ class Frankenstein:
                 "ev": ev,
                 "confidence_breakdown": breakdown_dict,
             })
+            # Mark ticker as used in this scan
+            tickers_this_scan.add(market.ticker)
 
         # Phase 9: Rank by expected value and take top opportunities
         # ── Strategy Engine Signals ─────────────────────────────────
@@ -660,6 +697,9 @@ class Frankenstein:
                 self._state.total_trades_executed += 1
                 scan_debug["exec_successes"] += 1
                 scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "executed", "order_id": result.order_id})
+
+                # Register in cooldown to prevent re-buying next scan
+                self._recently_traded[market.ticker] = time.time()
 
                 # Phase 7: Register position with advanced risk manager
                 self._adv_risk.register_position(
@@ -1012,6 +1052,20 @@ class Frankenstein:
             mid = float(m.midpoint or m.last_price or 0)
             if mid < 0.02 or mid > 0.98:
                 continue
+
+            # ── HARD LIQUIDITY GATES ──────────────────────────────
+            # Volume floor: markets with < 10 contracts traded are
+            # too thin to trade — bids/asks are unreliable.
+            vol = float(m.volume or 0)
+            if vol < 10:
+                continue
+
+            # Spread-to-price ratio: reject if spread > 30% of midpoint.
+            # A 200% spread means the book is empty — we'd be market-making.
+            if mid > 0:
+                spread_pct = float(spread_cents) / (mid * 100)
+                if spread_pct > 0.30:
+                    continue
 
             # Sports-preferred mode: try sports first, but accept
             # non-sports if no sports candidates pass the filter.

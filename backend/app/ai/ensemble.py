@@ -229,8 +229,12 @@ class EnsemblePredictor(PredictionModel):
             return self._xgb._heuristic_predict(features)
 
         X = features.to_array().reshape(1, -1)
-        prob_yes = self._ensemble_predict(X)[0]
-        return self._build_prediction(prob_yes, features)
+        raw_probs, cal_probs = self._ensemble_predict(X)
+        return self._build_ensemble_prediction(
+            raw_prob=float(raw_probs[0]),
+            calibrated_prob=float(cal_probs[0]),
+            features=features,
+        )
 
     def predict_batch(self, features_list: list[MarketFeatures]) -> list[Prediction]:
         """Batch calibrated ensemble prediction."""
@@ -241,14 +245,21 @@ class EnsemblePredictor(PredictionModel):
             return [self._xgb._heuristic_predict(f) for f in features_list]
 
         X = np.array([f.to_array() for f in features_list])
-        probs = self._ensemble_predict(X)
+        raw_probs, cal_probs = self._ensemble_predict(X)
         return [
-            self._build_prediction(float(p), f)
-            for p, f in zip(probs, features_list)
+            self._build_ensemble_prediction(
+                raw_prob=float(rp), calibrated_prob=float(cp), features=f,
+            )
+            for rp, cp, f in zip(raw_probs, cal_probs, features_list)
         ]
 
-    def _ensemble_predict(self, X: np.ndarray) -> np.ndarray:
-        """Compute weighted ensemble probability and calibrate."""
+    def _ensemble_predict(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Compute weighted ensemble probability and calibrate.
+        
+        Returns:
+            (raw_probs, calibrated_probs) — raw is pre-calibration ensemble,
+            calibrated is post-Platt.
+        """
         import xgboost as xgb
 
         # XGBoost prediction
@@ -258,15 +269,20 @@ class EnsemblePredictor(PredictionModel):
         # Logistic regression prediction (or just use XGBoost if LR not trained)
         if self._lr.is_trained:
             lr_probs = self._lr.predict_proba(X)
-            ensemble_probs = self._xgb_weight * xgb_probs + self._lr_weight * lr_probs
+            raw_probs = self._xgb_weight * xgb_probs + self._lr_weight * lr_probs
         else:
-            ensemble_probs = xgb_probs
+            raw_probs = xgb_probs
 
         # Calibrate
         if self._calibrator._fitted:
-            ensemble_probs = self._calibrator.calibrate(ensemble_probs)
+            calibrated_probs = self._calibrator.calibrate(raw_probs)
+        else:
+            calibrated_probs = raw_probs.copy()
 
-        return np.clip(ensemble_probs, 0.01, 0.99)
+        return (
+            np.clip(raw_probs, 0.01, 0.99),
+            np.clip(calibrated_probs, 0.01, 0.99),
+        )
 
     def train(
         self,
@@ -328,7 +344,7 @@ class EnsemblePredictor(PredictionModel):
         if len(X_val) > 5:
             try:
                 from sklearn.metrics import roc_auc_score, log_loss
-                val_probs = self._ensemble_predict(X_val)
+                _, val_probs = self._ensemble_predict(X_val)
                 if len(set(y_val)) > 1:
                     metrics["val_auc"] = roc_auc_score(y_val, val_probs)
                     metrics["val_logloss"] = log_loss(y_val, val_probs)
@@ -340,8 +356,65 @@ class EnsemblePredictor(PredictionModel):
         return metrics
 
     def _build_prediction(self, prob_yes: float, features: MarketFeatures) -> Prediction:
-        """Build prediction from calibrated probability."""
-        return self._xgb._build_prediction(prob_yes, features)
+        """Build prediction from calibrated probability (legacy compat)."""
+        # When called via legacy path, treat as both raw and calibrated
+        return self._build_ensemble_prediction(prob_yes, prob_yes, features)
+
+    def _build_ensemble_prediction(
+        self,
+        raw_prob: float,
+        calibrated_prob: float,
+        features: MarketFeatures,
+    ) -> Prediction:
+        """Build prediction from raw + calibrated ensemble probability.
+        
+        Unlike XGBoost._build_prediction, this does NOT re-calibrate
+        because the ensemble pipeline already applied Platt calibration.
+        """
+        import math
+
+        market_price = features.midpoint
+        effective_prob = calibrated_prob
+        effective_edge = effective_prob - market_price
+
+        # Determine side
+        side = "yes" if effective_edge > 0 else "no"
+
+        # Compute real confidence (same formula as XGBoost._build_prediction)
+        p_clamped = max(0.01, min(0.99, effective_prob))
+        entropy = -(p_clamped * math.log2(p_clamped) +
+                     (1 - p_clamped) * math.log2(1 - p_clamped))
+        decisiveness = 1.0 - entropy
+
+        edge_abs = abs(effective_edge)
+        edge_signal = min(edge_abs / 0.20, 1.0)
+
+        is_calibrated = self._calibrator._fitted
+        cal_error = self._xgb._calibration.expected_error(raw_prob) if hasattr(self._xgb, '_calibration') else 0.0
+        cal_penalty = max(0.0, 1.0 - cal_error * 5.0)
+
+        confidence = (
+            0.30 * decisiveness +
+            0.30 * edge_signal +
+            0.25 * 1.0 +      # ensemble inherently has better agreement
+            0.15 * cal_penalty
+        )
+        confidence = max(0.05, min(0.99, confidence))
+
+        return Prediction(
+            side=side,
+            confidence=confidence,
+            raw_prob=raw_prob,             # TRUE pre-calibration ensemble output
+            predicted_prob=effective_prob,  # post-calibration probability
+            edge=effective_edge,
+            model_name=self.name,
+            model_version=self.version,
+            tree_agreement=1.0,  # ensemble: high implicit agreement
+            prediction_std=abs(raw_prob - calibrated_prob),  # calibration shift as proxy
+            calibrated_prob=calibrated_prob if is_calibrated else None,
+            calibration_error=cal_error,
+            is_calibrated=is_calibrated,
+        )
 
     def save(self, path: str) -> None:
         """Save all ensemble components."""
