@@ -645,7 +645,7 @@ class Frankenstein:
                 risk_spread_limit = self._execution._risk_manager.limits.max_spread_cents
             fresh = market_cache.get(market.ticker)
             if fresh and fresh.spread is not None:
-                fresh_spread = int(fresh.spread * 100) if isinstance(fresh.spread, float) else fresh.spread
+                fresh_spread = int(float(fresh.spread) * 100)
                 if fresh_spread > risk_spread_limit:
                     trades_rejected += 1
                     self._state.total_trades_rejected += 1
@@ -1038,7 +1038,7 @@ class Frankenstein:
             # and reject anything wider than the strategy limit.
             if m.spread is None:
                 continue  # no book data → untradeable
-            spread_cents = int(m.spread * 100) if isinstance(m.spread, float) else m.spread
+            spread_cents = int(float(m.spread) * 100)
             if spread_cents > max_spread:
                 continue
 
