@@ -126,6 +126,22 @@ class AdaptiveStrategy:
 
         events: list[AdaptationEvent] = []
 
+        # ── LEARNING MODE GUARD ──────────────────────────────────────
+        # During the first 100 real trades, we have NO statistical basis
+        # to adapt parameters.  Keep defaults and just trade.
+        if snapshot.real_trades < 100:
+            log.info(
+                "strategy_learning_mode_skip_adaptation",
+                real_trades=snapshot.real_trades,
+                remaining=100 - snapshot.real_trades,
+            )
+            # Only compute aggression (cosmetic) — no param changes
+            self._compute_aggression(snapshot)
+            self._last_adaptation = now
+            self._total_adaptations += 1
+            return events
+        # ─────────────────────────────────────────────────────────────
+
         # 1. Adapt based on regime
         events.extend(self._adapt_to_regime(snapshot))
 
@@ -234,7 +250,7 @@ class AdaptiveStrategy:
         elif snap.current_drawdown > -5:  # Small or no drawdown
             # Slowly restore defaults
             events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.01, 0.25), "recovery"))
-            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 1, 20), "recovery"))
+            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 1, 30), "recovery"))
 
         return [e for e in events if e is not None]
 
@@ -267,18 +283,31 @@ class AdaptiveStrategy:
     # ── Streak Adaptation ─────────────────────────────────────────────
 
     def _adapt_to_streaks(self, snap: PerformanceSnapshot) -> list[AdaptationEvent]:
-        """React to consecutive wins/losses."""
+        """React to consecutive wins/losses.
+        
+        NOTE: This only fires AFTER learning mode (100+ real trades)
+        because the main adapt() method returns early during learning.
+        Even post-learning, we use bounded adjustments — never nuke params.
+        """
         events = []
 
         if snap.consecutive_losses >= 3:
-            # Scale back proportionally to streak length
-            reduction = 0.05 * snap.consecutive_losses
+            # Scale back kelly proportionally to streak length
+            reduction = 0.03 * snap.consecutive_losses
             new_kelly = max(self.params.kelly_fraction - reduction, self._MIN_KELLY)
             events.extend(self._adjust("kelly_fraction", new_kelly, f"loss_streak_{snap.consecutive_losses}"))
 
             if snap.consecutive_losses >= 5:
-                events.extend(self._adjust("min_confidence", 0.80, "major_loss_streak"))
-                events.extend(self._adjust("scan_interval", 120.0, "major_loss_streak"))
+                # Tighten — but use bounded adjustments, never exceed _MAX_CONFIDENCE
+                new_conf = min(self.params.min_confidence + 0.05, self._MAX_CONFIDENCE)
+                events.extend(self._adjust("min_confidence", new_conf, "loss_streak_tighten"))
+                new_scan = min(self.params.scan_interval * 1.5, 60.0)  # cap at 60s, not 120
+                events.extend(self._adjust("scan_interval", new_scan, "loss_streak_slow"))
+
+        elif snap.consecutive_losses == 0 and self.params.scan_interval > 20.0:
+            # Streak broken — gradually restore scan_interval
+            new_scan = max(self.params.scan_interval - 5.0, 20.0)
+            events.extend(self._adjust("scan_interval", new_scan, "streak_recovery"))
 
         return [e for e in events if e is not None]
 

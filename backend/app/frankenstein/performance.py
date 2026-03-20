@@ -319,9 +319,11 @@ class PerformanceTracker:
         latest = self._snapshots[-1]
         in_learning_mode = latest.real_trades < 100
 
-        # Rule 1: Consecutive losses — only after learning mode
-        # During learning, allow up to 10 consecutive losses
-        max_consec = 10 if in_learning_mode else 5
+        # Rule 1: Consecutive losses — relaxed during learning mode
+        # During learning, tiny paper trades losing a few cents each
+        # should NOT pause the system.  Allow up to 25 consecutive losses.
+        # After learning, tighten to 8.
+        max_consec = 25 if in_learning_mode else 8
         if latest.consecutive_losses >= max_consec:
             return True, f"consecutive_losses_{latest.consecutive_losses}"
 
