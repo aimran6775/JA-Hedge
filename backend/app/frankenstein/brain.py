@@ -70,8 +70,8 @@ class FrankensteinConfig:
 
     # Health
     performance_snapshot_interval: float = 300.0  # 5 min
-    strategy_adaptation_interval: float = 900.0   # 15 min
-    outcome_check_interval: float = 120.0         # 2 min
+    strategy_adaptation_interval: float = 1800.0   # 30 min (slower to prevent oscillation)
+    outcome_check_interval: float = 60.0          # 1 min — fast feedback loop
 
     # Risk
     max_daily_loss: float = 50.0
@@ -317,13 +317,11 @@ class Frankenstein:
         start = time.monotonic()
         self._state.total_scans += 1
 
-        # Phase 10: Exchange schedule check — skip during overnight/low-liquidity
-        should_trade, session = ExchangeSchedule.should_trade()
-        if not should_trade:
-            log.debug("scan_skipped_schedule", reason=session)
-            # Back off during off-hours to avoid thousands of useless log lines
-            await asyncio.sleep(270)  # extra 4.5 min (+ normal 30s = ~5 min between checks)
-            return
+        # Phase 10: Exchange schedule — note the session for liquidity
+        # adjustment, but ALWAYS allow trading (Kalshi is 24/7).
+        # Previously this blocked overnight trading entirely, which
+        # meant Frankenstein slept for hours and missed opportunities.
+        _, session = ExchangeSchedule.should_trade()
 
         # Liquidity factor for position sizing adjustment
         liquidity = ExchangeSchedule.liquidity_factor()
@@ -369,10 +367,10 @@ class Frankenstein:
 
         # ⭐ Multi-factor confidence scorer (Phase 11)
         # Created ONCE outside the loop for performance.
-        # When model is untrained, the model_strength factor caps at 0/100
-        # making A-grade (≥80) mathematically impossible (max composite ~75).
-        # Use B-grade minimum when untrained so we can still trade.
-        min_grade = "B" if not self._model.is_trained else "A"
+        # Grade gates: trained model → B minimum, untrained → C+ minimum.
+        # This is relaxed from the old A/B gate because early-stage trading
+        # needs volume to learn — we can tighten later once profitable.
+        min_grade = "C+" if not self._model.is_trained else "B"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
@@ -421,9 +419,9 @@ class Frankenstein:
             effective_min_edge = params.min_edge
 
             # 🛡️ HEURISTIC GUARD: When model isn't trained, require
-            # higher edge — the heuristic has no real edge.
+            # slightly higher edge — but not so high that we can't trade.
             if not self._model.is_trained:
-                effective_min_edge = max(effective_min_edge, 0.10)
+                effective_min_edge = max(effective_min_edge, 0.06)
 
             # Category-aware edge thresholds:
             # - Sports with Vegas data: lower edge OK (strong external signal)
@@ -578,7 +576,7 @@ class Frankenstein:
         trade_candidates.sort(key=lambda c: c["ev"], reverse=True)
         max_trades_per_scan = min(
             params.max_simultaneous_positions - self._count_open_positions(),
-            5,  # cap at 5 new trades per scan cycle
+            8,  # cap at 8 new trades per scan cycle (up from 5 for learning)
         )
 
         # Debug: record scan state
@@ -603,13 +601,15 @@ class Frankenstein:
 
             # ── PRE-EXEC SPREAD RECHECK ──────────────────────────────
             # The spread may have widened since the candidate filter ran.
-            # Recheck from the live cache before spending an API call.
-            # NOTE: use the module-level market_cache import (line 46),
-            # do NOT re-import locally — it causes UnboundLocalError.
+            # Use a wider limit here (risk manager hard wall) since the
+            # initial filter already used the tighter strategy limit.
+            risk_spread_limit = 40  # hard wall in cents
+            if self._execution._risk_manager:
+                risk_spread_limit = self._execution._risk_manager.limits.max_spread_cents
             fresh = market_cache.get(market.ticker)
             if fresh and fresh.spread is not None:
                 fresh_spread = int(fresh.spread * 100) if isinstance(fresh.spread, float) else fresh.spread
-                if fresh_spread > params.max_spread_cents:
+                if fresh_spread > risk_spread_limit:
                     trades_rejected += 1
                     self._state.total_trades_rejected += 1
                     scan_debug["exec_rejections"] += 1
@@ -684,8 +684,15 @@ class Frankenstein:
                             is_live=info.is_live,
                         )
 
+                # Detect category for this trade
+                from app.frankenstein.categories import detect_category
+                trade_category = detect_category(
+                    market.title or "", market.category or "",
+                    ticker=market.ticker,
+                )
+
                 # Record in Frankenstein's memory
-                self.memory.record_trade(
+                trade_record = self.memory.record_trade(
                     ticker=market.ticker,
                     prediction=prediction,
                     features=features,
@@ -699,6 +706,8 @@ class Frankenstein:
                     model_version=self.learner.current_version,
                     confidence_breakdown=candidate.get("confidence_breakdown"),
                 )
+                # Tag category directly on the trade record
+                trade_record.category = trade_category
 
                 # Phase 10: Persist to SQLite
                 try:
@@ -829,17 +838,17 @@ class Frankenstein:
 
             # ── Edge reversal check ───────────────────────
             if not should_exit:
-                if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.60:
+                if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.75:
                     should_exit = True
                     exit_reason = f"edge_reversal (now predicts NO @ {prediction.confidence:.2f})"
-                elif our_side == "no" and prediction.side == "yes" and prediction.confidence > 0.60:
+                elif our_side == "no" and prediction.side == "yes" and prediction.confidence > 0.75:
                     should_exit = True
                     exit_reason = f"edge_reversal (now predicts YES @ {prediction.confidence:.2f})"
 
             # ── Near-expiry liquidation ───────────────────
-            if not should_exit and features.hours_to_expiry < 2.0:
-                # Close uncertain positions near expiry
-                if 0.35 < mid < 0.65:
+            if not should_exit and features.hours_to_expiry < 0.5:
+                # Close very uncertain positions near expiry (30 min)
+                if 0.30 < mid < 0.70:
                     should_exit = True
                     exit_reason = f"near_expiry_uncertain ({features.hours_to_expiry:.1f}h)"
 
@@ -1177,12 +1186,23 @@ class Frankenstein:
             log.error("checkpoint_load_failed", error=str(e))
 
     async def _auto_bootstrap(self) -> None:
-        """Auto-bootstrap training data on cold start (runs once at startup)."""
+        """Auto-bootstrap training data on cold start (runs once at startup).
+        
+        CRITICAL: We clear old memory first to prevent stale bootstrap data
+        from poisoning the performance tracker. Each cold start gets a fresh
+        set of bootstrap data from currently-settled markets.
+        """
         # Wait for market cache to populate first
         for _ in range(30):
             if market_cache.get_active():
                 break
             await asyncio.sleep(2)
+
+        # Clear any old bootstrap data that might be poisoning stats
+        old_trades = self.memory.total_recorded
+        if old_trades > 0:
+            log.info("🧟🧪 CLEARING OLD MEMORY before fresh bootstrap", old_trades=old_trades)
+            self.memory.clear()
 
         log.info("🧟🧪 AUTO-BOOTSTRAP: Model is untrained, bootstrapping training data...")
         try:
@@ -1221,7 +1241,12 @@ class Frankenstein:
         self.memory.save()
 
     async def _health_check_task(self) -> None:
-        """Periodic health check — pause if degrading."""
+        """Periodic health check — pause if degrading.
+        
+        CRITICAL: During learning mode (first 100 real trades),
+        we do NOT pause on accuracy. The system needs to trade
+        freely to gather enough data to learn.
+        """
         should_pause, reason = self.performance.should_pause_trading()
 
         if should_pause and not self._state.is_paused:
@@ -1232,7 +1257,7 @@ class Frankenstein:
         elif not should_pause and self._state.is_paused:
             self._state.is_paused = False
             self._state.pause_reason = ""
-            log.info("🧟✅ FRANKENSTEIN RESUMED")
+            log.info("🧟✅ FRANKENSTEIN RESUMED (auto-recovery)")
 
         # Check for model degradation
         if self.config.pause_on_degradation and self.performance.is_model_degrading():
@@ -1404,11 +1429,74 @@ class Frankenstein:
                 except Exception:
                     pass
 
-                if resolved_via_market:
-                    continue
+                # Method 3: Paper trading fast resolution
+                # For paper trading, if market price has moved decisively,
+                # we can resolve based on price movement even before settlement.
+                # This gives the model faster feedback to learn from.
+                if not resolved_via_market:
+                    try:
+                        cached = market_cache.get(trade.ticker)
+                        if cached:
+                            current_price = float(cached.last_price or cached.midpoint or 0)
+                            if isinstance(current_price, int):
+                                current_price = current_price / 100
+                            
+                            # If price moved to extreme (>95¢ or <5¢), resolve
+                            if current_price >= 0.95:
+                                correct = trade.predicted_side == "yes"
+                                pnl_cents = (trade.count * 100 - trade.total_cost_cents) if correct else -trade.total_cost_cents
+                                self.memory.resolve_trade(
+                                    trade.trade_id,
+                                    TradeOutcome.WIN if correct else TradeOutcome.LOSS,
+                                    pnl_cents=pnl_cents,
+                                    market_result="yes",
+                                )
+                                resolved_count += 1
+                                continue
+                            elif current_price <= 0.05:
+                                correct = trade.predicted_side == "no"
+                                pnl_cents = (trade.count * 100 - trade.total_cost_cents) if correct else -trade.total_cost_cents
+                                self.memory.resolve_trade(
+                                    trade.trade_id,
+                                    TradeOutcome.WIN if correct else TradeOutcome.LOSS,
+                                    pnl_cents=pnl_cents,
+                                    market_result="no",
+                                )
+                                resolved_count += 1
+                                continue
+                    except Exception:
+                        pass
 
-                # Method 3: Timeout after 48 hours
-                if time.time() - trade.timestamp > 172800:  # 48 hours
+                # Method 4: Timeout after 12 hours (not 48h) for faster feedback
+                if time.time() - trade.timestamp > 43200:  # 12 hours
+                    # Try to infer result from current price before expiring
+                    try:
+                        cached = market_cache.get(trade.ticker)
+                        if cached:
+                            price = float(cached.last_price or cached.midpoint or 0.5)
+                            if isinstance(price, int):
+                                price = price / 100
+                            if price >= 0.65:
+                                result = "yes"
+                            elif price <= 0.35:
+                                result = "no"
+                            else:
+                                result = None
+                            
+                            if result:
+                                correct = trade.predicted_side == result
+                                pnl_cents = (trade.count * 100 - trade.total_cost_cents) if correct else -trade.total_cost_cents
+                                self.memory.resolve_trade(
+                                    trade.trade_id,
+                                    TradeOutcome.WIN if correct else TradeOutcome.LOSS,
+                                    pnl_cents=pnl_cents,
+                                    market_result=result,
+                                )
+                                resolved_count += 1
+                                continue
+                    except Exception:
+                        pass
+                    
                     self.memory.resolve_trade(
                         trade.trade_id, TradeOutcome.EXPIRED,
                     )
@@ -1542,6 +1630,11 @@ class Frankenstein:
         """Complete Frankenstein status for dashboard/API."""
         uptime = time.time() - self._state.birth_time if self._state.is_alive else 0
 
+        # Compute learning mode status
+        snap = self.performance.compute_snapshot() if self.performance._snapshots else None
+        real_trades = snap.real_trades if snap else 0
+        in_learning_mode = real_trades < 100
+
         return {
             "name": "Frankenstein",
             "version": self._state.model_version,
@@ -1550,6 +1643,9 @@ class Frankenstein:
             "is_trading": self._state.is_trading and not self._state.is_paused,
             "is_paused": self._state.is_paused,
             "pause_reason": self._state.pause_reason,
+            "learning_mode": in_learning_mode,
+            "learning_progress": f"{min(real_trades, 100)}/100 real trades",
+            "real_trades": real_trades,
             "uptime_seconds": uptime,
             "uptime_human": self._format_uptime(uptime),
 

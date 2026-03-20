@@ -307,26 +307,37 @@ class PerformanceTracker:
         return False
 
     def should_pause_trading(self) -> tuple[bool, str]:
-        """Determine if Frankenstein should pause trading."""
+        """Determine if Frankenstein should pause trading.
+        
+        LEARNING MODE: For the first 100 real trades, we NEVER pause
+        on accuracy — the system needs time to learn from real outcomes.
+        We only pause on hard loss limits during learning mode.
+        """
         if not self._snapshots:
             return False, "no_data"
 
         latest = self._snapshots[-1]
+        in_learning_mode = latest.real_trades < 100
 
-        # Rule 1: Too many consecutive losses
-        if latest.consecutive_losses >= 5:
+        # Rule 1: Consecutive losses — only after learning mode
+        # During learning, allow up to 10 consecutive losses
+        max_consec = 10 if in_learning_mode else 5
+        if latest.consecutive_losses >= max_consec:
             return True, f"consecutive_losses_{latest.consecutive_losses}"
 
-        # Rule 2: Daily loss limit ($50)
-        if latest.daily_pnl < -50:
+        # Rule 2: Daily loss limit — always enforced but relaxed in learning
+        daily_limit = -75 if in_learning_mode else -50
+        if latest.daily_pnl < daily_limit:
             return True, f"daily_loss_${abs(latest.daily_pnl):.0f}"
 
-        # Rule 3: Max drawdown exceeded (15% of initial capital)
-        if latest.max_drawdown < -1500:  # -$15 of $100 simulated
+        # Rule 3: Max drawdown — always enforced
+        if latest.max_drawdown < -1500:
             return True, f"max_drawdown_${abs(latest.max_drawdown):.0f}"
 
-        # Rule 4: Model accuracy tanked below 35% (only count real trades)
-        if latest.real_trades >= 20 and latest.prediction_accuracy < 0.35:
+        # Rule 4: Model accuracy — ONLY after 100+ real trades
+        # During learning mode, we let Frankenstein trade freely
+        # so it can gather enough data to actually learn
+        if not in_learning_mode and latest.prediction_accuracy < 0.35:
             return True, f"low_accuracy_{latest.prediction_accuracy:.1%}"
 
         return False, "ok"

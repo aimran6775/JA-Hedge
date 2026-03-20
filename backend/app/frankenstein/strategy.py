@@ -29,8 +29,8 @@ class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
     # Signal filters — confidence-driven: model decides quality, we decide sizing
-    min_confidence: float = 0.30     # entropy-based confidence floor
-    min_edge: float = 0.04           # 4% minimum edge (model dependent)
+    min_confidence: float = 0.25     # lower floor — let more trades through during learning
+    min_edge: float = 0.03           # 3% minimum edge (relaxed for learning mode)
 
     # Position sizing
     kelly_fraction: float = 0.25
@@ -38,7 +38,7 @@ class StrategyParams:
     max_simultaneous_positions: int = 30   # More positions for diversification
 
     # Timing
-    scan_interval: float = 30.0  # seconds between scans
+    scan_interval: float = 20.0  # scan every 20s for more opportunities
 
     # Risk overrides
     max_daily_loss: float = 75.0     # Allow more daily room
@@ -46,9 +46,9 @@ class StrategyParams:
     take_profit_pct: float = 0.40
 
     # Model thresholds
-    max_spread_cents: int = 20   # Allow wider spreads — confidence scaling handles risk
-    min_volume: float = 5.0      # Allow lower-volume markets — more opportunities
-    min_hours_to_expiry: float = 0.5
+    max_spread_cents: int = 25   # Allow wider spreads during learning — tighter than risk wall (40¢)
+    min_volume: float = 3.0      # Lower volume floor — more opportunities
+    min_hours_to_expiry: float = 0.0  # Allow near-expiry (faster outcome resolution)
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)
     aggression: float = 0.5
@@ -92,15 +92,15 @@ class AdaptiveStrategy:
         self.params = base_params or StrategyParams()
         self.adaptation_interval = adaptation_interval
 
-        # Defaults (never go below/above these) — tuned for entropy-based confidence scale
-        self._MIN_CONFIDENCE = 0.25
-        self._MAX_CONFIDENCE = 0.60
-        self._MIN_EDGE = 0.05
-        self._MAX_EDGE = 0.15
-        self._MIN_KELLY = 0.05
+        # Defaults (never go below/above these) — tuned for learning mode
+        self._MIN_CONFIDENCE = 0.15
+        self._MAX_CONFIDENCE = 0.55
+        self._MIN_EDGE = 0.02
+        self._MAX_EDGE = 0.12
+        self._MIN_KELLY = 0.08
         self._MAX_KELLY = 0.50
-        self._MIN_AGGRESSION = 0.1
-        self._MAX_AGGRESSION = 0.9
+        self._MIN_AGGRESSION = 0.15
+        self._MAX_AGGRESSION = 0.85
 
         # History
         self._adaptations: list[AdaptationEvent] = []
@@ -201,8 +201,8 @@ class AdaptiveStrategy:
         """Get more aggressive when winning, conservative when losing."""
         events = []
 
-        if snap.real_trades < 10:
-            return events  # Not enough data
+        if snap.real_trades < 30:
+            return events  # Not enough data — learning mode
 
         if snap.win_rate > 0.65:
             # Winning streak: slightly loosen entry, increase size (but never below floor)
@@ -244,8 +244,8 @@ class AdaptiveStrategy:
         """Adjust based on model's prediction accuracy."""
         events = []
 
-        if snap.real_trades < 20:
-            return events
+        if snap.real_trades < 50:
+            return events  # Need substantial data before judging accuracy
 
         if snap.prediction_accuracy < 0.45:
             # Model is barely better than coin flip — be extremely careful
