@@ -612,11 +612,21 @@ class Frankenstein:
                         continue
 
                     feat = self._features.compute(market_match)
+
+                    # ── Apply same guards as main model path ──────────
+                    # Price floor: no lottery tickets
+                    if feat.midpoint < 0.10 or feat.midpoint > 0.90:
+                        continue
+                    # Edge cap: no absurd edges
+                    clamped_edge = max(-0.15, min(0.15, sig.edge))
+                    if abs(clamped_edge) < params.min_edge:
+                        continue
+
                     pred_for_sig = Prediction(
                         predicted_prob=sig.confidence,
-                        confidence=sig.confidence,
+                        confidence=min(sig.confidence, 0.60),  # cap confidence
                         side=sig.side,
-                        edge=sig.edge,
+                        edge=clamped_edge,
                         model_name=sig.strategy,
                     )
 
