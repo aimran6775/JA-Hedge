@@ -50,6 +50,20 @@ from app.production import SQLiteStore, ExchangeSchedule, HealthMonitor
 log = get_logger("frankenstein.brain")
 
 
+# -- Dynamic edge caps by market category ---------------------------------
+CATEGORY_EDGE_CAPS: dict[str, float] = {
+    "sports":        0.08,
+    "finance":       0.08,
+    "economics":     0.10,
+    "crypto":        0.12,
+    "politics":      0.10,
+    "weather":       0.10,
+    "entertainment": 0.12,
+    "science":       0.12,
+    "general":       0.10,
+}
+
+
 @dataclass
 class FrankensteinConfig:
     """Configuration for the Frankenstein brain."""
@@ -393,6 +407,12 @@ class Frankenstein:
         # Track tickers already selected THIS scan to prevent intra-scan dupes
         tickers_this_scan: set[str] = set()
 
+        # -- DIVERSIFICATION TRACKING ----------------------------------------
+        MAX_PER_EVENT = 2     # max 2 trades on same event
+        MAX_PER_CATEGORY = 4  # max 4 trades in same category per scan
+        events_this_scan: dict[str, int] = {}
+        categories_this_scan: dict[str, int] = {}
+
         for market, features, prediction in zip(candidates, features_list, predictions):
             # ── DUPLICATE PROTECTION ──────────────────────────────
             # Skip if we traded this ticker recently (cross-scan cooldown)
@@ -400,6 +420,15 @@ class Frankenstein:
                 continue
             # Skip if we already selected this ticker in THIS scan
             if market.ticker in tickers_this_scan:
+                continue
+
+            # -- DIVERSIFICATION GATE -----------------------------------------
+            evt = getattr(market, 'event_ticker', '') or ''
+            if evt and events_this_scan.get(evt, 0) >= MAX_PER_EVENT:
+                continue
+            from app.frankenstein.categories import detect_category as _det_cat
+            _pre_cat = _det_cat(market.title or "", market.category or "", ticker=market.ticker)
+            if categories_this_scan.get(_pre_cat, 0) >= MAX_PER_CATEGORY:
                 continue
 
             # Phase 8: Apply category-specific adjustments
@@ -450,7 +479,9 @@ class Frankenstein:
             # market price by more than 15%, the model is almost
             # certainly wrong. Markets are efficient — no model should
             # claim a 60% edge.  Cap the edge and re-derive confidence.
-            MAX_ALLOWED_EDGE = 0.15  # 15% is extremely generous
+            from app.frankenstein.categories import detect_category
+            cat = detect_category(market.title or "", market.category or "", ticker=market.ticker)
+            MAX_ALLOWED_EDGE = CATEGORY_EDGE_CAPS.get(cat, 0.10)
             if abs(prediction.edge) > MAX_ALLOWED_EDGE:
                 # Clamp edge and recompute predicted_prob accordingly
                 clamped_edge = MAX_ALLOWED_EDGE if prediction.edge > 0 else -MAX_ALLOWED_EDGE
@@ -483,9 +514,7 @@ class Frankenstein:
             # - Sports with Vegas data: lower edge OK (strong external signal)
             # - Crypto: higher edge needed (volatile)
             # - Finance: higher edge needed (very efficient markets)
-            from app.frankenstein.categories import detect_category
-            cat = detect_category(market.title or "", market.category or "", ticker=market.ticker)
-            
+            # NOTE: cat already detected above for dynamic edge cap
             if cat == "sports" and sports_pred is not None:
                 effective_min_edge = max(effective_min_edge, 0.03)  # Vegas gives strong signal
             elif cat == "crypto":
@@ -582,6 +611,12 @@ class Frankenstein:
             })
             # Mark ticker as used in this scan
             tickers_this_scan.add(market.ticker)
+            # Update diversification counters
+            _evt = getattr(market, 'event_ticker', '') or ''
+            if _evt:
+                events_this_scan[_evt] = events_this_scan.get(_evt, 0) + 1
+            _tcat = detect_category(market.title or "", market.category or "", ticker=market.ticker)
+            categories_this_scan[_tcat] = categories_this_scan.get(_tcat, 0) + 1
 
         # Phase 9: Rank by expected value and take top opportunities
         # ── Strategy Engine Signals ─────────────────────────────────
@@ -618,7 +653,11 @@ class Frankenstein:
                     if feat.midpoint < 0.10 or feat.midpoint > 0.90:
                         continue
                     # Edge cap: no absurd edges
-                    clamped_edge = max(-0.15, min(0.15, sig.edge))
+                    # Edge cap: category-aware
+                    from app.frankenstein.categories import detect_category as _dc
+                    _sig_cat = _dc(market_match.title or "", market_match.category or "", ticker=market_match.ticker)
+                    _sig_cap = CATEGORY_EDGE_CAPS.get(_sig_cat, 0.10)
+                    clamped_edge = max(-_sig_cap, min(_sig_cap, sig.edge))
                     if abs(clamped_edge) < params.min_edge:
                         continue
 
@@ -1065,6 +1104,13 @@ class Frankenstein:
         params = self.strategy.params
         candidates = []
 
+        # -- JUNK PREFIX FILTER -----------------------------------------------
+        JUNK_PREFIXES = (
+            "KXMVE",              # Multi-Variable Event parlays
+            "KXSPOTSTREAMGLOBAL", # Spot stream globals
+            "KXPARLAY",           # Parlay markets
+        )
+
         # Use the TIGHTER of strategy spread limit and risk limit.
         # Strategy params (15¢) is for signal quality; risk (40¢) is the hard wall.
         max_spread = params.max_spread_cents
@@ -1074,6 +1120,10 @@ class Frankenstein:
 
         for m in markets:
             if m.status not in (MarketStatus.ACTIVE, MarketStatus.OPEN):
+                continue
+            # Fast junk rejection
+            ticker_upper = (m.ticker or "").upper()
+            if ticker_upper.startswith(JUNK_PREFIXES):
                 continue
             if m.yes_bid is None and m.yes_ask is None and m.last_price is None:
                 continue
@@ -1100,7 +1150,8 @@ class Frankenstein:
             # ── HARD LIQUIDITY GATES ──────────────────────────────
             # Volume floor: markets with < 10 contracts traded are
             # too thin to trade — bids/asks are unreliable.
-            vol = float(m.volume or 0)
+            # volume_fp (.volume) or volume int (.volume_int) fallback
+            vol = float(m.volume if m.volume is not None else (m.volume_int or 0))
             if vol < 10:
                 continue
 

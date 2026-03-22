@@ -116,24 +116,68 @@ CATEGORY_KEYWORDS = {
 }
 
 # Kalshi ticker prefix → category mapping (fast path, no title NLP needed)
+# Comprehensive coverage of all known Kalshi ticker patterns as of 2026.
 KALSHI_PREFIX_CATEGORY = {
+    # ── Sports ─────────────────────────────────────────────
     "KXNBA": "sports", "KXNFL": "sports", "KXMLB": "sports",
     "KXNHL": "sports", "KXMLS": "sports", "KXNCAA": "sports",
     "KXUCL": "sports", "KXWBC": "sports", "KXSOC": "sports",
     "KXTEN": "sports", "KXGOL": "sports", "KXUFC": "sports",
     "KXBOX": "sports", "KXF1": "sports", "KXCRIC": "sports",
+    "KXWNBA": "sports", "KXPGA": "sports", "KXLPGA": "sports",
+    "KXCFB": "sports", "KXCBB": "sports", "KXEPL": "sports",
+    "KXLALIGA": "sports", "KXSERA": "sports", "KXBUND": "sports",
+    "KXLIG1": "sports", "KXMMA": "sports", "KXWWE": "sports",
+    "KXNASCAR": "sports", "KXATP": "sports", "KXWTA": "sports",
+    "KXNCAAB": "sports", "KXNCAAF": "sports",
+    "KXNHLGOAL": "sports", "KXNHLPTS": "sports",
+    "KXNHLFIRST": "sports", "KXNBAREBS": "sports",
+    "KXNBAPTS": "sports", "KXNBAAST": "sports",
+    "KXMLBHR": "sports", "KXMLBSO": "sports",
+    # ── Crypto ─────────────────────────────────────────────
     "KXBTC": "crypto", "KXETH": "crypto", "KXSOL": "crypto",
     "KXCRY": "crypto", "KXXRP": "crypto", "KXDOG": "crypto",
+    "KXDOGE": "crypto", "KXADA": "crypto", "KXBNB": "crypto",
+    "KXAVAX": "crypto", "KXMATIC": "crypto", "KXLINK": "crypto",
+    "KXCRYPTO": "crypto",
+    # ── Economics ──────────────────────────────────────────
     "KXCPI": "economics", "KXGDP": "economics", "KXJOB": "economics",
     "KXFED": "economics", "KXINF": "economics", "KXPCE": "economics",
     "KXGAS": "economics", "KXECON": "economics", "KXRATE": "economics",
+    "KXJOBS": "economics", "KXFOMC": "economics", "KXUNEMPLOY": "economics",
+    "KXPAYROLL": "economics", "KXRETAIL": "economics",
+    "KXHOUSING": "economics", "KXISM": "economics",
+    "KXCLAIM": "economics", "KXWAGE": "economics",
+    # ── Weather ────────────────────────────────────────────
     "KXTEMP": "weather", "KXHUR": "weather", "KXWX": "weather",
     "KXRAIN": "weather", "KXSNOW": "weather",
+    "KXHIGH": "weather", "KXLOW": "weather",
+    "KXHEAT": "weather", "KXCOLD": "weather",
+    "KXSTORM": "weather", "KXFIRE": "weather",
+    # ── Politics ───────────────────────────────────────────
     "KXELECT": "politics", "KXPOL": "politics", "KXGOV": "politics",
     "KXTRUMP": "politics", "KXSEN": "politics",
+    "KXBIDEN": "politics", "KXCONGRESS": "politics",
+    "KXPRES": "politics", "KXHOUSE": "politics",
+    "KXSUPREME": "politics", "KXTARIFF": "politics",
+    "KXVOTE": "politics", "KXAPPROVAL": "politics",
+    # ── Finance ────────────────────────────────────────────
     "KXSP5": "finance", "KXNAS": "finance", "KXDOW": "finance",
     "KXOIL": "finance", "KXGOLD": "finance", "KXVIX": "finance",
-    "KXSPX": "finance",
+    "KXSPX": "finance", "KXSPY": "finance", "KXQQQ": "finance",
+    "KXRUSSELLL": "finance", "KXTSLA": "finance", "KXAAPL": "finance",
+    "KXNVDA": "finance", "KXAMZN": "finance", "KXMSFT": "finance",
+    "KXIPO": "finance", "KXBOND": "finance",
+    # ── Entertainment ──────────────────────────────────────
+    "KXOSCAR": "entertainment", "KXGRAMMY": "entertainment",
+    "KXEMMY": "entertainment", "KXGOLDEN": "entertainment",
+    "KXBOX": "entertainment", "KXNETFLIX": "entertainment",
+    "KXSPOT": "entertainment", "KXBILLBOARD": "entertainment",
+    "KXBACHELOR": "entertainment", "KXSURVIVOR": "entertainment",
+    # ── Science ────────────────────────────────────────────
+    "KXSPACEX": "science", "KXNASA": "science",
+    "KXFDA": "science", "KXDRUG": "science",
+    "KXLAUNCH": "science", "KXROCKET": "science",
 }
 
 

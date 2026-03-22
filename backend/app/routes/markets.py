@@ -57,7 +57,7 @@ def _market_to_response(m) -> MarketResponse:
         no_bid=float(m.no_bid) if m.no_bid is not None else None,
         no_ask=float(m.no_ask) if m.no_ask is not None else None,
         last_price=float(m.last_price) if m.last_price is not None else None,
-        volume=float(m.volume) if m.volume is not None else (float(m.volume_int) if m.volume_int else None),
+        volume=float(m.volume) if m.volume is not None else (float(m.volume_int) if m.volume_int is not None else None),
         open_interest=float(m.open_interest) if m.open_interest is not None else None,
         spread=float(m.spread) if m.spread is not None else None,
         midpoint=float(m.midpoint) if m.midpoint is not None else None,
@@ -105,6 +105,9 @@ async def list_markets(
         ]
     if status and status != "all" and source == "cache":
         markets = [m for m in markets if m.status and m.status.value == status]
+
+    # Sort by volume descending so high-activity markets appear first
+    markets.sort(key=lambda m: m.volume or 0, reverse=True)
 
     total = len(markets)
     markets = markets[offset : offset + limit]

@@ -626,94 +626,107 @@ class XGBoostPredictor(PredictionModel):
 
     def _heuristic_predict(self, features: MarketFeatures) -> Prediction:
         """
-        Prediction-market-aware heuristic for when no trained model is available.
+        Market-efficient heuristic for when no trained model is available.
 
-        Key insight: prediction markets CONVERGE toward 0 or 100 as
-        information arrives (opposite of stock mean-reversion).
-        Near expiry, extreme prices are INFORMATIVE, not anomalies.
+        KEY PRINCIPLE: The market price IS the best estimator. Prediction
+        markets are near-efficient -- our heuristic should produce SMALL
+        adjustments (2-8%), not massive swings. A heuristic claiming 30%
+        edge over the market is wrong, not smart.
 
-        Signals used:
-          1. Time-weighted convergence (near expiry → trust the price)
+        Signals (all with small amplitude):
+          1. Time-weighted convergence (near expiry -> trust the price)
           2. Momentum (recent price movement direction)
-          3. Volume confirmation (high volume validates price direction)
-          4. Spread penalty (wide spread → less confident)
-          5. RSI oversold/overbought (if available)
-          6. MACD crossover (if available)
+          3. Volume confirmation
+          4. Spread penalty (wide spread -> less confident)
+          5. RSI oversold/overbought
+          6. MACD crossover
         """
         mid = features.midpoint
         if mid <= 0 or mid >= 1:
             mid = 0.5
 
-        # ── Signal 1: Time-weighted market trust ────────────
+        # -- Base: start from market price (the best estimator) --
+        base_prob = mid
+
+        # -- Signal 1: Time-weighted market trust --
+        # Near expiry, market converges to truth -- our edge shrinks
         if features.hours_to_expiry > 0:
             time_trust = 1.0 / (1.0 + 0.1 * features.hours_to_expiry)
         else:
             time_trust = 0.95
 
-        base_prob = mid
-
-        # ── Signal 2: Momentum (stronger weight) ───────────
+        # -- Signal 2: Momentum (SMALL adjustments only) --
+        # Max contribution: +-3%
         momentum_adj = 0.0
         if features.price_change_5m > 0.015:
-            momentum_adj = min(features.price_change_5m * 2.5, 0.12)
+            momentum_adj = min(features.price_change_5m * 1.0, 0.03)
         elif features.price_change_5m < -0.015:
-            momentum_adj = max(features.price_change_5m * 2.5, -0.12)
+            momentum_adj = max(features.price_change_5m * 1.0, -0.03)
         elif features.price_change_1m > 0.008:
-            momentum_adj = min(features.price_change_1m * 2.0, 0.06)
+            momentum_adj = min(features.price_change_1m * 0.8, 0.015)
         elif features.price_change_1m < -0.008:
-            momentum_adj = max(features.price_change_1m * 2.0, -0.06)
+            momentum_adj = max(features.price_change_1m * 0.8, -0.015)
 
-        # ── Signal 3: Convergence boost near expiry ─────────
+        # -- Signal 3: Convergence boost near expiry --
+        # Max contribution: +-2%
         convergence_adj = 0.0
-        if features.hours_to_expiry < 24:
+        if features.hours_to_expiry < 12:
             dist = abs(mid - 0.5)
-            if dist > 0.25:
+            if dist > 0.30:
                 direction = 1.0 if mid > 0.5 else -1.0
-                convergence_adj = direction * dist * time_trust * 0.20
+                convergence_adj = direction * dist * time_trust * 0.06
 
-        # ── Signal 4: Volume confirmation ───────────────────
+        # -- Signal 4: Volume confirmation --
+        # Max contribution: +-1.5%
         volume_adj = 0.0
         if features.volume_ratio > 1.5 and abs(features.price_change_5m) > 0.01:
-            volume_adj = features.price_change_5m * 0.6 * min(features.volume_ratio / 3.0, 1.0)
+            volume_adj = features.price_change_5m * 0.3 * min(features.volume_ratio / 3.0, 1.0)
+            volume_adj = max(-0.015, min(0.015, volume_adj))
 
-        # ── Signal 5: RSI-based adjustment ──────────────────
+        # -- Signal 5: RSI-based adjustment --
+        # Max contribution: +-1.5%
         rsi_adj = 0.0
         if features.rsi_14 > 0:
             if features.rsi_14 > 70 and features.hours_to_expiry < 48:
-                rsi_adj = 0.03  # overbought near expiry → likely goes YES
+                rsi_adj = 0.015   # overbought near expiry -> likely YES
             elif features.rsi_14 < 30 and features.hours_to_expiry < 48:
-                rsi_adj = -0.03  # oversold near expiry → likely goes NO
+                rsi_adj = -0.015  # oversold near expiry -> likely NO
             elif features.rsi_14 > 70 and features.hours_to_expiry >= 48:
-                rsi_adj = -0.02  # overbought far → possible reversion
+                rsi_adj = -0.01   # overbought far -> possible reversion
             elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
-                rsi_adj = 0.02
+                rsi_adj = 0.01
 
-        # ── Signal 6: MACD crossover ────────────────────────
+        # -- Signal 6: MACD crossover --
+        # Max contribution: +-1.5%
         macd_adj = 0.0
         if features.macd != 0:
             if features.macd > 0.02:
-                macd_adj = min(features.macd * 0.5, 0.04)
+                macd_adj = min(features.macd * 0.2, 0.015)
             elif features.macd < -0.02:
-                macd_adj = max(features.macd * 0.5, -0.04)
+                macd_adj = max(features.macd * 0.2, -0.015)
 
-        # ── Combine signals ─────────────────────────────────
-        signal_weight = max(0.08, 1.0 - time_trust)
-        prob_yes = (
-            base_prob
-            + signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
+        # -- Combine signals (total max swing: +-8%) --
+        signal_weight = max(0.15, 1.0 - time_trust)
+        total_adjustment = (
+            signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
             + convergence_adj
         )
 
-        # ── Spread penalty ──────────────────────────────────
+        # Hard cap total heuristic adjustment at +-8%
+        total_adjustment = max(-0.08, min(0.08, total_adjustment))
+
+        prob_yes = base_prob + total_adjustment
+
+        # -- Spread penalty --
         if features.spread_pct > 0.10:
-            spread_penalty = min(features.spread_pct * 0.25, 0.12)
+            spread_penalty = min(features.spread_pct * 0.15, 0.06)
             prob_yes = prob_yes * (1.0 - spread_penalty) + 0.5 * spread_penalty
 
         prob_yes = max(0.05, min(0.95, prob_yes))
         pred = self._build_prediction(
             prob_yes, features,
             prediction_std=0.15,  # high uncertainty for heuristic
-            tree_agreement=0.3,   # low agreement — no real model
+            tree_agreement=0.3,   # low agreement -- no real model
         )
         pred.raw_prob = prob_yes  # heuristic: raw = predicted
         return pred
