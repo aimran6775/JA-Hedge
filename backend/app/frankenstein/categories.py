@@ -647,7 +647,8 @@ class CategoryStrategyRegistry:
         new_prob = max(0.01, min(0.99, prediction.predicted_prob + adj.adjustment))
         new_confidence = max(0.01, min(0.99, prediction.confidence * adj.confidence_boost))
 
-        # Rebuild prediction with adjusted values
+        # Rebuild prediction with adjusted values — preserve ALL fields
+        # so that raw_prob, tree_agreement, calibration info survive.
         adjusted = Prediction(
             side=prediction.side,
             confidence=new_confidence,
@@ -655,6 +656,12 @@ class CategoryStrategyRegistry:
             edge=prediction.edge,  # edge stays the same (it's vs market price)
             model_name=prediction.model_name,
             model_version=prediction.model_version,
+            raw_prob=prediction.raw_prob,
+            tree_agreement=prediction.tree_agreement,
+            prediction_std=prediction.prediction_std,
+            calibrated_prob=prediction.calibrated_prob,
+            calibration_error=prediction.calibration_error,
+            is_calibrated=prediction.is_calibrated,
         )
 
         return adjusted, adj

@@ -437,13 +437,47 @@ class Frankenstein:
                     if not passed:
                         continue
 
+            # ── PRICE FLOOR: Skip extreme-probability contracts ────
+            # Contracts priced < 10¢ or > 90¢ are lottery tickets.
+            # The model cannot reliably predict these — they need
+            # near-perfect information to have an edge.
+            mid_price = features.midpoint
+            if mid_price < 0.10 or mid_price > 0.90:
+                continue
+
+            # ── MARKET-ANCHOR SANITY CHECK ────────────────────────
+            # If the model's predicted probability diverges from the
+            # market price by more than 15%, the model is almost
+            # certainly wrong. Markets are efficient — no model should
+            # claim a 60% edge.  Cap the edge and re-derive confidence.
+            MAX_ALLOWED_EDGE = 0.15  # 15% is extremely generous
+            if abs(prediction.edge) > MAX_ALLOWED_EDGE:
+                # Clamp edge and recompute predicted_prob accordingly
+                clamped_edge = MAX_ALLOWED_EDGE if prediction.edge > 0 else -MAX_ALLOWED_EDGE
+                clamped_prob = mid_price + clamped_edge
+                clamped_prob = max(0.02, min(0.98, clamped_prob))
+                prediction = Prediction(
+                    side=prediction.side,
+                    confidence=min(prediction.confidence, 0.60),  # cap confidence too
+                    predicted_prob=clamped_prob,
+                    edge=clamped_edge,
+                    model_name=prediction.model_name,
+                    model_version=prediction.model_version,
+                    raw_prob=prediction.raw_prob,
+                    tree_agreement=prediction.tree_agreement,
+                    prediction_std=prediction.prediction_std,
+                    calibrated_prob=prediction.calibrated_prob,
+                    calibration_error=prediction.calibration_error,
+                    is_calibrated=prediction.is_calibrated,
+                )
+
             # Apply adaptive thresholds
             effective_min_edge = params.min_edge
 
             # 🛡️ HEURISTIC GUARD: When model isn't trained, require
-            # slightly higher edge — but not so high that we can't trade.
+            # higher edge to compensate for model uncertainty.
             if not self._model.is_trained:
-                effective_min_edge = max(effective_min_edge, 0.06)
+                effective_min_edge = max(effective_min_edge, 0.08)
 
             # Category-aware edge thresholds:
             # - Sports with Vegas data: lower edge OK (strong external signal)

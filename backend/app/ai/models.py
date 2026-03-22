@@ -573,29 +573,39 @@ class XGBoostPredictor(PredictionModel):
         effective_edge = effective_prob - market_price
 
         # ── Compute REAL confidence ─────────────────────────
-        # Factor 1: How decisive is the probability?
-        # Binary entropy: H = -p*log2(p) - (1-p)*log2(1-p)
-        # Max entropy at p=0.5 (zero information), min at 0 or 1
-        p_clamped = max(0.01, min(0.99, effective_prob))
-        entropy = -(p_clamped * math.log2(p_clamped) +
-                     (1 - p_clamped) * math.log2(1 - p_clamped))
-        # Decisiveness: 0 at p=0.5 (max entropy), 1 at p=0 or 1
-        decisiveness = 1.0 - entropy  # range [0, 1]
+        # Factor 1: Decisiveness — how far our prediction diverges
+        # from the MARKET PRICE, not from 0.5.  A market at 8¢ is
+        # "decisive" by entropy but that's just the market structure,
+        # not our model's insight.  We only get credit for divergence
+        # from what the market already knows.
+        divergence = abs(effective_prob - market_price)
+        # Normalize: 10% divergence from market = reasonably decisive
+        decisiveness = min(divergence / 0.15, 1.0)
 
         # Factor 2: Edge magnitude relative to uncertainty
-        edge_abs = abs(effective_edge)
-        edge_signal = min(edge_abs / 0.20, 1.0)  # normalize: 20% edge = max
+        # Cap at 15% — any edge above that is almost certainly wrong
+        edge_abs = min(abs(effective_edge), 0.15)
+        edge_signal = edge_abs / 0.15  # normalize: 15% edge = max
 
         # Factor 3: Tree agreement (1.0 = perfect, 0.0 = chaotic)
         # Factor 4: Calibration penalty (higher error → lower confidence)
         cal_penalty = max(0.0, 1.0 - cal_error * 5.0)  # 20% cal error → 0 confidence
 
+        # Factor 5: Price-range penalty — extreme prices (< 15¢ or > 85¢)
+        # are inherently harder to predict and have asymmetric payoffs.
+        price_penalty = 1.0
+        if market_price < 0.15 or market_price > 0.85:
+            price_penalty = 0.5  # halve confidence for extreme prices
+        elif market_price < 0.25 or market_price > 0.75:
+            price_penalty = 0.75
+
         # Weighted combination
         confidence = (
-            0.30 * decisiveness +
-            0.30 * edge_signal +
-            0.25 * tree_agreement +
-            0.15 * cal_penalty
+            0.25 * decisiveness +
+            0.25 * edge_signal +
+            0.20 * tree_agreement +
+            0.10 * cal_penalty +
+            0.20 * price_penalty
         )
         confidence = max(0.05, min(0.99, confidence))
 

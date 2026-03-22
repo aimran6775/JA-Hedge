@@ -380,24 +380,32 @@ class EnsemblePredictor(PredictionModel):
         # Determine side
         side = "yes" if effective_edge > 0 else "no"
 
-        # Compute real confidence (same formula as XGBoost._build_prediction)
-        p_clamped = max(0.01, min(0.99, effective_prob))
-        entropy = -(p_clamped * math.log2(p_clamped) +
-                     (1 - p_clamped) * math.log2(1 - p_clamped))
-        decisiveness = 1.0 - entropy
+        # Compute real confidence — same market-aware formula as XGBoost
+        # Decisiveness = divergence from MARKET PRICE, not from 0.5
+        divergence = abs(effective_prob - market_price)
+        decisiveness = min(divergence / 0.15, 1.0)
 
-        edge_abs = abs(effective_edge)
-        edge_signal = min(edge_abs / 0.20, 1.0)
+        # Edge capped at 15% — anything higher is model error
+        edge_abs = min(abs(effective_edge), 0.15)
+        edge_signal = edge_abs / 0.15
 
         is_calibrated = self._calibrator._fitted
         cal_error = self._xgb._calibration.expected_error(raw_prob) if hasattr(self._xgb, '_calibration') else 0.0
         cal_penalty = max(0.0, 1.0 - cal_error * 5.0)
 
+        # Price-range penalty — extreme prices are harder to predict
+        price_penalty = 1.0
+        if market_price < 0.15 or market_price > 0.85:
+            price_penalty = 0.5
+        elif market_price < 0.25 or market_price > 0.75:
+            price_penalty = 0.75
+
         confidence = (
-            0.30 * decisiveness +
-            0.30 * edge_signal +
-            0.25 * 1.0 +      # ensemble inherently has better agreement
-            0.15 * cal_penalty
+            0.25 * decisiveness +
+            0.25 * edge_signal +
+            0.20 * 1.0 +      # ensemble inherently has better agreement
+            0.10 * cal_penalty +
+            0.20 * price_penalty
         )
         confidence = max(0.05, min(0.99, confidence))
 
