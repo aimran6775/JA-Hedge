@@ -1430,7 +1430,7 @@ class Frankenstein:
         
         event_prefix = "-".join(parts[:2])
         related = [
-            m for k, m in market_cache._cache.items()
+            m for k, m in market_cache._markets.items()
             if k.startswith(event_prefix) and k != ticker
         ]
         
