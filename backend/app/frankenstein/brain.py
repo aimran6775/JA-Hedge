@@ -193,7 +193,10 @@ class Frankenstein:
         # Duplicate market protection: {ticker: timestamp} of recent trades
         # Prevents buying the same market every scan cycle.
         self._recently_traded: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 600.0  # 10-minute cooldown per ticker
+        # Event-level cooldown: {event_ticker: timestamp}
+        # Prevents trading different strike prices on the same event.
+        self._recently_traded_events: dict[str, float] = {}
+        self._trade_cooldown_seconds: float = 1800.0  # 30-minute cooldown per ticker/event
 
         # State
         self._state = FrankensteinState()
@@ -398,10 +401,14 @@ class Frankenstein:
             max_positions=params.max_simultaneous_positions,
         )
 
-        # Clean expired cooldowns
+        # Clean expired cooldowns (ticker + event level)
         now_ts = time.time()
         self._recently_traded = {
             t: ts for t, ts in self._recently_traded.items()
+            if now_ts - ts < self._trade_cooldown_seconds
+        }
+        self._recently_traded_events = {
+            e: ts for e, ts in self._recently_traded_events.items()
             if now_ts - ts < self._trade_cooldown_seconds
         }
         # Track tickers already selected THIS scan to prevent intra-scan dupes
@@ -417,6 +424,10 @@ class Frankenstein:
             # ── DUPLICATE PROTECTION ──────────────────────────────
             # Skip if we traded this ticker recently (cross-scan cooldown)
             if market.ticker in self._recently_traded:
+                continue
+            # Skip if we traded this EVENT recently (different strikes, same game)
+            _evt_tk = getattr(market, 'event_ticker', '') or ''
+            if _evt_tk and _evt_tk in self._recently_traded_events:
                 continue
             # Skip if we already selected this ticker in THIS scan
             if market.ticker in tickers_this_scan:
@@ -783,6 +794,10 @@ class Frankenstein:
 
                 # Register in cooldown to prevent re-buying next scan
                 self._recently_traded[market.ticker] = time.time()
+                # Also cooldown the entire event (different strikes on same game)
+                _evt_cd = getattr(market, 'event_ticker', '') or ''
+                if _evt_cd:
+                    self._recently_traded_events[_evt_cd] = time.time()
 
                 # Phase 7: Register position with advanced risk manager
                 self._adv_risk.register_position(
@@ -986,6 +1001,11 @@ class Frankenstein:
                 if result and result.success:
                     exits_executed += 1
                     self._state.total_trades_executed += 1
+                    # Cooldown after exit -- prevent buy-exit-buy loop
+                    self._recently_traded[ticker] = time.time()
+                    _exit_evt = getattr(market, 'event_ticker', '') or ''
+                    if _exit_evt:
+                        self._recently_traded_events[_exit_evt] = time.time()
                     # Phase 7: Remove from portfolio risk tracker
                     self._adv_risk.remove_position(ticker)
                     # 🏀 Remove from sports risk tracker
