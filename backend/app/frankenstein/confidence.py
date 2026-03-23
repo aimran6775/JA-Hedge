@@ -49,6 +49,7 @@ GRADE_MAP = [
     (60, "B",  "Decent — above average confidence"),
     (50, "C+", "Fair — moderate confidence"),
     (40, "C",  "Marginal — proceed with caution"),
+    (35, "D+", "Below average — proceed carefully"),
     (30, "D",  "Weak — low confidence, small position only"),
     (0,  "F",  "Fail — should not trade"),
 ]
@@ -165,7 +166,7 @@ class ConfidenceScorer:
                 break
 
         # Should we trade?
-        grade_order = ["F", "D", "C", "C+", "B", "B+", "A", "A+"]
+        grade_order = ["F", "D", "D+", "C", "C+", "B", "B+", "A", "A+"]
         should_trade = grade_order.index(grade) >= grade_order.index(self.min_grade)
 
         # ── LIQUIDITY VETO ───────────────────────────────────────
