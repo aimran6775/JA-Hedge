@@ -688,9 +688,9 @@ class XGBoostPredictor(PredictionModel):
         rsi_adj = 0.0
         if features.rsi_14 > 0:
             if features.rsi_14 > 70 and features.hours_to_expiry < 48:
-                rsi_adj = 0.015   # overbought near expiry -> likely YES
+                rsi_adj = 0.03    # overbought near expiry -> likely YES
             elif features.rsi_14 < 30 and features.hours_to_expiry < 48:
-                rsi_adj = -0.015  # oversold near expiry -> likely NO
+                rsi_adj = -0.03   # oversold near expiry -> likely NO
             elif features.rsi_14 > 70 and features.hours_to_expiry >= 48:
                 rsi_adj = -0.01   # overbought far -> possible reversion
             elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
@@ -701,19 +701,19 @@ class XGBoostPredictor(PredictionModel):
         macd_adj = 0.0
         if features.macd != 0:
             if features.macd > 0.02:
-                macd_adj = min(features.macd * 0.2, 0.015)
+                macd_adj = min(features.macd * 0.4, 0.03)
             elif features.macd < -0.02:
-                macd_adj = max(features.macd * 0.2, -0.015)
+                macd_adj = max(features.macd * 0.4, -0.03)
 
         # -- Combine signals (total max swing: +-8%) --
-        signal_weight = max(0.15, 1.0 - time_trust)
+        signal_weight = max(0.30, 1.0 - time_trust * 0.5)
         total_adjustment = (
             signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
             + convergence_adj
         )
 
-        # Hard cap total heuristic adjustment at +-8%
-        total_adjustment = max(-0.08, min(0.08, total_adjustment))
+        # Hard cap total heuristic adjustment at +-20%
+        total_adjustment = max(-0.20, min(0.20, total_adjustment))
 
         prob_yes = base_prob + total_adjustment
 

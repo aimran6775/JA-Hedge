@@ -52,15 +52,15 @@ log = get_logger("frankenstein.brain")
 
 # -- Dynamic edge caps by market category ---------------------------------
 CATEGORY_EDGE_CAPS: dict[str, float] = {
-    "sports":        0.08,
-    "finance":       0.08,
-    "economics":     0.10,
-    "crypto":        0.12,
-    "politics":      0.10,
-    "weather":       0.10,
-    "entertainment": 0.12,
-    "science":       0.12,
-    "general":       0.10,
+    "sports":        0.25,
+    "finance":       0.20,
+    "economics":     0.25,
+    "crypto":        0.30,
+    "politics":      0.25,
+    "weather":       0.25,
+    "entertainment": 0.30,
+    "science":       0.30,
+    "general":       0.25,
 }
 
 
@@ -88,7 +88,7 @@ class FrankensteinConfig:
     outcome_check_interval: float = 60.0          # 1 min — fast feedback loop
 
     # Risk
-    max_daily_loss: float = 50.0
+    max_daily_loss: float = 300.0
     pause_on_degradation: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -196,7 +196,7 @@ class Frankenstein:
         # Event-level cooldown: {event_ticker: timestamp}
         # Prevents trading different strike prices on the same event.
         self._recently_traded_events: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 1800.0  # 30-minute cooldown per ticker/event
+        self._trade_cooldown_seconds: float = 600.0  # 10-minute cooldown per ticker/event
 
         # State
         self._state = FrankensteinState()
@@ -392,7 +392,7 @@ class Frankenstein:
         # Grade gates: trained model → B minimum, untrained → C+ minimum.
         # This is relaxed from the old A/B gate because early-stage trading
         # needs volume to learn — we can tighten later once profitable.
-        min_grade = "C+" if not self._model.is_trained else "B"
+        min_grade = "D+" if not self._model.is_trained else "C"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
@@ -415,8 +415,8 @@ class Frankenstein:
         tickers_this_scan: set[str] = set()
 
         # -- DIVERSIFICATION TRACKING ----------------------------------------
-        MAX_PER_EVENT = 2     # max 2 trades on same event
-        MAX_PER_CATEGORY = 4  # max 4 trades in same category per scan
+        MAX_PER_EVENT = 5     # max 5 trades on same event
+        MAX_PER_CATEGORY = 12  # max 12 trades in same category per scan
         events_this_scan: dict[str, int] = {}
         categories_this_scan: dict[str, int] = {}
 
@@ -482,7 +482,7 @@ class Frankenstein:
             # The model cannot reliably predict these — they need
             # near-perfect information to have an edge.
             mid_price = features.midpoint
-            if mid_price < 0.10 or mid_price > 0.90:
+            if mid_price < 0.05 or mid_price > 0.95:
                 continue
 
             # ── MARKET-ANCHOR SANITY CHECK ────────────────────────
@@ -519,7 +519,7 @@ class Frankenstein:
             # 🛡️ HEURISTIC GUARD: When model isn't trained, require
             # higher edge to compensate for model uncertainty.
             if not self._model.is_trained:
-                effective_min_edge = max(effective_min_edge, 0.08)
+                effective_min_edge = max(effective_min_edge, 0.03)
 
             # Category-aware edge thresholds:
             # - Sports with Vegas data: lower edge OK (strong external signal)
@@ -527,15 +527,15 @@ class Frankenstein:
             # - Finance: higher edge needed (very efficient markets)
             # NOTE: cat already detected above for dynamic edge cap
             if cat == "sports" and sports_pred is not None:
-                effective_min_edge = max(effective_min_edge, 0.03)  # Vegas gives strong signal
+                effective_min_edge = max(effective_min_edge, 0.02)  # Vegas gives strong signal
             elif cat == "crypto":
-                effective_min_edge = max(effective_min_edge, 0.06)  # High volatility
+                effective_min_edge = max(effective_min_edge, 0.03)  # Volatile but tradeable
             elif cat == "finance":
-                effective_min_edge = max(effective_min_edge, 0.05)  # Efficient markets
+                effective_min_edge = max(effective_min_edge, 0.03)  # Trade it
             elif cat == "weather":
-                effective_min_edge = max(effective_min_edge, 0.04)  # Weather forecasts OK
+                effective_min_edge = max(effective_min_edge, 0.03)  # Trade it
             elif cat == "politics":
-                effective_min_edge = max(effective_min_edge, 0.05)  # Narrative-driven
+                effective_min_edge = max(effective_min_edge, 0.03)  # Trade it
 
             # Gate: minimum edge (absolute value)
             if abs(prediction.edge) < effective_min_edge:
@@ -569,8 +569,9 @@ class Frankenstein:
             # Confidence-based position scaling:
             # A+ → 100%, A → 85%, B+ → 65%, B → 45%, C+ → 25%
             confidence_scale = {
-                "A+": 1.0, "A": 0.85, "B+": 0.65, "B": 0.45, "C+": 0.25, "C": 0.15,
-            }.get(conf_breakdown.grade, 0.10)
+                "A+": 1.0, "A": 0.95, "B+": 0.85, "B": 0.70, "C+": 0.55, "C": 0.40,
+                "D+": 0.30, "D": 0.20,
+            }.get(conf_breakdown.grade, 0.15)
             kelly *= confidence_scale
 
             # Phase 7: Adjust Kelly with advanced risk (drawdown/position scaling)
@@ -707,7 +708,7 @@ class Frankenstein:
         trade_candidates.sort(key=lambda c: c["ev"], reverse=True)
         max_trades_per_scan = min(
             params.max_simultaneous_positions - self._count_open_positions(),
-            8,  # cap at 8 new trades per scan cycle (up from 5 for learning)
+            15,  # cap at 15 new trades per scan cycle — aggressive mode
         )
 
         # Debug: record scan state
@@ -734,7 +735,7 @@ class Frankenstein:
             # The spread may have widened since the candidate filter ran.
             # Use a wider limit here (risk manager hard wall) since the
             # initial filter already used the tighter strategy limit.
-            risk_spread_limit = 40  # hard wall in cents
+            risk_spread_limit = 50  # hard wall in cents
             if self._execution._risk_manager:
                 risk_spread_limit = self._execution._risk_manager.limits.max_spread_cents
             fresh = market_cache.get(market.ticker)
@@ -976,10 +977,10 @@ class Frankenstein:
 
             # ── Edge reversal check ───────────────────────
             if not should_exit:
-                if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.75:
+                if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.85:
                     should_exit = True
                     exit_reason = f"edge_reversal (now predicts NO @ {prediction.confidence:.2f})"
-                elif our_side == "no" and prediction.side == "yes" and prediction.confidence > 0.75:
+                elif our_side == "no" and prediction.side == "yes" and prediction.confidence > 0.85:
                     should_exit = True
                     exit_reason = f"edge_reversal (now predicts YES @ {prediction.confidence:.2f})"
 

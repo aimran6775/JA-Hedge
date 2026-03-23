@@ -29,29 +29,29 @@ class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
     # Signal filters — confidence-driven: model decides quality, we decide sizing
-    min_confidence: float = 0.25     # lower floor — let more trades through during learning
-    min_edge: float = 0.03           # 3% minimum edge (relaxed for learning mode)
+    min_confidence: float = 0.15     # low floor — let trades through — let more trades through during learning
+    min_edge: float = 0.02           # 2% minimum edge — profit is the goal
 
     # Position sizing
-    kelly_fraction: float = 0.25
-    max_position_size: int = 10
-    max_simultaneous_positions: int = 30   # More positions for diversification
+    kelly_fraction: float = 0.40
+    max_position_size: int = 20
+    max_simultaneous_positions: int = 75   # Heavy trading — profit is the goal
 
     # Timing
-    scan_interval: float = 20.0  # scan every 20s for more opportunities
+    scan_interval: float = 15.0  # scan every 15s — faster response
 
     # Risk overrides
-    max_daily_loss: float = 75.0     # Allow more daily room
-    stop_loss_pct: float = 0.20
-    take_profit_pct: float = 0.40
+    max_daily_loss: float = 300.0    # Trade aggressively
+    stop_loss_pct: float = 0.30
+    take_profit_pct: float = 0.25
 
     # Model thresholds
-    max_spread_cents: int = 25   # Allow wider spreads during learning — tighter than risk wall (40¢)
+    max_spread_cents: int = 40   # Wider spreads OK — profit is the goal — tighter than risk wall (40¢)
     min_volume: float = 3.0      # Lower volume floor — more opportunities
     min_hours_to_expiry: float = 0.0  # Allow near-expiry (faster outcome resolution)
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)
-    aggression: float = 0.5
+    aggression: float = 0.70
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -249,8 +249,8 @@ class AdaptiveStrategy:
 
         elif snap.current_drawdown > -5:  # Small or no drawdown
             # Slowly restore defaults
-            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.01, 0.25), "recovery"))
-            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 1, 30), "recovery"))
+            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.02, 0.40), "recovery"))
+            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 2, 75), "recovery"))
 
         return [e for e in events if e is not None]
 

@@ -32,14 +32,14 @@ log = get_logger("engine.risk")
 class RiskLimits:
     """Active risk parameters — loaded from strategy config + global defaults."""
 
-    max_position_size: int = 10
-    max_daily_loss: Decimal = Decimal("75.0")
-    max_portfolio_exposure: Decimal = Decimal("750.0")
-    max_single_order_cost: Decimal = Decimal("150.0")
+    max_position_size: int = 20
+    max_daily_loss: Decimal = Decimal("300.0")
+    max_portfolio_exposure: Decimal = Decimal("2000.0")
+    max_single_order_cost: Decimal = Decimal("300.0")
     stop_loss_pct: Decimal | None = None
     take_profit_pct: Decimal | None = None
     min_spread_cents: int = 0
-    max_spread_cents: int = 40    # hard wall — strategy uses tighter limit
+    max_spread_cents: int = 50    # raised — profit is the goal — strategy uses tighter limit
     min_volume: int = 0
     min_time_to_expiry_hours: int = 0  # Allow near-expiry trades (model handles timing)
     kill_switch_active: bool = False
