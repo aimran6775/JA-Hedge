@@ -65,9 +65,9 @@ class OnlineLearner:
         model: XGBoostPredictor,
         memory: TradeMemory,
         *,
-        min_samples: int = 50,
-        retrain_threshold: int = 25,         # retrain after N new resolved trades
-        challenger_must_beat_by: float = 0.01, # AUC improvement needed
+        min_samples: int = 30,                # Phase 15: train with less data
+        retrain_threshold: int = 15,         # Phase 15: retrain every 15 resolved trades
+        challenger_must_beat_by: float = 0.005, # Phase 15: lower bar for promotion
         checkpoint_dir: str = "data/models",
         max_checkpoints: int = 10,
     ):

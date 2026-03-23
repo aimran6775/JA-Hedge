@@ -909,3 +909,17 @@ def _analyze_spreads(markets, max_spread: int) -> dict:
         "above_limit": above_limit,
         "max_spread_cents": max_spread,
     }
+
+
+# ── Phase 3+20: Performance report endpoint ──────────────────────
+@router.get("/frankenstein/performance")
+async def frankenstein_performance():
+    """Comprehensive performance report for profitability tracking."""
+    from app.state import state
+    if not state.frankenstein:
+        return {"error": "Frankenstein not initialized"}
+    try:
+        report = state.frankenstein.get_performance_report()
+        return {"status": "ok", "report": report}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}

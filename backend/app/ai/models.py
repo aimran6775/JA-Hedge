@@ -705,6 +705,9 @@ class XGBoostPredictor(PredictionModel):
             elif features.macd < -0.02:
                 macd_adj = max(features.macd * 0.4, -0.03)
 
+        # -- Phase 8: Signal weights are now amplified (see uncap patch)
+        # The regime is detected at scan-loop level and used for
+        # category-level edge adjustments in brain.py
         # -- Combine signals (total max swing: +-8%) --
         signal_weight = max(0.30, 1.0 - time_trust * 0.5)
         total_adjustment = (

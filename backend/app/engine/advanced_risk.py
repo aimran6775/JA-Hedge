@@ -33,23 +33,23 @@ class PortfolioRiskLimits:
     """Enhanced risk limits for the whole portfolio."""
 
     # Position limits
-    max_positions: int = 30                    # total open positions
-    max_per_event: int = 5                     # max positions in one event
-    max_per_category: int = 10                 # max positions in one category
-    max_portfolio_cost_cents: int = 500_00     # $500 total deployed
+    max_positions: int = 100                   # total open positions
+    max_per_event: int = 8                     # max positions in one event
+    max_per_category: int = 20                 # max positions in one category
+    max_portfolio_cost_cents: int = 3000_00    # $3000 total deployed
 
     # Loss limits
-    max_daily_loss_cents: int = 50_00          # $50 daily loss trigger
-    max_weekly_loss_cents: int = 150_00        # $150 weekly loss trigger
-    max_drawdown_pct: float = 0.10             # 10% max drawdown from peak
+    max_daily_loss_cents: int = 300_00         # $300 daily loss trigger
+    max_weekly_loss_cents: int = 800_00        # $800 weekly loss trigger
+    max_drawdown_pct: float = 0.30             # 30% max drawdown from peak
 
     # Dynamic sizing
     scale_down_on_loss: bool = True            # reduce sizes when losing
     scale_factor_per_loss_pct: float = 2.0     # 2x reduction per % of drawdown
 
     # Concentration
-    max_single_position_pct: float = 0.20      # max 20% of portfolio in one position
-    max_correlated_exposure_pct: float = 0.40  # max 40% in correlated positions
+    max_single_position_pct: float = 0.35      # max 35% of portfolio in one position
+    max_correlated_exposure_pct: float = 0.60  # max 60% in correlated positions
 
 
 @dataclass
@@ -165,17 +165,17 @@ class AdvancedRiskManager:
         """
         scale = 1.0
 
-        # Drawdown scaling
+        # Drawdown scaling — gentler: only reduce at significant drawdowns
         if self._limits.scale_down_on_loss and self._peak_equity_cents > 0:
             equity = self._current_equity_cents()
             drawdown_pct = max(0, (self._peak_equity_cents - equity) / self._peak_equity_cents)
-            if drawdown_pct > 0.02:  # >2% drawdown
-                scale *= max(0.2, 1.0 - drawdown_pct * self._limits.scale_factor_per_loss_pct)
+            if drawdown_pct > 0.10:  # >10% drawdown before scaling
+                scale *= max(0.4, 1.0 - (drawdown_pct - 0.10) * self._limits.scale_factor_per_loss_pct)
 
-        # Position count scaling (fewer contracts when many positions open)
+        # Position count scaling — much gentler, starts at 50
         n_positions = len(self._position_risks)
-        if n_positions > 10:
-            scale *= max(0.3, 1.0 - (n_positions - 10) * 0.05)
+        if n_positions > 50:
+            scale *= max(0.5, 1.0 - (n_positions - 50) * 0.01)
 
         return raw_kelly * scale
 
