@@ -71,3 +71,5 @@ mlruns/
 backend/data/
 backend/data/
 frontend/tsconfig.tsbuildinfo
+*.jpeg
+*.MOV
