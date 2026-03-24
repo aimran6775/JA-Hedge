@@ -926,7 +926,7 @@ async def frankenstein_performance():
 
 
 # ── Phase 19: Agent status endpoint ──────────────────────────────
-@router.get("/frankenstein/agents")
+@router.get("/agents")
 async def frankenstein_agents():
     """Status of all trading agents."""
     from app.state import state
