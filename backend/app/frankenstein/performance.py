@@ -323,12 +323,12 @@ class PerformanceTracker:
         # During learning, tiny paper trades losing a few cents each
         # should NOT pause the system.  Allow up to 25 consecutive losses.
         # After learning, tighten to 8.
-        max_consec = 25 if in_learning_mode else 8
+        max_consec = 50 if in_learning_mode else 20
         if latest.consecutive_losses >= max_consec:
             return True, f"consecutive_losses_{latest.consecutive_losses}"
 
         # Rule 2: Daily loss limit — always enforced but relaxed in learning
-        daily_limit = -75 if in_learning_mode else -50
+        daily_limit = -200 if in_learning_mode else -150
         if latest.daily_pnl < daily_limit:
             return True, f"daily_loss_${abs(latest.daily_pnl):.0f}"
 
@@ -339,7 +339,8 @@ class PerformanceTracker:
         # Rule 4: Model accuracy — ONLY after 100+ real trades
         # During learning mode, we let Frankenstein trade freely
         # so it can gather enough data to actually learn
-        if not in_learning_mode and latest.prediction_accuracy < 0.35:
+        # Phase 5: Much lower threshold — agents handle their own gating
+        if not in_learning_mode and latest.prediction_accuracy < 0.08:
             return True, f"low_accuracy_{latest.prediction_accuracy:.1%}"
 
         return False, "ok"

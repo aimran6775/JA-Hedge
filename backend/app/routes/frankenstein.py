@@ -923,3 +923,19 @@ async def frankenstein_performance():
         return {"status": "ok", "report": report}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+# ── Phase 19: Agent status endpoint ──────────────────────────────
+@router.get("/frankenstein/agents")
+async def frankenstein_agents():
+    """Status of all trading agents."""
+    from app.state import state
+    if not state.frankenstein:
+        return {"error": "Frankenstein not initialized"}
+    try:
+        orch = getattr(state.frankenstein, '_orchestrator', None)
+        if not orch:
+            return {"error": "No orchestrator"}
+        return {"status": "ok", **orch.status()}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}

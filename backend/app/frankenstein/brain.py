@@ -45,6 +45,7 @@ from app.kalshi.models import Market, MarketStatus, OrderAction, OrderSide, Orde
 from app.logging_config import get_logger
 from app.pipeline import market_cache
 from app.engine.advanced_risk import AdvancedRiskManager
+from app.agents import AgentOrchestrator, AgentSignal
 from app.production import SQLiteStore, ExchangeSchedule, HealthMonitor
 
 log = get_logger("frankenstein.brain")
@@ -69,7 +70,7 @@ class FrankensteinConfig:
     """Configuration for the Frankenstein brain."""
 
     # Scan settings
-    scan_interval: float = 30.0           # seconds between market scans
+    scan_interval: float = 20.0           # Phase 15: faster scanning
     max_candidates: int = 500             # max markets per scan
 
     # Learning settings
@@ -180,6 +181,10 @@ class Frankenstein:
         # Phase 7: Advanced portfolio risk manager
         self._adv_risk = AdvancedRiskManager()
 
+        # Phase 3: Agent orchestrator for multi-agent trading
+        self._orchestrator = AgentOrchestrator()
+        self._agent_trades: dict[str, str] = {}  # ticker → agent_name
+
         # Sports components (injected by main.py)
         self._sports_detector = None
         self._odds_client = None
@@ -188,6 +193,7 @@ class Frankenstein:
         self._sports_risk = None
         self._live_engine = None
         self._sports_monitor = None
+        self._wire_agents_pending = True  # Phase 4: wire live engine on first scan
         self._sports_only = True  # default: only trade sports
 
         # Duplicate market protection: {ticker: timestamp} of recent trades
@@ -217,7 +223,10 @@ class Frankenstein:
             log.warning("frankenstein_already_alive")
             return
 
+        # Phase 14: Force fresh start — agents handle their own safety
         self._state.is_alive = True
+        self._state.is_paused = False
+        self._state.pause_reason = ''
         self._state.birth_time = time.time()
         self._state.is_trading = True
 
@@ -317,6 +326,10 @@ class Frankenstein:
             while self._state.is_alive:
                 try:
                     if self._state.is_trading and not self._state.is_paused:
+                        # Phase 4: Wire live engine into agents if pending
+                        if getattr(self, '_wire_agents_pending', False) and self._live_engine:
+                            self._orchestrator.inject_live_engine(self._live_engine)
+                            self._wire_agents_pending = False
                         await self._scan_and_trade()
                 except Exception as e:
                     import traceback
@@ -392,7 +405,7 @@ class Frankenstein:
         # Grade gates: trained model → B minimum, untrained → C+ minimum.
         # This is relaxed from the old A/B gate because early-stage trading
         # needs volume to learn — we can tighten later once profitable.
-        min_grade = "D+" if not self._model.is_trained else "C"
+        min_grade = "C+" if not self._model.is_trained else "B"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
@@ -497,17 +510,22 @@ class Frankenstein:
                     sports_features = self._sports_feat.compute(market, features)
                     sports_pred = self._sports_predictor.predict(sports_features, features)
 
-            # If sports predictor gave a signal, use it (override base model)
-            # Phase 7: Sports specialization — trust Vegas-backed signals more
+            # ── Phase 6v2: Vegas-REQUIRED for sports ────────────────
+            # Sports without Vegas = 2.1% WR = gambling. Only trade with Vegas.
+            _is_sports_mkt = False
+            if self._sports_detector:
+                _sports_info = self._sports_detector.detect(market)
+                _is_sports_mkt = _sports_info.is_sports
+
             if sports_pred is not None:
+                # Has Vegas/sports prediction → use it with boost
                 prediction = sports_pred.to_base_prediction()
-                # Vegas-calibrated sports signals get a confidence boost
                 if prediction.confidence < 0.80:
                     prediction = Prediction(
                         side=prediction.side,
                         confidence=min(prediction.confidence * 1.3, 0.85),
                         predicted_prob=prediction.predicted_prob,
-                        edge=prediction.edge * 1.2,  # Trust Vegas more
+                        edge=prediction.edge * 1.2,
                         model_name=prediction.model_name,
                         model_version=prediction.model_version,
                         raw_prob=prediction.raw_prob,
@@ -531,6 +549,10 @@ class Frankenstein:
                     )
                     if not passed:
                         continue
+
+            # ── Phase 6v2: Block sports without Vegas data ─────────
+            if _is_sports_mkt and sports_pred is None:
+                continue  # NO Vegas data for this sports market → skip
 
             # ── PRICE FLOOR: Skip extreme-probability contracts ────
             # Contracts priced < 10¢ or > 90¢ are lottery tickets.
@@ -656,18 +678,29 @@ class Frankenstein:
             signals_generated += 1
             self._state.total_signals += 1
 
+            # ── Phase 7-8: Agent evaluation ───────────────────────
+            # Let specialized agents evaluate this market
+            _agent_signals = self._orchestrator.evaluate_market(
+                market, features, prediction, cat
+            )
+            _agent_override = None
+            if _agent_signals:
+                _best_sig = _agent_signals[0]  # highest EV
+                if _best_sig.ev_cents > 0:
+                    _agent_override = _best_sig
+                    self._agent_trades[market.ticker] = _best_sig.agent_name
+
             # Kelly criterion position sizing (binary contract formula)
             # 🎯 Phase 2: Confidence-driven sizing — scale Kelly by confidence grade
             kelly = self._kelly_size(prediction, features, params)
             if kelly <= 0:
                 continue
 
-            # Confidence-based position scaling:
-            # A+ → 100%, A → 85%, B+ → 65%, B → 45%, C+ → 25%
+            # Phase 2v2: Quality-first confidence scaling
+            # Only A/B grades get meaningful size. C grades get tiny.
             confidence_scale = {
-                "A+": 1.0, "A": 0.95, "B+": 0.85, "B": 0.70, "C+": 0.55, "C": 0.40,
-                "D+": 0.30, "D": 0.20,
-            }.get(conf_breakdown.grade, 0.15)
+                "A+": 1.0, "A": 0.80, "B+": 0.55, "B": 0.35, "C+": 0.15, "C": 0.08,
+            }.get(conf_breakdown.grade, 0.05)
             kelly *= confidence_scale
 
             # Phase 7: Adjust Kelly with advanced risk (drawdown/position scaling)
@@ -702,6 +735,11 @@ class Frankenstein:
             #        at least 2 for mid-range, 1 for expensive.
             raw_count = int(kelly * params.max_position_size)
             price_cents = self._compute_price(prediction, features)
+
+            # Phase 9-11: Agent override — use agent's sizing if available
+            if _agent_override is not None:
+                raw_count = _agent_override.size_contracts
+                price_cents = _agent_override.price_cents
             if price_cents <= 30:
                 min_count = 3  # cheap markets: $0.90 max risk
             elif price_cents <= 60:
@@ -711,6 +749,18 @@ class Frankenstein:
             count = max(min_count, raw_count)
             # Cap to risk manager's max position size
             count = min(count, params.max_position_size)
+
+            # Phase 12: Bankroll cap — max 2% of balance per trade
+            try:
+                from app.state import state as _bk_st
+                if _bk_st.paper_trader:
+                    _bal_cents = int(float(_bk_st.paper_trader.balance) * 100)
+                    _max_risk = int(_bal_cents * 0.02)  # 2% max
+                    _trade_cost = count * price_cents
+                    if _trade_cost > _max_risk and _max_risk > 0:
+                        count = max(1, _max_risk // max(price_cents, 1))
+            except Exception:
+                pass
 
             # Phase 9: Expected value for ranking
             # EV = edge * count * (1 - cost) — expected profit per trade
@@ -1078,6 +1128,19 @@ class Frankenstein:
 
             should_exit = False
             exit_reason = ""
+
+            # ── Phase 13: Agent-aware exit ────────────────
+            _owning_agent = self._agent_trades.get(ticker, "")
+            if _owning_agent:
+                _ag = self._orchestrator.get_agent(_owning_agent)
+                if _ag:
+                    _ag_exit, _ag_reason = _ag.should_exit(
+                        market, features, prediction,
+                        entry_price, unrealized_pnl_pct,
+                    )
+                    if _ag_exit:
+                        should_exit = True
+                        exit_reason = f"agent_{_owning_agent}:{_ag_reason}"
 
             # ── Phase 5: Time-decay stop-loss ─────────────
             # Stop-loss gets TIGHTER as expiry approaches (time decay)
@@ -1833,6 +1896,10 @@ class Frankenstein:
                             pnl_cents=pnl_cents, market_result=result_str,
                         )
                         self._report_sports_outcome(trade, pnl_cents)
+                    # Phase 17: Feed outcome to agent orchestrator
+                    _ag_nm = self._agent_trades.pop(trade.ticker, "")
+                    if _ag_nm:
+                        self._orchestrator.record_outcome(trade.ticker, _ag_nm, correct, pnl_cents)
                     resolved_count += 1
                     continue
 
@@ -1898,6 +1965,10 @@ class Frankenstein:
                                 pnl_cents=pnl_cents, market_result=market_result_str,
                             )
                         self._report_sports_outcome(trade, pnl_cents)
+                        # Phase 17: Feed to agents
+                        _ag_nm2 = self._agent_trades.pop(trade.ticker, "")
+                        if _ag_nm2:
+                            self._orchestrator.record_outcome(trade.ticker, _ag_nm2, correct, pnl_cents)
                         resolved_count += 1
                         resolved_via_market = True
                     elif market_settled:
@@ -1957,9 +2028,9 @@ class Frankenstein:
                             price = float(cached.last_price or cached.midpoint or 0.5)
                             if isinstance(price, int):
                                 price = price / 100
-                            if price >= 0.65:
+                            if price >= 0.85:
                                 result = "yes"
-                            elif price <= 0.35:
+                            elif price <= 0.15:
                                 result = "no"
                             else:
                                 result = None
@@ -2150,6 +2221,9 @@ class Frankenstein:
             "portfolio_risk": self._adv_risk.portfolio_summary(),
             "exchange_session": ExchangeSchedule.current_session(),
             "liquidity_factor": ExchangeSchedule.liquidity_factor(),
+
+            # Phase 18: Agent system status
+            "agents": self._orchestrator.status() if hasattr(self, '_orchestrator') else None,
 
             # 🏀 Sports
             "sports_only_mode": self._sports_only,

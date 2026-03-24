@@ -29,12 +29,12 @@ class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
     # Signal filters — confidence-driven: model decides quality, we decide sizing
-    min_confidence: float = 0.15     # low floor — let trades through — let more trades through during learning
-    min_edge: float = 0.02           # 2% minimum edge — profit is the goal
+    min_confidence: float = 0.35     # Phase 20: Higher floor — quality over quantity
+    min_edge: float = 0.04           # Phase 20: 4% min edge — stop gambling
 
     # Position sizing
-    kelly_fraction: float = 0.40
-    max_position_size: int = 20
+    kelly_fraction: float = 0.25     # Phase 20: Conservative Kelly
+    max_position_size: int = 12      # Phase 20: Smaller positions
     max_simultaneous_positions: int = 75   # Heavy trading — profit is the goal
 
     # Timing
