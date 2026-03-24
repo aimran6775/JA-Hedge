@@ -323,7 +323,7 @@ class PerformanceTracker:
         # During learning, tiny paper trades losing a few cents each
         # should NOT pause the system.  Allow up to 25 consecutive losses.
         # After learning, tighten to 8.
-        max_consec = 50 if in_learning_mode else 20
+        max_consec = 100 if in_learning_mode else 50
         if latest.consecutive_losses >= max_consec:
             return True, f"consecutive_losses_{latest.consecutive_losses}"
 
@@ -400,6 +400,15 @@ class PerformanceTracker:
         avg_actual = np.mean(actual_returns)
 
         return float(avg_actual / avg_predicted) if avg_predicted > 0 else 0.0
+
+    def reset_for_fresh_start(self) -> None:
+        """Reset performance state for a fresh start after resume.
+        
+        This prevents old history from immediately re-pausing the system.
+        """
+        self.snapshots.clear()
+        self._trade_outcomes.clear()
+        print("[Performance] Reset for fresh start — old history cleared")
 
     def _compute_streaks(self, trades: list[TradeRecord]) -> tuple[int, int]:
         """Compute current and max consecutive loss streaks."""

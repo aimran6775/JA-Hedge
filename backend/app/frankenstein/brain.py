@@ -2092,6 +2092,8 @@ class Frankenstein:
         """Resume Frankenstein's trading."""
         self._state.is_paused = False
         self._state.pause_reason = ""
+        # Phase 14: Reset performance to avoid old history re-pausing
+        self.performance.reset_for_fresh_start()
         log.info("🧟▶️ FRANKENSTEIN RESUMED")
 
     async def force_retrain(self) -> dict[str, Any]:
