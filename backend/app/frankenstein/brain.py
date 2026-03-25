@@ -1404,10 +1404,13 @@ class Frankenstein:
             if not series_ticker:
                 continue
             try:
+                from app.state import state as _st
+                if not _st.kalshi_api:
+                    continue
                 import time as _time
                 end_ts = int(_time.time())
                 start_ts = end_ts - 7200  # 2 hours of 1-minute candles
-                candles = await self._api.historical.get_candlesticks(
+                candles = await _st.kalshi_api.historical.get_candlesticks(
                     series_ticker=series_ticker,
                     market_ticker=m.ticker,
                     start_ts=start_ts,
