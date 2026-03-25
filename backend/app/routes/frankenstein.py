@@ -130,6 +130,26 @@ async def bootstrap_training_data() -> dict:
     return result
 
 
+@router.post("/purge-bootstrap")
+async def purge_bootstrap_data() -> dict:
+    """Purge all bootstrap/synthetic records from memory.
+
+    Used to clear poisoned training data.  After purging, the model
+    will be untrained and will re-bootstrap with clean data.
+    """
+    frank = _get_frank()
+    purge_result = frank.memory.purge_bootstrap_data()
+    # Also reset learner so it retrains from scratch
+    frank.learner.generation += 1
+    frank.learner.total_retrains = 0
+    frank.learner.total_promotions = 0
+    return {
+        "status": "purged",
+        **purge_result,
+        "next_step": "Model will re-bootstrap and retrain on next scan cycle",
+    }
+
+
 @router.get("/debug/rejections")
 async def debug_rejections() -> dict:
     """Debug: show why trades are being rejected."""

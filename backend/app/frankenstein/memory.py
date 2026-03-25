@@ -561,6 +561,7 @@ class TradeMemory:
             is_bootstrap = (
                 getattr(t, 'source', '') in ('bootstrap', 'bootstrap_active')
                 or (t.model_version or '').startswith('bootstrap')
+                or (t.order_id or '').startswith('bootstrap-')
             )
             if is_bootstrap:
                 removed += 1
@@ -571,6 +572,7 @@ class TradeMemory:
             is_bootstrap = (
                 getattr(t, 'source', '') in ('bootstrap', 'bootstrap_active')
                 or (t.model_version or '').startswith('bootstrap')
+                or (t.order_id or '').startswith('bootstrap-')
             )
             if not is_bootstrap:
                 kept_important.append(t)
