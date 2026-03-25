@@ -139,10 +139,6 @@ async def purge_bootstrap_data() -> dict:
     """
     frank = _get_frank()
     purge_result = frank.memory.purge_bootstrap_data()
-    # Also reset learner so it retrains from scratch
-    frank.learner.generation += 1
-    frank.learner.total_retrains = 0
-    frank.learner.total_promotions = 0
     return {
         "status": "purged",
         **purge_result,
