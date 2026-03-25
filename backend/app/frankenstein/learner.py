@@ -92,6 +92,10 @@ class OnlineLearner:
         # Feature importance tracking over time
         self._importance_history: list[dict[str, float]] = []
 
+        # Phase 18: Category-specific models
+        self._category_models: dict[str, XGBoostPredictor] = {}
+        self._MIN_CATEGORY_SAMPLES = 40  # need at least 40 resolved per category
+
         log.info(
             "online_learner_initialized",
             min_samples=min_samples,
@@ -160,6 +164,50 @@ class OnlineLearner:
         except Exception as e:
             log.error("retrain_failed", error=str(e))
             return None
+
+        # Phase 13: Feature importance pruning
+        # After initial training, identify features with <1% importance
+        # and retrain without them. This reduces noise and overfitting.
+        importance = self._extract_importance(challenger)
+        if importance and len(X) >= 100:
+            # Find features above 1% importance threshold
+            keep_indices = []
+            feature_names = MarketFeatures.feature_names()
+            for i, fname in enumerate(feature_names):
+                # Use f{i} format that XGBoost uses for unnamed features
+                xgb_name = f"f{i}"
+                imp = importance.get(xgb_name, importance.get(fname, 0.0))
+                if imp >= 0.01:  # 1% threshold
+                    keep_indices.append(i)
+
+            # Only prune if we'd keep at least 60% of features
+            if len(keep_indices) >= len(feature_names) * 0.6 and len(keep_indices) < len(feature_names):
+                X_pruned = X[:, keep_indices]
+                pruned_count = len(feature_names) - len(keep_indices)
+                log.info("feature_pruning", kept=len(keep_indices),
+                         pruned=pruned_count, total=len(feature_names))
+
+                # Retrain on pruned features
+                challenger_pruned = XGBoostPredictor()
+                try:
+                    metrics_pruned = challenger_pruned.train(
+                        X_pruned, y,
+                        num_boost_round=500,
+                        early_stopping_rounds=30,
+                        eval_split=0.2,
+                        n_cv_folds=3,
+                        hyperparam_trials=8,
+                        sample_weights=sample_weights,
+                    )
+                    # Use pruned model only if AUC improved
+                    if metrics_pruned.get("val_auc", 0) > metrics.get("val_auc", 0):
+                        challenger = challenger_pruned
+                        metrics = metrics_pruned
+                        log.info("pruned_model_adopted",
+                                 auc_before=f"{metrics.get('val_auc', 0):.4f}",
+                                 auc_after=f"{metrics_pruned.get('val_auc', 0):.4f}")
+                except Exception:
+                    pass  # stick with unpruned model
 
         # Create checkpoint
         version = self._make_version(len(X))
@@ -246,6 +294,78 @@ class OnlineLearner:
             samples=checkpoint.train_samples,
             best_iter=checkpoint.best_iteration,
         )
+
+    # ── Phase 18: Category-Specific Model Training ─────────────────
+
+    async def train_category_models(self) -> dict[str, XGBoostPredictor]:
+        """Train specialist XGBoost models per market category.
+
+        Returns dict of {category: trained_model} for categories with
+        enough data.  Categories with <40 samples are skipped.
+        """
+        from app.frankenstein.categories import detect_category
+        from collections import defaultdict
+
+        # Group resolved trades by category
+        category_records: dict[str, list] = defaultdict(list)
+        for t in self.memory._trades:
+            if t.market_result not in ("yes", "no"):
+                continue
+            if not t.features:
+                continue
+            cat = t.category or detect_category(
+                t.market_title or "", "", ticker=t.ticker
+            )
+            if cat:
+                category_records[cat].append(t)
+
+        trained: dict[str, XGBoostPredictor] = {}
+        expected_dim = len(MarketFeatures.feature_names())
+
+        for cat, records in category_records.items():
+            if len(records) < self._MIN_CATEGORY_SAMPLES:
+                continue
+
+            # Build X, y from category-specific records
+            padded = []
+            for r in records:
+                feat = list(r.features)
+                if len(feat) < expected_dim:
+                    feat.extend([0.0] * (expected_dim - len(feat)))
+                elif len(feat) > expected_dim:
+                    feat = feat[:expected_dim]
+                padded.append(feat)
+
+            X = np.array(padded, dtype=np.float32)
+            y = np.array(
+                [1.0 if r.market_result == "yes" else 0.0 for r in records],
+                dtype=np.float32,
+            )
+
+            # Train a lightweight specialist model (fewer rounds, no tuning)
+            specialist = XGBoostPredictor()
+            try:
+                metrics = specialist.train(
+                    X, y,
+                    num_boost_round=200,
+                    early_stopping_rounds=20,
+                    eval_split=0.25,
+                    n_cv_folds=2,
+                    hyperparam_trials=4,
+                )
+                val_auc = metrics.get("val_auc", 0.0)
+                if val_auc >= 0.54:  # must beat coin flip meaningfully
+                    trained[cat] = specialist
+                    log.info("category_model_trained", category=cat,
+                             samples=len(records), auc=f"{val_auc:.4f}")
+                else:
+                    log.debug("category_model_weak", category=cat,
+                              auc=f"{val_auc:.4f}")
+            except Exception as e:
+                log.debug("category_model_failed", category=cat, error=str(e))
+
+        self._category_models = trained
+        return trained
 
     # ── Feature Importance ────────────────────────────────────────────
 

@@ -361,12 +361,49 @@ class PaperTradingSimulator:
         return sim_order.to_order_model()
 
     def _fill_order(self, order: SimulatedOrder) -> None:
-        """Fill an order (fully) and update balance + positions."""
+        """Fill an order with realistic slippage and partial-fill simulation.
+
+        Phase 4 improvements:
+        - Proportional slippage: 1% of price (not flat 1¢)
+        - Fill probability: wider spreads → lower fill chance
+        - Partial fills: thin books may only fill part of the order
+        """
         if order.remaining_count <= 0:
             return
 
+        # ── Realistic fill probability based on spread ────
+        # Tight spread (≤2¢) → 100% fill, wide spread → decreasing probability
+        # This simulates that passive orders in wide spreads often don't fill.
+        if self.spread_simulation and order.order_type == OrderType.LIMIT:
+            # Estimate spread from price (rough: assume 3-5% of price)
+            price_frac = order.price_cents / 100.0
+            # For aggressive orders (taking), always fill
+            # For passive orders, probability decreases with spread
+            fill_prob = 0.85  # base probability for limit orders
+            if order.price_cents < 20 or order.price_cents > 80:
+                fill_prob = 0.70  # extreme prices have less liquidity
+            import random
+            if random.random() > fill_prob:
+                # Order didn't fill — leave it resting
+                log.debug("paper_fill_missed", order_id=order.order_id,
+                          ticker=order.ticker, fill_prob=f"{fill_prob:.0%}")
+                return
+
+        # ── Partial fills for larger orders ───────────────
+        # Orders > 3 contracts may only partially fill in thin markets
         fill_count = order.remaining_count
-        fill_price = order.price_cents + self.slippage_cents
+        if fill_count > 3 and self.spread_simulation:
+            import random
+            # 70% chance of full fill, 30% chance of partial (50-90% of order)
+            if random.random() < 0.30:
+                partial_pct = random.uniform(0.50, 0.90)
+                fill_count = max(1, int(fill_count * partial_pct))
+
+        # ── Proportional slippage ─────────────────────────
+        # Real slippage is proportional to price, not a flat 1¢.
+        # Use ~1% of price + base 0.5¢
+        base_slippage = max(1, int(order.price_cents * 0.01 + 0.5))
+        fill_price = order.price_cents + base_slippage
         fee_cents = self.fee_rate_cents * fill_count
         cost_cents = fill_price * fill_count
 
@@ -426,10 +463,14 @@ class PaperTradingSimulator:
 
         # ── Update order status ───────────────────────────
         order.fill_count += fill_count
-        order.remaining_count = 0
+        order.remaining_count -= fill_count
         order.taker_fill_cost_cents = cost_cents
         order.taker_fees_cents = fee_cents
-        order.status = OrderStatus.EXECUTED
+        # Partial fill → RESTING, full fill → EXECUTED
+        if order.remaining_count <= 0:
+            order.remaining_count = 0
+            order.status = OrderStatus.EXECUTED
+        # else: stays RESTING for partial fills
         order.updated_time = datetime.now(timezone.utc)
 
         log.info(

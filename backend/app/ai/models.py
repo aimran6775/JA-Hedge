@@ -95,17 +95,25 @@ class CalibrationTracker:
     edge is only 5-10%.  After enough samples, the calibration map
     is forced to be monotonically non-decreasing (isotonic) so that
     higher predicted probabilities always map to higher calibrated ones.
+
+    Phase 8: Exponential recency decay — older observations fade so
+    calibration adapts as the model is retrained or market dynamics shift.
+    Every DECAY_INTERVAL new samples, all bins are decayed by DECAY_FACTOR.
     """
 
     N_BINS = 20               # 5pp granularity (was 10 → 10pp, too coarse)
     MIN_SAMPLES_PER_BIN = 3   # need at least 3 observations to trust a bin
     MIN_TOTAL_SAMPLES = 30    # need 30 total before calibration kicks in
+    DECAY_FACTOR = 0.95       # multiply all bins by this on decay
+    DECAY_INTERVAL = 50       # decay every 50 new samples
 
     def __init__(self) -> None:
-        self._bin_counts = np.zeros(self.N_BINS, dtype=np.int64)
-        self._bin_positives = np.zeros(self.N_BINS, dtype=np.int64)
+        # Use float arrays so decay works smoothly
+        self._bin_counts = np.zeros(self.N_BINS, dtype=np.float64)
+        self._bin_positives = np.zeros(self.N_BINS, dtype=np.float64)
         self._bin_pred_sum = np.zeros(self.N_BINS, dtype=np.float64)
         self._total_samples = 0
+        self._samples_since_decay = 0
         self._ece: float = 0.0
         # Isotonic calibration map: bin_index → calibrated probability
         self._isotonic_map: np.ndarray | None = None
@@ -137,6 +145,14 @@ class CalibrationTracker:
         self._bin_positives[idx] += actual_outcome
         self._bin_pred_sum[idx] += predicted_prob
         self._total_samples += 1
+        self._samples_since_decay += 1
+
+        # Phase 8: Recency decay — fade old observations
+        if self._samples_since_decay >= self.DECAY_INTERVAL:
+            self._bin_counts *= self.DECAY_FACTOR
+            self._bin_positives *= self.DECAY_FACTOR
+            self._bin_pred_sum *= self.DECAY_FACTOR
+            self._samples_since_decay = 0
 
         # Re-compute ECE and isotonic map every 10 samples
         if self._total_samples % 10 == 0:
@@ -298,6 +314,7 @@ class XGBoostPredictor(PredictionModel):
         self._version = "1.0.0"
         self._feature_names = MarketFeatures.feature_names()
         self._calibration = CalibrationTracker()
+        self._train_samples: int = 0  # Phase 14: for ensemble blend weight
 
         if model_path and Path(model_path).exists():
             self.load(model_path)
@@ -366,7 +383,12 @@ class XGBoostPredictor(PredictionModel):
         return mean_probs, std_devs, tree_agreements
 
     def predict(self, features: MarketFeatures) -> Prediction:
-        """Predict YES probability for a single market."""
+        """Predict YES probability for a single market.
+
+        Phase 14: Ensemble — blend ML output with heuristic baseline.
+        When young (few training samples), the heuristic anchors us
+        to market price.  As data grows, the ML model dominates.
+        """
         if self._model is None:
             return self._heuristic_predict(features)
 
@@ -377,8 +399,17 @@ class XGBoostPredictor(PredictionModel):
             std = float(std_devs[0])
             agreement = float(tree_agr[0])
 
+            # Phase 14: Ensemble blending with heuristic
+            # ML weight grows with training data: 50% at 50 samples → 90% at 500+
+            n_trained = getattr(self, '_train_samples', 0)
+            ml_weight = min(0.90, 0.50 + n_trained / 1000.0)
+            heuristic_prob = features.midpoint  # market price is the heuristic baseline
+
+            blended_prob = ml_weight * prob_yes + (1.0 - ml_weight) * heuristic_prob
+            blended_prob = max(0.01, min(0.99, blended_prob))
+
             return self._build_prediction(
-                prob_yes, features,
+                blended_prob, features,
                 prediction_std=std,
                 tree_agreement=agreement,
             )
@@ -556,6 +587,9 @@ class XGBoostPredictor(PredictionModel):
             evals_result=final_evals,
             verbose_eval=False,
         )
+
+        # Phase 14: Track sample count for ensemble blending weight
+        self._train_samples = n_samples
 
         # Extract metrics
         val_auc = final_evals["val"]["auc"][-1] if "auc" in final_evals.get("val", {}) else best_auc

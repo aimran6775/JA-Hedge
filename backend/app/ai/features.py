@@ -134,6 +134,11 @@ class MarketFeatures:
     edge_decay: float = 0.0         # how fast the edge is shrinking
     price_efficiency: float = 0.0   # how efficiently price moves (vs noise)
 
+    # ── Phase 6: Orderbook Depth Features ─────────────────
+    ob_bid_depth: float = 0.0       # total YES-side bid volume (contracts)
+    ob_ask_depth: float = 0.0       # total YES-side ask volume (contracts)
+    ob_imbalance: float = 0.0       # (bid_depth - ask_depth) / total — directional pressure
+
     def to_array(self) -> np.ndarray:
         """Convert to numpy array for ML model input."""
         return np.array(
@@ -199,6 +204,8 @@ class MarketFeatures:
                 self.oi_velocity, self.volume_price_trend, self.rsi_divergence,
                 self.macd_histogram, self.mean_reversion_signal, self.smart_money_flow,
                 self.edge_decay, self.price_efficiency,
+                # Phase 6: orderbook depth features
+                self.ob_bid_depth, self.ob_ask_depth, self.ob_imbalance,
             ],
             dtype=np.float32,
         )
@@ -237,6 +244,8 @@ class MarketFeatures:
             "oi_velocity", "volume_price_trend", "rsi_divergence",
             "macd_histogram", "mean_reversion_signal", "smart_money_flow",
             "edge_decay", "price_efficiency",
+            # Phase 6: orderbook depth
+            "ob_bid_depth", "ob_ask_depth", "ob_imbalance",
         ]
 
 
@@ -285,6 +294,8 @@ class FeatureEngine:
 
     def __init__(self) -> None:
         self._histories: dict[str, PriceHistory] = {}
+        # Phase 6: Orderbook depth cache — populated by brain._enrich_orderbook_depth()
+        self._ob_depth_cache: dict[str, dict[str, float]] = {}
 
     def update(self, ticker: str, price: float, volume: float = 0,
                oi: float = 0, spread: float = 0) -> None:
@@ -447,6 +458,14 @@ class FeatureEngine:
             ask_d = float(market.yes_ask or 0)
             total_d = bid_d + ask_d
             features.book_imbalance = (bid_d - ask_d) / total_d if total_d > 0 else 0.0
+
+        # Phase 6: Orderbook depth features (injected by brain before compute)
+        # These come from _ob_depth_cache populated by brain._enrich_orderbook_depth
+        ob_data = self._ob_depth_cache.get(market.ticker)
+        if ob_data:
+            features.ob_bid_depth = ob_data.get("bid_depth", 0.0)
+            features.ob_ask_depth = ob_data.get("ask_depth", 0.0)
+            features.ob_imbalance = ob_data.get("imbalance", 0.0)
 
         # Time features
         if market.expiration_time:

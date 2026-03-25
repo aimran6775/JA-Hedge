@@ -349,15 +349,33 @@ class AdaptiveStrategy:
     # ── Helpers ───────────────────────────────────────────────────────
 
     def _adjust(self, param: str, new_value: Any, reason: str) -> list[AdaptationEvent]:
-        """Adjust a parameter and record the change."""
+        """Adjust a parameter and record the change.
+
+        Phase 16: EMA-smooth changes to prevent oscillation.
+        Instead of jumping directly to new_value, blend current → target
+        with an EMA factor (alpha=0.3).  This means it takes ~3 adaptation
+        cycles to converge on a new target, preventing whiplash between
+        regime detections.
+        """
         old_value = getattr(self.params, param, None)
         if old_value is None:
             return []
 
-        # Only record if actually changed (with tolerance)
+        # EMA smoothing for numeric parameters
+        EMA_ALPHA = 0.3
         if isinstance(new_value, float) and isinstance(old_value, float):
-            if abs(new_value - old_value) < 0.001:
+            smoothed = old_value + EMA_ALPHA * (new_value - old_value)
+            # Only record if actually changed (with tolerance)
+            if abs(smoothed - old_value) < 0.001:
                 return []
+            new_value = smoothed
+        elif isinstance(new_value, int) and isinstance(old_value, int):
+            # For integers, use EMA then round
+            smoothed = old_value + EMA_ALPHA * (new_value - old_value)
+            smoothed_int = round(smoothed)
+            if smoothed_int == old_value:
+                return []
+            new_value = smoothed_int
         elif new_value == old_value:
             return []
 

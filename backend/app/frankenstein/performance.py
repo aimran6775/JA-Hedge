@@ -230,44 +230,58 @@ class PerformanceTracker:
 
     def detect_regime(self, trades: list[TradeRecord] | None = None) -> str:
         """
-        Detect current market regime from recent trade performance.
+        Detect current market regime from actual MARKET DATA,
+        not from P&L (Phase 15).
+
+        Uses the market snapshot buffer (midpoints, spreads, volumes)
+        recorded during each scan cycle.  This gives an objective view
+        of market conditions rather than conflating model performance
+        with market dynamics.
 
         Regimes:
-        - "trending": directional moves, momentum works
-        - "mean_reverting": bouncing around, fade extremes
-        - "volatile": large swings, widen stops
-        - "quiet": low volatility, tighten entries
+        - "trending": directional price moves across markets
+        - "mean_reverting": prices bouncing, low autocorrelation
+        - "volatile": large price swings across markets
+        - "quiet": low volatility, tight ranges
         """
-        if trades is None:
-            trades = self.memory.get_recent_trades(n=100)
-            trades = [t for t in trades if t.outcome != TradeOutcome.PENDING]
-
-        if len(trades) < 10:
+        # Use market snapshots for regime detection (not P&L)
+        snapshots = list(self.memory._snapshots)
+        if len(snapshots) < 20:
             return "unknown"
 
-        pnls = np.array([t.pnl_cents for t in trades[-50:]], dtype=np.float32)
-        if len(pnls) < 5:
+        # Take last 100 snapshots
+        recent = snapshots[-100:]
+        midpoints = np.array([s.midpoint for s in recent], dtype=np.float32)
+        spreads = np.array([s.spread for s in recent], dtype=np.float32)
+
+        if len(midpoints) < 10:
             return "unknown"
 
-        volatility = np.std(pnls)
-        mean_pnl = np.mean(pnls)
+        # Price returns (changes between consecutive snapshots)
+        returns = np.diff(midpoints)
+        if len(returns) < 5:
+            return "unknown"
 
-        # Autocorrelation of returns (positive = trending, negative = mean-reverting)
-        if len(pnls) > 2:
-            autocorr = np.corrcoef(pnls[:-1], pnls[1:])[0, 1]
+        volatility = float(np.std(returns))
+        avg_spread = float(np.mean(spreads))
+
+        # Autocorrelation of price returns
+        # (positive = trending, negative = mean-reverting)
+        if len(returns) > 2:
+            autocorr = float(np.corrcoef(returns[:-1], returns[1:])[0, 1])
             if np.isnan(autocorr):
                 autocorr = 0.0
         else:
             autocorr = 0.0
 
-        # Classify
-        if volatility > 200:  # High vol
+        # Classify based on market-level metrics
+        if volatility > 0.02 or avg_spread > 0.06:
             return "volatile"
-        elif volatility < 20:
+        elif volatility < 0.005 and avg_spread < 0.03:
             return "quiet"
-        elif autocorr > 0.2:
+        elif autocorr > 0.15:
             return "trending"
-        elif autocorr < -0.2:
+        elif autocorr < -0.15:
             return "mean_reverting"
         else:
             return "mixed"

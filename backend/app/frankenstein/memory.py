@@ -393,11 +393,13 @@ class TradeMemory:
             recency_weight = np.exp(-age_hours / 72.0)  # half-life ~72h
             weights[i] *= max(recency_weight, 0.3)  # floor at 30%
 
-            # Correctness bonus: trades where our prediction was right
-            # get 1.5x weight — reinforces good signal patterns
-            if r.was_correct is True:
+            # Hard example mining: trades where we were WRONG get 1.5×
+            # weight.  The model already "knows" easy cases — the errors
+            # are where it needs the most gradient signal.  This is the
+            # standard approach in boosting / focal-loss literature.
+            if r.was_correct is False:
                 weights[i] *= 1.5
-            # Wrong predictions still train normally (weight=1.0)
+            # Correct predictions train normally (weight=1.0)
 
             # Bootstrap down-weighting: once we have enough real trades,
             # bootstrap data becomes less valuable (and potentially harmful

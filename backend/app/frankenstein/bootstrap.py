@@ -330,99 +330,22 @@ async def bootstrap_from_active_markets(
     count: int = 500,
 ) -> dict[str, Any]:
     """
-    Fallback bootstrap: generate training data from ACTIVE markets.
+    DISABLED (Phase 11): Active-market bootstrap is harmful.
 
-    Uses current market prices as ground truth probabilities. Markets
-    priced at 90¢+ are labeled YES, markets at 10¢ or below are NO,
-    and mid-range markets get probabilistic labels.
+    This function used to create synthetic training data from active
+    markets using their current price as the "ground truth" probability.
+    The problem: it teaches the model that market_price == correct_price,
+    which means the model learns zero edge by design.  Every trade it
+    makes from this training signal is a coin flip minus fees.
 
-    This is noisier than settled-market data but works when the API
-    can't return settled markets (e.g., demo mode).
+    Now returns empty stats without injecting any data.  Settled-market
+    bootstrap via bootstrap_from_settled_markets() is the only source
+    of bootstrap data (real outcomes, no price leakage).
     """
-    log.info("bootstrap_from_active_starting", target=count)
-    stats = {"scanned": 0, "injected": 0, "skipped": 0, "errors": 0}
-
-    markets = market_cache.get_active()
-    if not markets:
-        log.warning("bootstrap_active_no_markets")
-        return stats
-
-    # Shuffle to get variety
-    random.shuffle(markets)
-
-    for m in markets:
-        if stats["injected"] >= count:
-            break
-
-        stats["scanned"] += 1
-
-        # Need price data — handle Decimal carefully
-        try:
-            mid = float(m.midpoint) if m.midpoint is not None else None
-        except (TypeError, ValueError):
-            mid = None
-        try:
-            last = float(m.last_price) if m.last_price is not None else None
-        except (TypeError, ValueError):
-            last = None
-
-        price = mid or last
-        if price is None or price <= 0.01 or price >= 0.99:
-            stats["skipped"] += 1
-            continue
-
-        # Volume is not critical for bootstrap data quality — skip the filter
-        # (We want to learn from price patterns, not just liquid markets)
-
-        try:
-            features = _features_from_market(m, jitter=True)
-
-            # Probabilistic labeling based on current price:
-            # - Price 0.85+ → very likely YES → label YES ~85% of the time
-            # - Price 0.15- → very likely NO  → label NO ~85% of the time
-            # - Mid-range  → use price as P(YES), sample outcome
-            result_str = "yes" if random.random() < price else "no"
-
-            side = "yes" if price >= 0.5 else "no"
-            prediction = Prediction(
-                predicted_prob=price,
-                confidence=abs(price - 0.5) * 2,
-                side=side,
-                edge=abs(price - 0.5) * 0.08,
-                model_name="bootstrap_active_v0",
-            )
-
-            price_cents = max(1, min(99, int(price * 100)))
-            record = memory.record_trade(
-                ticker=m.ticker,
-                prediction=prediction,
-                features=features,
-                action="buy",
-                count=1,
-                price_cents=price_cents,
-                order_id=f"bootstrap-active-{m.ticker}",
-                model_version="bootstrap_active_v0",
-            )
-            record.source = "bootstrap_active"  # tag for down-weighting in training
-
-            correct = side == result_str
-            pnl_cents = (100 - price_cents) if correct else -price_cents
-
-            memory.resolve_trade(
-                trade_id=record.trade_id,
-                outcome=TradeOutcome.WIN if correct else TradeOutcome.LOSS,
-                pnl_cents=pnl_cents,
-                market_result=result_str,
-            )
-
-            stats["injected"] += 1
-
-        except Exception as e:
-            log.debug("bootstrap_active_error", ticker=m.ticker, error=str(e))
-            stats["errors"] += 1
-
-    log.info("bootstrap_from_active_complete", **stats)
-    return stats
+    log.info("bootstrap_from_active_DISABLED",
+             reason="teaches zero edge — market price != correct probability")
+    return {"scanned": 0, "injected": 0, "skipped": 0, "errors": 0,
+            "disabled": True, "reason": "active bootstrap teaches zero edge"}
 
 
 async def _fetch_settled_markets(

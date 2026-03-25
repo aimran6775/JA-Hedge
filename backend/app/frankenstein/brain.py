@@ -200,6 +200,20 @@ class Frankenstein:
         self._recently_traded_events: dict[str, float] = {}
         self._trade_cooldown_seconds: float = 1800.0  # 30-minute cooldown per ticker/event
 
+        # Phase 9: Category performance tracking for gating
+        # {category: {"wins": int, "losses": int}}
+        self._category_stats: dict[str, dict[str, int]] = {}
+
+        # Phase 17: Order lifecycle tracking
+        # {order_id: {"ticker": str, "placed_at": float, "price_cents": int}}
+        self._pending_orders: dict[str, dict[str, Any]] = {}
+        self._ORDER_STALE_SECONDS = 300.0  # cancel unfilled orders after 5 min
+        self._fill_rate_stats: dict[str, int] = {"placed": 0, "filled": 0, "cancelled": 0}
+
+        # Phase 18: Category-specific model registry
+        # {category_name: XGBoostPredictor} — specialist models trained per category
+        self._category_models: dict[str, XGBoostPredictor] = {}
+
         # State
         self._state = FrankensteinState()
         self._scan_task: asyncio.Task | None = None
@@ -380,6 +394,9 @@ class Frankenstein:
             }
             return
 
+        # ── PHASE 17: Cancel stale unfilled orders ──────────
+        await self._cleanup_stale_orders()
+
         # ── PHASE 2: Manage existing positions (exits) ────
         await self._manage_positions(markets)
 
@@ -437,8 +454,34 @@ class Frankenstein:
         #     enough data for SMA-20, RSI-14, Bollinger bands, etc.
         await self._seed_price_histories(candidates)
 
+        # 3d. Phase 6: Enrich orderbook depth for top candidates
+        await self._enrich_orderbook_depth(candidates[:20])
+
         # 4. Compute features for remaining candidates
         features_list = [self._features.compute(m) for m in candidates]
+
+        # 4a. FEATURE COMPLETENESS GATE (Phase 7)
+        #     Skip markets where >50% of features are at their defaults
+        #     (0.0). These are markets we have no history for — the model
+        #     is predicting on garbage inputs and its output is meaningless.
+        #     This prevents the vast majority of bad trades.
+        filtered_candidates = []
+        filtered_features = []
+        for m, feat in zip(candidates, features_list):
+            arr = feat.to_array()
+            zero_pct = (arr == 0.0).sum() / max(len(arr), 1)
+            if zero_pct > 0.50:
+                log.debug("feature_gate_skip", ticker=m.ticker,
+                          zero_pct=f"{zero_pct:.0%}")
+                continue
+            filtered_candidates.append(m)
+            filtered_features.append(feat)
+        candidates = filtered_candidates
+        features_list = filtered_features
+
+        if not candidates:
+            self._state.last_scan_debug = {"exit": "all_failed_feature_gate"}
+            return
 
         # 4b. Cross-event probability arbitrage detection.
         #     Group candidates by event_ticker and compute the sum of YES
@@ -458,8 +501,51 @@ class Frankenstein:
             if evt and evt in event_prob_sums and len(event_members.get(evt, [])) >= 2:
                 feat.event_prob_sum = event_prob_sums[evt]
 
-        # 4c. Batch predict
+        # 4c. Phase 20: Enrich features with Intelligence Hub alt-data signals
+        try:
+            from app.state import state as _hub_st
+            hub = _hub_st.intelligence_hub
+            if hub and hub._running:
+                for m, feat in zip(candidates, features_list):
+                    alt_features = hub.get_features_for_ticker(m.ticker)
+                    if alt_features:
+                        # Use average signal as confidence boost
+                        sig_vals = [v for k, v in alt_features.items() if k.endswith("_signal")]
+                        conf_vals = [v for k, v in alt_features.items() if k.endswith("_confidence")]
+                        if sig_vals:
+                            avg_signal = sum(sig_vals) / len(sig_vals)
+                            # Nudge implied_prob toward alt-data consensus
+                            feat.implied_prob = feat.implied_prob * 0.85 + avg_signal * 0.15
+                        if conf_vals:
+                            avg_conf = sum(conf_vals) / len(conf_vals)
+                            # Boost settlement_confidence with alt-data agreement
+                            feat.settlement_confidence = min(1.0,
+                                feat.settlement_confidence + avg_conf * 0.1)
+        except Exception:
+            pass  # Intelligence Hub is optional — never block trading
+
+        # 4d. Batch predict
         predictions = self._model.predict_batch(features_list)
+
+        # 4e. Phase 18: Override predictions with category-specialist models
+        for i, (m, feat) in enumerate(zip(candidates, features_list)):
+            from app.frankenstein.categories import detect_category
+            cat = detect_category(m.title or "", m.category or "", ticker=m.ticker)
+            if cat in self._category_models:
+                try:
+                    spec_pred = self._category_models[cat].predict(feat)
+                    if spec_pred and spec_pred.confidence > predictions[i].confidence:
+                        # Blend: 60% specialist, 40% generalist
+                        blended_prob = 0.60 * spec_pred.predicted_prob + 0.40 * predictions[i].predicted_prob
+                        predictions[i] = Prediction(
+                            predicted_prob=blended_prob,
+                            confidence=spec_pred.confidence,
+                            side=spec_pred.side,
+                            edge=spec_pred.edge,
+                            model_name=f"cat_{cat}",
+                        )
+                except Exception:
+                    pass  # fall back to generalist
 
         # 5. Evaluate each signal through adaptive strategy
         # Phase 9: Collect all valid signals, then rank by expected value
@@ -530,6 +616,20 @@ class Frankenstein:
             _pre_cat = _det_cat(market.title or "", market.category or "", ticker=market.ticker)
             if categories_this_scan.get(_pre_cat, 0) >= MAX_PER_CATEGORY:
                 continue
+
+            # ── CATEGORY PERFORMANCE GATE (Phase 9) ───────────────
+            # If we have 20+ resolved trades in a category and the win
+            # rate is below 40%, stop trading it.  The model clearly
+            # doesn't understand that domain.
+            cat_stat = self._category_stats.get(_pre_cat)
+            if cat_stat:
+                cat_total = cat_stat.get("wins", 0) + cat_stat.get("losses", 0)
+                if cat_total >= 20:
+                    cat_wr = cat_stat["wins"] / cat_total
+                    if cat_wr < 0.40:
+                        log.debug("category_gated", category=_pre_cat,
+                                  win_rate=f"{cat_wr:.0%}", trades=cat_total)
+                        continue
 
             # Phase 8: Apply category-specific adjustments
             prediction, cat_adj = self.categories.adjust_prediction(
@@ -656,7 +756,7 @@ class Frankenstein:
 
             # Kelly criterion position sizing (binary contract formula)
             # 🎯 Phase 2: Confidence-driven sizing — scale Kelly by confidence grade
-            kelly = self._kelly_size(prediction, features, params)
+            kelly = self._kelly_size(prediction, features, params, market=market)
             if kelly <= 0:
                 continue
 
@@ -679,7 +779,7 @@ class Frankenstein:
             # The old 3-contract floor for cheap markets was a major
             # loss multiplier — putting 3 contracts on coin-flip odds.
             raw_count = int(kelly * params.max_position_size)
-            price_cents = self._compute_price(prediction, features)
+            price_cents = self._compute_price(prediction, features, market=market)
 
             # Grade-based sizing: only scale up for proven signals
             if conf_breakdown.grade in ("A+",) and self._model.is_trained:
@@ -802,7 +902,7 @@ class Frankenstein:
                     if self._execution._risk_manager:
                         risk_limit = self._execution._risk_manager.limits.max_position_size
                     count = max(1, min(sig.recommended_count, risk_limit))
-                    price_cents = self._compute_price(pred_for_sig, feat)
+                    price_cents = self._compute_price(pred_for_sig, feat, market=market_match)
                     cost_frac = price_cents / 100.0
                     ev = abs(sig.edge) * count * (1.0 - cost_frac)
 
@@ -907,6 +1007,15 @@ class Frankenstein:
                 self._state.total_trades_executed += 1
                 scan_debug["exec_successes"] += 1
                 scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "executed", "order_id": result.order_id})
+
+                # Phase 17: Track order for lifecycle management
+                self._fill_rate_stats["placed"] += 1
+                if result.order_id:
+                    self._pending_orders[result.order_id] = {
+                        "ticker": market.ticker,
+                        "placed_at": time.time(),
+                        "price_cents": price_cents,
+                    }
 
                 # Register in cooldown to prevent re-buying next scan
                 self._recently_traded[market.ticker] = time.time()
@@ -1074,8 +1183,22 @@ class Frankenstein:
             exit_reason = ""
 
             # ── Stop-loss check ───────────────────────────
-            # Phase 7: Tighter stop-loss (15%) — cut losers fast.
+            # Phase 10: VOL-ADAPTIVE stop-loss.
+            # Base stop = 15%, then scale by market volatility:
+            #   - Low-vol markets: wider stop (less noise-triggered exits)
+            #   - High-vol markets: tighter stop (cut fast before bigger drop)
             stop_loss_pct = getattr(params, 'stop_loss_pct', 0.15) or 0.15
+
+            # Scale by volatility — vol_20 is std of 20-period returns
+            vol_20 = getattr(features, 'volatility_20', 0.0) or 0.0
+            if vol_20 > 0.03:
+                # High vol: tighten stop (×0.7 at vol=0.06+)
+                vol_scale = max(0.7, 1.0 - (vol_20 - 0.03) * 10.0)
+                stop_loss_pct *= vol_scale
+            elif vol_20 > 0 and vol_20 < 0.01:
+                # Low vol: widen stop (×1.3) — less noise
+                stop_loss_pct *= 1.3
+
             # 🏀 Tighter stop-loss for live sports positions
             if self._sports_detector and self._sports_risk:
                 info = self._sports_detector.detect(market)
@@ -1378,6 +1501,40 @@ class Frankenstein:
 
         return candidates[:self.config.max_candidates]
 
+    async def _enrich_orderbook_depth(self, candidates: list[Market]) -> None:
+        """Phase 6: Fetch L2 orderbook depth for top candidates.
+
+        Populates the feature engine's _ob_depth_cache with aggregated
+        bid/ask depth and imbalance for each ticker.  Capped at 20
+        API calls per scan to avoid rate-limiting.
+        """
+        try:
+            from app.state import state as _st
+            if not _st.kalshi_api:
+                return
+            for m in candidates[:20]:
+                try:
+                    ob = await _st.kalshi_api.markets.get_orderbook(m.ticker, depth=5)
+                    # Sum YES-side bid contracts across levels
+                    bid_total = 0.0
+                    for lvl in ob.yes_bids:
+                        bid_total += float(lvl.count or 0)
+                    # YES-side ask = NO-side bid (Kalshi convention)
+                    ask_total = 0.0
+                    for lvl in ob.no_bids:
+                        ask_total += float(lvl.count or 0)
+                    total = bid_total + ask_total
+                    imb = (bid_total - ask_total) / total if total > 0 else 0.0
+                    self._features._ob_depth_cache[m.ticker] = {
+                        "bid_depth": bid_total,
+                        "ask_depth": ask_total,
+                        "imbalance": max(-1.0, min(1.0, imb)),
+                    }
+                except Exception:
+                    pass  # skip this ticker — orderbook unavailable
+        except Exception as e:
+            log.debug("orderbook_depth_error", error=str(e))
+
     async def _seed_price_histories(self, candidates: list[Market]) -> None:
         """Seed price history buffers from Kalshi candlestick API.
 
@@ -1389,7 +1546,7 @@ class Frankenstein:
 
         We limit API calls to MAX_SEEDS per scan to avoid rate limits.
         """
-        MAX_SEEDS_PER_SCAN = 5
+        MAX_SEEDS_PER_SCAN = 15
         seeded = 0
 
         for m in candidates:
@@ -1409,7 +1566,7 @@ class Frankenstein:
                     continue
                 import time as _time
                 end_ts = int(_time.time())
-                start_ts = end_ts - 7200  # 2 hours of 1-minute candles
+                start_ts = end_ts - 14400  # 4 hours of 1-minute candles
                 candles = await _st.kalshi_api.historical.get_candlesticks(
                     series_ticker=series_ticker,
                     market_ticker=m.ticker,
@@ -1434,6 +1591,34 @@ class Frankenstein:
                         self._features.update(m.ticker, price, vol, 0, spread)
                     seeded += 1
                     log.debug("history_seeded", ticker=m.ticker, candles=len(candles))
+
+                    # Phase 19: Also fetch 60-minute candles for 24h
+                    # for deeper context (longer-term SMA, trend)
+                    try:
+                        start_ts_h = end_ts - 86400  # 24 hours
+                        hourly = await _st.kalshi_api.historical.get_candlesticks(
+                            series_ticker=series_ticker,
+                            market_ticker=m.ticker,
+                            start_ts=start_ts_h,
+                            end_ts=start_ts,  # up to where 1-min starts
+                            period_interval=60,  # 60-minute candles
+                        )
+                        if hourly:
+                            for c in hourly:
+                                ts = c.end_period_ts or end_ts
+                                bid_close = float(c.yes_bid.close or 0) / 100.0 if c.yes_bid and c.yes_bid.close else 0
+                                ask_close = float(c.yes_ask.close or 0) / 100.0 if c.yes_ask and c.yes_ask.close else 0
+                                if bid_close > 0 and ask_close > 0:
+                                    price = (bid_close + ask_close) / 2.0
+                                elif c.price and c.price.close:
+                                    price = float(c.price.close) / 100.0
+                                else:
+                                    continue
+                                vol = float(c.volume or 0)
+                                spread = (ask_close - bid_close) if ask_close > bid_close else 0
+                                self._features.update(m.ticker, price, vol, 0, spread)
+                    except Exception:
+                        pass  # hourly candles are bonus, not critical
             except Exception:
                 pass  # Non-critical — features will just use fewer data points
 
@@ -1445,11 +1630,46 @@ class Frankenstein:
             if (pos.position or 0) != 0
         )
 
+    async def _cleanup_stale_orders(self) -> None:
+        """Phase 17: Cancel orders that haven't filled within timeout.
+
+        Limit orders that rest in the book too long waste capital
+        (reserved balance) and may fill at stale prices.  Cancel
+        after 5 minutes and let the next scan re-evaluate.
+        """
+        if not self._pending_orders:
+            return
+
+        now = time.time()
+        stale_ids = [
+            oid for oid, info in self._pending_orders.items()
+            if now - info.get("placed_at", now) > self._ORDER_STALE_SECONDS
+        ]
+        if not stale_ids:
+            return
+
+        try:
+            from app.state import state as _st
+            if not _st.kalshi_api:
+                return
+            for oid in stale_ids:
+                try:
+                    await _st.kalshi_api.orders.cancel_order(oid)
+                    self._fill_rate_stats["cancelled"] += 1
+                    log.info("stale_order_cancelled", order_id=oid,
+                             age_s=f"{now - self._pending_orders[oid].get('placed_at', now):.0f}")
+                except Exception:
+                    pass  # order may have already filled
+                self._pending_orders.pop(oid, None)
+        except Exception as e:
+            log.debug("cleanup_stale_orders_error", error=str(e))
+
     def _kelly_size(
         self,
         prediction: Prediction,
         features: MarketFeatures,
         params: StrategyParams,
+        market: Market | None = None,
     ) -> float:
         """
         Kelly criterion for binary contracts.
@@ -1462,17 +1682,27 @@ class Frankenstein:
         Kelly optimal fraction:  f* = (p - c) / (1 - c)
         where p = our estimated probability of winning the bet.
 
-        We then apply *fractional* Kelly (default 0.25 = quarter-Kelly)
-        to account for parameter uncertainty — a standard practice.
+        We use the ACTUAL ask price from the orderbook (not mid+1¢)
+        because that's what we'd really pay as a taker.
         """
         mid = features.midpoint
 
         if prediction.side == "yes":
             p = prediction.predicted_prob          # P(YES settles)
-            c = min(mid + 0.01, 0.99)              # approximate cost
+            # Use real ask if available — that's our actual cost
+            if market and market.yes_ask is not None and float(market.yes_ask) > 0:
+                c = min(float(market.yes_ask), 0.99)
+            else:
+                c = min(mid + 0.01, 0.99)  # fallback: mid + 1¢
         else:
             p = 1.0 - prediction.predicted_prob    # P(NO settles)
-            c = min(1.0 - mid + 0.01, 0.99)        # cost of NO contract
+            # NO cost = 1 - yes_bid (what we pay to buy NO)
+            if market and market.no_ask is not None and float(market.no_ask) > 0:
+                c = min(float(market.no_ask), 0.99)
+            elif market and market.yes_bid is not None and float(market.yes_bid) > 0:
+                c = min(1.0 - float(market.yes_bid), 0.99)
+            else:
+                c = min(1.0 - mid + 0.01, 0.99)  # fallback
 
         # No edge or degenerate cost — skip
         if p <= c or c <= 0.01 or c >= 0.99:
@@ -1494,48 +1724,61 @@ class Frankenstein:
         # Clamp to [0, 1]
         return max(0.0, min(adjusted, 1.0))
 
-    def _compute_price(self, prediction: Prediction, features: MarketFeatures) -> int:
+    def _compute_price(self, prediction: Prediction, features: MarketFeatures,
+                        market: Market | None = None) -> int:
         """
         Compute optimal order price — spread-aware placement.
 
         Strategy for profitability:
+        - Use REAL bid/ask from the market when available
         - Always try to be maker (inside spread) to avoid paying spread
         - Confidence-aware: high confidence → cross spread for fill
         - Low confidence → post passive limit for better fill price
-        - Use actual bid/ask when available, not just midpoint math
         """
         mid = features.midpoint
         spread_cents = max(int(features.spread * 100), 1)
         confidence = prediction.confidence
 
+        # Extract real bid/ask when market data is available
+        if market:
+            real_yes_bid = float(market.yes_bid) if market.yes_bid is not None else None
+            real_yes_ask = float(market.yes_ask) if market.yes_ask is not None else None
+            real_no_bid = float(market.no_bid) if market.no_bid is not None else None
+            real_no_ask = float(market.no_ask) if market.no_ask is not None else None
+        else:
+            real_yes_bid = real_yes_ask = real_no_bid = real_no_ask = None
+
         if prediction.side == "yes":
-            bid = features.midpoint - features.spread / 2  # estimate yes_bid
-            ask = features.midpoint + features.spread / 2  # estimate yes_ask
+            bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - features.spread / 2)
+            ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + features.spread / 2)
 
             if spread_cents <= 2:
                 # Tight spread — take the ask for guaranteed fill
                 price_frac = min(ask, 0.99)
             elif confidence >= 0.75:
                 # High confidence — cross spread, get filled quickly
-                price_frac = min(mid + 0.01, 0.99)
+                price_frac = min(ask, 0.99)
             elif confidence >= 0.60:
-                # Medium confidence — place at midpoint
-                price_frac = mid
+                # Medium confidence — place inside the spread (bid + 1¢)
+                price_frac = min(bid + 0.01, ask)
             else:
-                # Lower confidence — be passive, place near bid
+                # Lower confidence — be passive, place at bid + 1¢
                 price_frac = max(bid + 0.01, 0.01)
         else:
-            # For NO contracts: we're buying NO, so our cost is (1 - yes_price)
-            no_mid = 1.0 - mid
-            no_bid = 1.0 - (mid + features.spread / 2)
-            no_ask = 1.0 - (mid - features.spread / 2)
+            # For NO contracts: use real no_bid/no_ask when available
+            if real_no_bid is not None and real_no_ask is not None and real_no_ask > 0:
+                no_bid = real_no_bid if real_no_bid > 0 else 0.01
+                no_ask = real_no_ask
+            else:
+                no_bid = 1.0 - (mid + features.spread / 2)
+                no_ask = 1.0 - (mid - features.spread / 2)
 
             if spread_cents <= 2:
                 price_frac = min(no_ask, 0.99)
             elif confidence >= 0.75:
-                price_frac = min(no_mid + 0.01, 0.99)
+                price_frac = min(no_ask, 0.99)
             elif confidence >= 0.60:
-                price_frac = no_mid
+                price_frac = min(no_bid + 0.01, no_ask)
             else:
                 price_frac = max(no_bid + 0.01, 0.01)
 
@@ -1641,6 +1884,16 @@ class Frankenstein:
             self._state.generation = self.learner.generation
             self._state.model_version = checkpoint.version
             self._state.last_retrain_time = time.time()
+
+        # Phase 18: Train category-specific specialist models
+        try:
+            cat_models = await self.learner.train_category_models()
+            if cat_models:
+                self._category_models = cat_models
+                log.info("category_models_updated", count=len(cat_models),
+                         categories=list(cat_models.keys()))
+        except Exception as e:
+            log.debug("category_model_training_error", error=str(e))
 
     async def _performance_task(self) -> None:
         """Periodic performance snapshot."""
@@ -1858,8 +2111,11 @@ class Frankenstein:
                             if isinstance(current_price, int):
                                 current_price = current_price / 100
                             
-                            # If price moved to extreme (>95¢ or <5¢), resolve
-                            if current_price >= 0.95:
+                            # If price moved to extreme (>99¢ or <1¢), resolve
+                            # Phase 5: Tightened from 95/5 → 99/1. The old
+                            # thresholds resolved trades too early when
+                            # markets were still in play, fabricating outcomes.
+                            if current_price >= 0.99:
                                 correct = trade.predicted_side == "yes"
                                 pnl_cents = (trade.count * 100 - trade.total_cost_cents) if correct else -trade.total_cost_cents
                                 self.memory.resolve_trade(
@@ -1870,7 +2126,7 @@ class Frankenstein:
                                 )
                                 resolved_count += 1
                                 continue
-                            elif current_price <= 0.05:
+                            elif current_price <= 0.01:
                                 correct = trade.predicted_side == "no"
                                 pnl_cents = (trade.count * 100 - trade.total_cost_cents) if correct else -trade.total_cost_cents
                                 self.memory.resolve_trade(
@@ -1903,6 +2159,19 @@ class Frankenstein:
 
     def _report_sports_outcome(self, trade: TradeRecord, pnl_cents: int) -> None:
         """FIX #7: Report trade outcome to sports monitor for performance tracking."""
+        # Phase 9: Update category win/loss tracking
+        try:
+            from app.frankenstein.categories import detect_category
+            cat = detect_category(trade.market_title or "", trade.category or "", ticker=trade.ticker)
+            if cat not in self._category_stats:
+                self._category_stats[cat] = {"wins": 0, "losses": 0}
+            if pnl_cents > 0:
+                self._category_stats[cat]["wins"] += 1
+            elif pnl_cents < 0:
+                self._category_stats[cat]["losses"] += 1
+        except Exception:
+            pass
+
         if not self._sports_monitor or not self._sports_detector:
             return
         try:
