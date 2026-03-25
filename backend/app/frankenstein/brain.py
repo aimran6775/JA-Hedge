@@ -271,6 +271,25 @@ class Frankenstein:
             name="frankenstein_scan",
         )
 
+        # DEPLOY PURGE: Clean poisoned bootstrap memory
+        # If FRANKENSTEIN_PURGE_ON_START is set, wipe all bootstrap data
+        # that was generated with settlement-price leakage.  One-time
+        # operation after deploying fixes.
+        import os
+        _purge_flag = os.environ.get("FRANKENSTEIN_PURGE_ON_START", "").strip().lower()
+        if _purge_flag in ("1", "true", "yes"):
+            log.warning("PURGE FLAG SET - wiping poisoned bootstrap data")
+            purge_result = self.memory.purge_bootstrap_data()
+            log.warning("PURGE COMPLETE", **purge_result)
+            try:
+                ckpt_dir = Path(self.config.checkpoint_dir)
+                if ckpt_dir.exists():
+                    for f in ckpt_dir.glob("*.pkl"):
+                        f.unlink()
+                    log.warning("OLD CHECKPOINTS DELETED - model will retrain from scratch")
+            except Exception as e:
+                log.error("checkpoint_purge_failed", error=str(e))
+
         # Try loading latest checkpoint before deciding to bootstrap
         self._try_load_latest_checkpoint()
 
@@ -874,7 +893,7 @@ class Frankenstein:
         trade_candidates.sort(key=lambda c: c["ev"], reverse=True)
         max_trades_per_scan = min(
             params.max_simultaneous_positions - self._count_open_positions(),
-            15,  # cap at 15 new trades per scan cycle — aggressive mode
+            5,  # cap at 5 new trades per scan - quality over quantity
         )
 
         # Debug: record scan state

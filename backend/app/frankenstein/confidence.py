@@ -32,12 +32,12 @@ log = get_logger("frankenstein.confidence")
 # ── Factor Weights (must sum to 1.0) ─────────────────────────────────────
 
 FACTOR_WEIGHTS = {
-    "model_strength": 0.25,
-    "edge_quality": 0.25,
-    "liquidity": 0.15,
-    "timing": 0.15,
-    "volume_signal": 0.10,
-    "risk_context": 0.10,
+    "model_strength": 0.30,    # Phase 17: Increase — model quality is most important
+    "edge_quality": 0.30,      # Phase 17: Increase — edge must be real
+    "liquidity": 0.20,         # Phase 17: Increase — can't profit in illiquid markets
+    "timing": 0.10,            # Phase 17: Decrease — less important
+    "volume_signal": 0.05,     # Phase 17: Decrease — weak signal
+    "risk_context": 0.05,      # Phase 17: Decrease — handled by risk manager
 }
 
 # ── Grade Thresholds ──────────────────────────────────────────────────────
@@ -284,36 +284,42 @@ class ConfidenceScorer:
         edge_abs = abs(prediction.edge)
         reasons = []
 
-        # Base score from edge magnitude
+        # Phase 17: Stricter edge scoring — need bigger edges
         if edge_abs >= 0.15:
             score = 95
             reasons.append(f"Large edge ({edge_abs:.1%})")
         elif edge_abs >= 0.10:
             score = 80
             reasons.append(f"Strong edge ({edge_abs:.1%})")
-        elif edge_abs >= 0.06:
+        elif edge_abs >= 0.08:
             score = 65
+            reasons.append(f"Good edge ({edge_abs:.1%})")
+        elif edge_abs >= 0.06:
+            score = 50
             reasons.append(f"Moderate edge ({edge_abs:.1%})")
         elif edge_abs >= 0.04:
-            score = 50
-            reasons.append(f"Small edge ({edge_abs:.1%})")
-        elif edge_abs >= 0.02:
             score = 30
-            reasons.append(f"Thin edge ({edge_abs:.1%})")
+            reasons.append(f"Small edge ({edge_abs:.1%})")
         else:
             score = 10
             reasons.append(f"Negligible edge ({edge_abs:.1%})")
 
-        # Penalize if edge is smaller than spread
-        if features.spread_pct > 0 and edge_abs < features.spread_pct:
-            penalty = min(20, (features.spread_pct - edge_abs) * 200)
+        # Phase 17: HARD penalty if edge < half-spread — this is the #1 killer
+        spread_cost = features.spread_pct / 2.0  # half-spread is real entry cost
+        if spread_cost > 0 and edge_abs < spread_cost:
+            # Edge doesn't even cover the spread — guaranteed loser
+            penalty = 40
             score -= penalty
-            reasons.append("Edge smaller than spread")
+            reasons.append(f"SPREAD EATS EDGE: edge {edge_abs:.1%} < half-spread {spread_cost:.1%}")
+        elif spread_cost > 0 and edge_abs < spread_cost * 1.5:
+            # Edge barely covers spread — thin margin
+            penalty = 20
+            score -= penalty
+            reasons.append(f"Thin margin: edge {edge_abs:.1%} vs half-spread {spread_cost:.1%}")
 
         # Bonus: edge relative to price (edge on cheap contracts is more valuable)
         mid = features.midpoint
         if mid > 0 and mid < 1:
-            # For a 10¢ contract with 5% edge, that's a 50% potential return
             cost = min(mid, 1 - mid)
             if cost > 0:
                 return_pct = edge_abs / cost

@@ -372,16 +372,15 @@ class XGBoostPredictor(PredictionModel):
         eval_split: float = 0.2,
         n_cv_folds: int = 3,
         hyperparam_trials: int = 8,
+        sample_weights: np.ndarray | None = None,
     ) -> dict[str, float]:
         """
         Train the XGBoost model with advanced techniques.
 
-        Improvements over v1:
-        - Time-series cross-validation (walk-forward, no look-ahead)
-        - Random search over hyperparameter space
-        - Class weighting for imbalanced datasets
-        - Sample weighting (recent trades weighted more)
-        - Selects best config from CV, then trains final model
+        Args:
+            sample_weights: Optional per-sample weights from memory (recency +
+                correctness).  If provided, these are used instead of the default
+                index-based exponential decay.  Shape must be (n_samples,).
         """
         import xgboost as xgb
         import random as rng
@@ -394,25 +393,38 @@ class XGBoostPredictor(PredictionModel):
         neg_count = max(n_samples - pos_count, 1)
         scale_pos_weight = float(neg_count / pos_count)
 
-        # Sample weights: exponential recency weighting (newer = more important)
-        sample_weights = np.exp(np.linspace(-1.0, 0.0, n_samples - n_val))
+        # Sample weights: use external weights if provided, else fall back
+        # to naive exponential recency (index-based).
+        if sample_weights is not None and len(sample_weights) == n_samples:
+            _all_weights = sample_weights
+        else:
+            _all_weights = np.exp(np.linspace(-1.0, 0.0, n_samples))
+
+        # Split weights for train/val like we split X/y
+        _train_weights = _all_weights[:n_samples - n_val]
 
         # Hyperparameter search space (prediction-market-optimized)
+        # Key insight: with small datasets (<500 samples), heavy
+        # regularization prevents overfitting.  Shallow trees (3-5)
+        # generalize better.  Lower learning rates need more rounds
+        # but produce smoother probability surfaces.
         def _random_params() -> dict:
             return {
                 "objective": "binary:logistic",
-                "eval_metric": "auc",
-                "max_depth": rng.choice([3, 4, 5, 6, 7, 8]),
-                "learning_rate": rng.choice([0.01, 0.02, 0.03, 0.05, 0.08, 0.1]),
-                "subsample": rng.uniform(0.6, 0.9),
-                "colsample_bytree": rng.uniform(0.5, 0.9),
-                "colsample_bylevel": rng.uniform(0.6, 1.0),
-                "min_child_weight": rng.choice([1, 3, 5, 7, 10]),
-                "gamma": rng.choice([0.0, 0.05, 0.1, 0.2, 0.5]),
-                "reg_alpha": rng.choice([0.0, 0.01, 0.05, 0.1, 0.5, 1.0]),
-                "reg_lambda": rng.choice([0.5, 1.0, 2.0, 5.0]),
+                # Track both AUC (ranking) and logloss (calibration).
+                # XGBoost uses the LAST metric for early stopping.
+                "eval_metric": ["logloss", "auc"],
+                "max_depth": rng.choice([3, 4, 5, 6]),  # shallower — less overfit
+                "learning_rate": rng.choice([0.01, 0.02, 0.03, 0.05]),  # slower — smoother
+                "subsample": rng.uniform(0.6, 0.85),
+                "colsample_bytree": rng.uniform(0.5, 0.85),
+                "colsample_bylevel": rng.uniform(0.6, 0.95),
+                "min_child_weight": rng.choice([3, 5, 7, 10, 15]),  # higher — prevent rare splits
+                "gamma": rng.choice([0.1, 0.2, 0.5, 1.0]),  # higher — prune weak splits
+                "reg_alpha": rng.choice([0.01, 0.1, 0.5, 1.0, 2.0]),  # L1 — feature selection
+                "reg_lambda": rng.choice([1.0, 2.0, 5.0, 10.0]),  # L2 — weight decay
                 "scale_pos_weight": scale_pos_weight,
-                "max_delta_step": rng.choice([0, 1, 3]),
+                "max_delta_step": rng.choice([1, 3, 5]),  # >0 helps imbalanced sets
                 "seed": 42,
             }
 
@@ -439,8 +451,8 @@ class XGBoostPredictor(PredictionModel):
                 if len(X_va) < 2 or len(X_tr) < 5:
                     continue
 
-                # Apply recency weights to training data
-                w_tr = np.exp(np.linspace(-1.0, 0.0, len(X_tr)))
+                # Use the real sample weights for this fold's training slice
+                w_tr = _all_weights[:train_end]
                 dtrain = xgb.DMatrix(X_tr, label=y_tr, weight=w_tr,
                                      feature_names=self._feature_names)
                 dval = xgb.DMatrix(X_va, label=y_va,
@@ -456,6 +468,7 @@ class XGBoostPredictor(PredictionModel):
                         evals_result=evals_result,
                         verbose_eval=False,
                     )
+                    # eval_metric is ["logloss", "auc"] — use AUC for comparison
                     fold_auc = evals_result["val"]["auc"][-1]
                     fold_aucs.append(fold_auc)
                 except Exception:
@@ -470,13 +483,16 @@ class XGBoostPredictor(PredictionModel):
         # Final training with best params on full train set
         if best_params is None:
             best_params = _random_params()
-            best_params["max_depth"] = 5
+            best_params["max_depth"] = 4
             best_params["learning_rate"] = 0.03
+            best_params["min_child_weight"] = 7
+            best_params["gamma"] = 0.5
+            best_params["reg_lambda"] = 5.0
 
         X_train, X_val = X[:-n_val], X[-n_val:]
         y_train, y_val = y[:-n_val], y[-n_val:]
 
-        dtrain = xgb.DMatrix(X_train, label=y_train, weight=sample_weights,
+        dtrain = xgb.DMatrix(X_train, label=y_train, weight=_train_weights,
                              feature_names=self._feature_names)
         dval = xgb.DMatrix(X_val, label=y_val, feature_names=self._feature_names)
 
@@ -503,6 +519,25 @@ class XGBoostPredictor(PredictionModel):
             "best_depth": best_params.get("max_depth", 0),
             "best_lr": best_params.get("learning_rate", 0),
         }
+
+        # Track feature importance for monitoring
+        try:
+            importance = self._model.get_score(importance_type="gain")
+            total_imp = sum(importance.values()) or 1.0
+            top_feats = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:10]
+            metrics["top_features"] = {k: round(v / total_imp, 4) for k, v in top_feats}
+            metrics["features_used"] = len(importance)
+            metrics["features_total"] = X.shape[1]
+            # Detect leakage: if any single feature has >30% importance, flag it
+            if top_feats and (top_feats[0][1] / total_imp) > 0.30:
+                log.warning(
+                    "⚠️ POSSIBLE FEATURE LEAKAGE",
+                    feature=top_feats[0][0],
+                    importance=f"{top_feats[0][1] / total_imp:.1%}",
+                )
+                metrics["leakage_warning"] = top_feats[0][0]
+        except Exception:
+            pass
 
         log.info("xgb_v2_trained", **{k: f"{v:.4f}" if isinstance(v, float) else v for k, v in metrics.items()})
         return metrics
@@ -629,17 +664,14 @@ class XGBoostPredictor(PredictionModel):
         Market-efficient heuristic for when no trained model is available.
 
         KEY PRINCIPLE: The market price IS the best estimator. Prediction
-        markets are near-efficient -- our heuristic should produce SMALL
-        adjustments (2-8%), not massive swings. A heuristic claiming 30%
+        markets are near-efficient -- our heuristic should produce TINY
+        adjustments (1-5%), not big swings. A heuristic claiming 20%
         edge over the market is wrong, not smart.
 
-        Signals (all with small amplitude):
-          1. Time-weighted convergence (near expiry -> trust the price)
-          2. Momentum (recent price movement direction)
-          3. Volume confirmation
-          4. Spread penalty (wide spread -> less confident)
-          5. RSI oversold/overbought
-          6. MACD crossover
+        Phase 18: DRAMATICALLY reduced max adjustment from ±20% to ±5%.
+        Without a trained ML model, we have almost no edge. The heuristic
+        exists to allow the system to collect training data, not to
+        generate alpha.
         """
         mid = features.midpoint
         if mid <= 0 or mid >= 1:
@@ -649,74 +681,71 @@ class XGBoostPredictor(PredictionModel):
         base_prob = mid
 
         # -- Signal 1: Time-weighted market trust --
-        # Near expiry, market converges to truth -- our edge shrinks
         if features.hours_to_expiry > 0:
             time_trust = 1.0 / (1.0 + 0.1 * features.hours_to_expiry)
         else:
             time_trust = 0.95
 
-        # -- Signal 2: Momentum (SMALL adjustments only) --
-        # Max contribution: +-3%
+        # -- Signal 2: Momentum (TINY adjustments only) --
+        # Phase 18: Max contribution: +-1.5% (was +-3%)
         momentum_adj = 0.0
         if features.price_change_5m > 0.015:
-            momentum_adj = min(features.price_change_5m * 1.0, 0.03)
+            momentum_adj = min(features.price_change_5m * 0.5, 0.015)
         elif features.price_change_5m < -0.015:
-            momentum_adj = max(features.price_change_5m * 1.0, -0.03)
+            momentum_adj = max(features.price_change_5m * 0.5, -0.015)
         elif features.price_change_1m > 0.008:
-            momentum_adj = min(features.price_change_1m * 0.8, 0.015)
+            momentum_adj = min(features.price_change_1m * 0.4, 0.008)
         elif features.price_change_1m < -0.008:
-            momentum_adj = max(features.price_change_1m * 0.8, -0.015)
+            momentum_adj = max(features.price_change_1m * 0.4, -0.008)
 
         # -- Signal 3: Convergence boost near expiry --
-        # Max contribution: +-2%
+        # Phase 18: Max contribution: +-1% (was +-2%)
         convergence_adj = 0.0
         if features.hours_to_expiry < 12:
             dist = abs(mid - 0.5)
             if dist > 0.30:
                 direction = 1.0 if mid > 0.5 else -1.0
-                convergence_adj = direction * dist * time_trust * 0.06
+                convergence_adj = direction * dist * time_trust * 0.03
 
         # -- Signal 4: Volume confirmation --
-        # Max contribution: +-1.5%
+        # Phase 18: Max contribution: +-0.8% (was +-1.5%)
         volume_adj = 0.0
         if features.volume_ratio > 1.5 and abs(features.price_change_5m) > 0.01:
-            volume_adj = features.price_change_5m * 0.3 * min(features.volume_ratio / 3.0, 1.0)
-            volume_adj = max(-0.015, min(0.015, volume_adj))
+            volume_adj = features.price_change_5m * 0.15 * min(features.volume_ratio / 3.0, 1.0)
+            volume_adj = max(-0.008, min(0.008, volume_adj))
 
         # -- Signal 5: RSI-based adjustment --
-        # Max contribution: +-1.5%
+        # Phase 18: Max contribution: +-1% (was +-1.5%)
         rsi_adj = 0.0
         if features.rsi_14 > 0:
             if features.rsi_14 > 70 and features.hours_to_expiry < 48:
-                rsi_adj = 0.03    # overbought near expiry -> likely YES
-            elif features.rsi_14 < 30 and features.hours_to_expiry < 48:
-                rsi_adj = -0.03   # oversold near expiry -> likely NO
-            elif features.rsi_14 > 70 and features.hours_to_expiry >= 48:
-                rsi_adj = -0.01   # overbought far -> possible reversion
-            elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
                 rsi_adj = 0.01
+            elif features.rsi_14 < 30 and features.hours_to_expiry < 48:
+                rsi_adj = -0.01
+            elif features.rsi_14 > 70 and features.hours_to_expiry >= 48:
+                rsi_adj = -0.005
+            elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
+                rsi_adj = 0.005
 
         # -- Signal 6: MACD crossover --
-        # Max contribution: +-1.5%
+        # Phase 18: Max contribution: +-0.8% (was +-1.5%)
         macd_adj = 0.0
         if features.macd != 0:
             if features.macd > 0.02:
-                macd_adj = min(features.macd * 0.4, 0.03)
+                macd_adj = min(features.macd * 0.2, 0.008)
             elif features.macd < -0.02:
-                macd_adj = max(features.macd * 0.4, -0.03)
+                macd_adj = max(features.macd * 0.2, -0.008)
 
-        # -- Phase 8: Signal weights are now amplified (see uncap patch)
-        # The regime is detected at scan-loop level and used for
-        # category-level edge adjustments in brain.py
-        # -- Combine signals (total max swing: +-8%) --
+        # -- Combine signals --
         signal_weight = max(0.30, 1.0 - time_trust * 0.5)
         total_adjustment = (
             signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
             + convergence_adj
         )
 
-        # Hard cap total heuristic adjustment at +-20%
-        total_adjustment = max(-0.20, min(0.20, total_adjustment))
+        # Phase 18: Hard cap total heuristic adjustment at +-5% (was +-20%)
+        # Without ML, we have almost zero edge. Be humble.
+        total_adjustment = max(-0.05, min(0.05, total_adjustment))
 
         prob_yes = base_prob + total_adjustment
 
@@ -728,8 +757,8 @@ class XGBoostPredictor(PredictionModel):
         prob_yes = max(0.05, min(0.95, prob_yes))
         pred = self._build_prediction(
             prob_yes, features,
-            prediction_std=0.15,  # high uncertainty for heuristic
-            tree_agreement=0.3,   # low agreement -- no real model
+            prediction_std=0.20,  # Phase 18: even higher uncertainty for heuristic (was 0.15)
+            tree_agreement=0.20,  # Phase 18: lower agreement — no real model (was 0.3)
         )
-        pred.raw_prob = prob_yes  # heuristic: raw = predicted
+        pred.raw_prob = prob_yes
         return pred

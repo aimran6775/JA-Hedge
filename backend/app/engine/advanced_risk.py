@@ -32,24 +32,24 @@ log = get_logger("engine.advanced_risk")
 class PortfolioRiskLimits:
     """Enhanced risk limits for the whole portfolio."""
 
-    # Position limits
-    max_positions: int = 100                   # total open positions
-    max_per_event: int = 8                     # max positions in one event
-    max_per_category: int = 20                 # max positions in one category
-    max_portfolio_cost_cents: int = 3000_00    # $3000 total deployed
+    # Position limits — Phase 19: MUCH tighter
+    max_positions: int = 30                    # Phase 19: was 100 — fewer concurrent trades
+    max_per_event: int = 3                     # Phase 19: was 8 — don't overload one event
+    max_per_category: int = 10                 # Phase 19: was 20 — diversify
+    max_portfolio_cost_cents: int = 1500_00    # Phase 19: $1500 max deployed (was $3000) — 15% of $10k
 
-    # Loss limits
-    max_daily_loss_cents: int = 300_00         # $300 daily loss trigger
-    max_weekly_loss_cents: int = 800_00        # $800 weekly loss trigger
-    max_drawdown_pct: float = 0.30             # 30% max drawdown from peak
+    # Loss limits — Phase 19: tighter triggers
+    max_daily_loss_cents: int = 150_00         # Phase 19: $150 daily loss (was $300)
+    max_weekly_loss_cents: int = 400_00        # Phase 19: $400 weekly loss (was $800)
+    max_drawdown_pct: float = 0.15             # Phase 19: 15% max drawdown (was 30%)
 
     # Dynamic sizing
-    scale_down_on_loss: bool = True            # reduce sizes when losing
-    scale_factor_per_loss_pct: float = 2.0     # 2x reduction per % of drawdown
+    scale_down_on_loss: bool = True
+    scale_factor_per_loss_pct: float = 3.0     # Phase 19: 3x reduction per % drawdown (was 2x)
 
-    # Concentration
-    max_single_position_pct: float = 0.35      # max 35% of portfolio in one position
-    max_correlated_exposure_pct: float = 0.60  # max 60% in correlated positions
+    # Concentration — Phase 19: tighter
+    max_single_position_pct: float = 0.10      # Phase 19: max 10% in one position (was 35%)
+    max_correlated_exposure_pct: float = 0.30  # Phase 19: max 30% in correlated (was 60%)
 
 
 @dataclass
@@ -158,26 +158,28 @@ class AdvancedRiskManager:
         """
         Scale Kelly fraction based on current portfolio state.
 
-        Reduces sizing when:
-        - In drawdown
-        - Many positions open
-        - High correlated exposure
+        Phase 20: More aggressive scaling down. Reduces sizing when:
+        - In drawdown (trigger at 5% instead of 10%)
+        - Many positions open (trigger at 15 instead of 50)
+        - Cap Kelly at 20% regardless of input
         """
+        # Phase 20: Hard cap Kelly at 20% — no matter what the raw calc says
+        kelly = min(raw_kelly, 0.20)
         scale = 1.0
 
-        # Drawdown scaling — gentler: only reduce at significant drawdowns
+        # Drawdown scaling — Phase 20: trigger earlier at 5% (was 10%)
         if self._limits.scale_down_on_loss and self._peak_equity_cents > 0:
             equity = self._current_equity_cents()
             drawdown_pct = max(0, (self._peak_equity_cents - equity) / self._peak_equity_cents)
-            if drawdown_pct > 0.10:  # >10% drawdown before scaling
-                scale *= max(0.4, 1.0 - (drawdown_pct - 0.10) * self._limits.scale_factor_per_loss_pct)
+            if drawdown_pct > 0.05:
+                scale *= max(0.3, 1.0 - (drawdown_pct - 0.05) * self._limits.scale_factor_per_loss_pct)
 
-        # Position count scaling — much gentler, starts at 50
+        # Position count scaling — Phase 20: start reducing at 15 positions (was 50)
         n_positions = len(self._position_risks)
-        if n_positions > 50:
-            scale *= max(0.5, 1.0 - (n_positions - 50) * 0.01)
+        if n_positions > 15:
+            scale *= max(0.4, 1.0 - (n_positions - 15) * 0.03)
 
-        return raw_kelly * scale
+        return kelly * scale
 
     # ── Position Tracking ─────────────────────────────────────────────
 

@@ -57,12 +57,38 @@ def _features_from_market(m: Market, *, jitter: bool = True) -> MarketFeatures:
     vol_int = m.volume_int or 0
     oi = float(m.open_interest) if m.open_interest is not None else 0.0
 
-    # For settled markets, approximate bid/ask from last price
-    if yes_bid == 0 and yes_ask == 0 and last > 0:
-        yes_bid = max(0.01, last - 0.02)
-        yes_ask = min(0.99, last + 0.02)
+    # For settled markets, approximate bid/ask — BUT NOT from last_price!
+    # last_price on settled markets ≈ settlement price, which leaks the
+    # outcome into features (Bug 2: midpoint, implied_prob, log_odds, etc.
+    # all encode the answer).
+    #
+    # Instead, generate a realistic pre-settlement price: a weak
+    # directional bias toward the actual outcome, but centered in the
+    # tradeable range where Frankenstein actually operates (30-70¢).
+    if yes_bid == 0 and yes_ask == 0:
+        # Determine if we know the result (for directional bias)
+        result_hint = None
+        if last > 0.90:
+            result_hint = "yes"
+        elif last < 0.10:
+            result_hint = "no"
+
+        # Generate a realistic mid-range price
+        base = random.uniform(0.30, 0.70)
+        if result_hint == "yes":
+            base += random.uniform(0.0, 0.12)  # slight YES bias
+        elif result_hint == "no":
+            base -= random.uniform(0.0, 0.12)  # slight NO bias
+        base = max(0.15, min(0.85, base))
+
+        # Build synthetic bid/ask with realistic spread
+        synthetic_spread = random.uniform(0.02, 0.08)
+        yes_bid = max(0.05, base - synthetic_spread / 2)
+        yes_ask = min(0.95, base + synthetic_spread / 2)
         no_bid = max(0.01, 1.0 - yes_ask)
         no_ask = min(0.99, 1.0 - yes_bid)
+        # Override last to match our synthetic price (not the settlement)
+        last = base
 
     mid = (yes_bid + yes_ask) / 2 if (yes_bid + yes_ask) > 0 else last
     spread = yes_ask - yes_bid if yes_ask > yes_bid else 0.04
@@ -266,6 +292,7 @@ async def bootstrap_from_settled_markets(
                 order_id=f"bootstrap-{mkt.ticker}",
                 model_version="bootstrap_v0",
             )
+            record.source = "bootstrap"  # tag for down-weighting in training
 
             # Immediately resolve with known outcome
             correct = side == result_str
@@ -376,6 +403,7 @@ async def bootstrap_from_active_markets(
                 order_id=f"bootstrap-active-{m.ticker}",
                 model_version="bootstrap_active_v0",
             )
+            record.source = "bootstrap_active"  # tag for down-weighting in training
 
             correct = side == result_str
             pnl_cents = (100 - price_cents) if correct else -price_cents

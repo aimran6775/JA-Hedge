@@ -65,9 +65,10 @@ class OnlineLearner:
         model: XGBoostPredictor,
         memory: TradeMemory,
         *,
-        min_samples: int = 30,                # Phase 15: train with less data
-        retrain_threshold: int = 15,         # Phase 15: retrain every 15 resolved trades
-        challenger_must_beat_by: float = 0.005, # Phase 15: lower bar for promotion
+        min_samples: int = 20,                # Phase 14: train with less data (was 30)
+        retrain_threshold: int = 10,           # Phase 14: retrain every 10 trades (was 15)
+        challenger_must_beat_by: float = 0.002, # Phase 14: easier promotion (was 0.005)
+        min_auc_to_deploy: float = 0.535,      # Refuse models barely above coin flip — need real edge
         checkpoint_dir: str = "data/models",
         max_checkpoints: int = 10,
     ):
@@ -76,6 +77,7 @@ class OnlineLearner:
         self.min_samples = min_samples
         self.retrain_threshold = retrain_threshold
         self.challenger_must_beat_by = challenger_must_beat_by
+        self.min_auc_to_deploy = min_auc_to_deploy
         self.checkpoint_dir = checkpoint_dir
         self.max_checkpoints = max_checkpoints
 
@@ -129,12 +131,18 @@ class OnlineLearner:
             log.info("retrain_skipped", reason="insufficient_total_data")
             return None
 
-        X, y = data
+        # Phase 16: memory now returns (X, y, sample_weights)
+        if len(data) == 3:
+            X, y, sample_weights = data
+        else:
+            X, y = data
+            sample_weights = None
         log.info(
             "retrain_starting",
             samples=len(X),
             positive_rate=f"{y.mean():.3f}",
             generation=self._generation + 1,
+            has_sample_weights=sample_weights is not None,
         )
 
         # Train challenger
@@ -146,7 +154,8 @@ class OnlineLearner:
                 early_stopping_rounds=30,
                 eval_split=0.2,
                 n_cv_folds=3,
-                hyperparam_trials=8,
+                hyperparam_trials=12,   # more trials → better hyperparams
+                sample_weights=sample_weights,
             )
         except Exception as e:
             log.error("retrain_failed", error=str(e))
@@ -179,6 +188,15 @@ class OnlineLearner:
 
     def _should_promote(self, challenger: ModelCheckpoint) -> bool:
         """Decide if the challenger model should replace the champion."""
+        # Phase 15: NEVER deploy a model below minimum AUC
+        if challenger.val_auc < self.min_auc_to_deploy:
+            log.warning(
+                "challenger_below_min_auc",
+                challenger_auc=f"{challenger.val_auc:.4f}",
+                min_required=f"{self.min_auc_to_deploy:.4f}",
+            )
+            return False
+
         # Always promote if no champion exists
         if self._champion is None:
             return True

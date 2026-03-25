@@ -101,6 +101,9 @@ class TradeRecord:
     # Multi-factor confidence breakdown (Phase 11)
     confidence_breakdown: dict[str, Any] = field(default_factory=dict)
 
+    # Data provenance — distinguish bootstrap vs live trades
+    source: str = "live"  # "live", "bootstrap", "bootstrap_active"
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize for JSON storage."""
         d = {}
@@ -311,13 +314,18 @@ class TradeMemory:
         min_trades: int = 50,
         only_resolved: bool = True,
         max_age_hours: float = 0,  # 0 = no limit
-    ) -> tuple[np.ndarray, np.ndarray] | None:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
         """
         Extract feature matrix X and labels y for model retraining.
 
         Labels: 1.0 if market resolved YES, 0.0 if NO.
         This teaches the model P(YES settles) — the actual outcome —
         instead of the circular "was my prediction correct".
+
+        Phase 16: Also returns sample weights that emphasize:
+        - Recent trades (exponential recency)
+        - Trades where we were CORRECT (reward good signals)
+        - High-confidence trades that resolved (calibration feedback)
         """
         now = time.time()
         records = []
@@ -373,7 +381,50 @@ class TradeMemory:
             samples=len(records),
             positive_rate=f"{y.mean():.3f}",
         )
-        return X, y
+
+        # Phase 16: compute sample weights
+        # Emphasize recent trades and those where we were correct
+        # Down-weight bootstrap data once real trades accumulate
+        real_count = sum(1 for r in records if r.source == "live")
+        weights = np.ones(len(records), dtype=np.float32)
+        for i, r in enumerate(records):
+            # Recency: exponential decay, trades in last 24h get full weight
+            age_hours = (now - r.timestamp) / 3600.0
+            recency_weight = np.exp(-age_hours / 72.0)  # half-life ~72h
+            weights[i] *= max(recency_weight, 0.3)  # floor at 30%
+
+            # Correctness bonus: trades where our prediction was right
+            # get 1.5x weight — reinforces good signal patterns
+            if r.was_correct is True:
+                weights[i] *= 1.5
+            # Wrong predictions still train normally (weight=1.0)
+
+            # Bootstrap down-weighting: once we have enough real trades,
+            # bootstrap data becomes less valuable (and potentially harmful
+            # if it contains feature leakage from settlement prices).
+            if r.source in ("bootstrap", "bootstrap_active"):
+                if real_count >= 200:
+                    weights[i] = 0.0  # exclude entirely
+                elif real_count >= 50:
+                    weights[i] *= 0.2  # heavy discount
+                else:
+                    weights[i] *= 0.5  # moderate discount even early
+
+        # Normalize so weights average to 1.0
+        # First, filter out zero-weight samples (excluded bootstrap)
+        nonzero_mask = weights > 0
+        if nonzero_mask.sum() < min_trades:
+            # Not enough non-bootstrap data yet, keep everything
+            pass
+        else:
+            X = X[nonzero_mask]
+            y = y[nonzero_mask]
+            weights = weights[nonzero_mask]
+
+        if weights.sum() > 0:
+            weights = weights * (len(weights) / weights.sum())
+
+        return X, y, weights
 
     def get_recent_trades(self, n: int = 100, ticker: str | None = None) -> list[TradeRecord]:
         """Get most recent N trades, optionally filtered by ticker."""
@@ -492,3 +543,67 @@ class TradeMemory:
         self.total_wins = 0
         self.total_losses = 0
         log.warning("memory_cleared")
+
+    def purge_bootstrap_data(self) -> dict[str, Any]:
+        """Remove all bootstrap/synthetic records from memory.
+
+        Used after deploying fixes to clear poisoned training data that
+        was generated with settlement-price leakage.  Keeps all live trades.
+        """
+        before = len(self._trades)
+
+        # Partition into keep / remove
+        kept: deque[TradeRecord] = deque(maxlen=self.max_trades)
+        kept_important: list[TradeRecord] = []
+        removed = 0
+
+        for t in self._trades:
+            is_bootstrap = (
+                getattr(t, 'source', '') in ('bootstrap', 'bootstrap_active')
+                or (t.model_version or '').startswith('bootstrap')
+            )
+            if is_bootstrap:
+                removed += 1
+            else:
+                kept.append(t)
+
+        for t in self._important_trades:
+            is_bootstrap = (
+                getattr(t, 'source', '') in ('bootstrap', 'bootstrap_active')
+                or (t.model_version or '').startswith('bootstrap')
+            )
+            if not is_bootstrap:
+                kept_important.append(t)
+
+        self._trades = kept
+        self._important_trades = kept_important
+
+        # Rebuild all indexes from scratch
+        self._rebuild_indexes()
+        self.save()
+
+        after = len(self._trades)
+        log.warning("bootstrap_data_purged", removed=removed, remaining=after)
+        return {"removed": removed, "remaining": after, "before": before}
+
+    def _rebuild_indexes(self) -> None:
+        """Rebuild all indexes and counters from the trades list."""
+        self._by_ticker.clear()
+        self._by_outcome = {o: 0 for o in TradeOutcome}
+        self._pending_trades.clear()
+        self.total_recorded = len(self._trades)
+        self.total_resolved = 0
+        self.total_wins = 0
+        self.total_losses = 0
+
+        for t in self._trades:
+            self._by_ticker.setdefault(t.ticker, []).append(t.trade_id)
+            self._by_outcome[t.outcome] = self._by_outcome.get(t.outcome, 0) + 1
+            if t.outcome == TradeOutcome.PENDING:
+                self._pending_trades[t.trade_id] = t
+            elif t.outcome not in (TradeOutcome.CANCELLED,):
+                self.total_resolved += 1
+            if t.outcome == TradeOutcome.WIN:
+                self.total_wins += 1
+            elif t.outcome == TradeOutcome.LOSS:
+                self.total_losses += 1
