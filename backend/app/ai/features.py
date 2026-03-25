@@ -76,6 +76,13 @@ class MarketFeatures:
     hour_of_day: int = 0
     day_of_week: int = 0
     is_market_hours: bool = True
+    # Cyclical time encoding (XGBoost doesn't know hour 23 ≈ hour 0)
+    hour_sin: float = 0.0
+    hour_cos: float = 1.0
+    dow_sin: float = 0.0
+    dow_cos: float = 1.0
+    # Cross-market: probability sum of sibling markets in same event
+    event_prob_sum: float = 1.0  # =1.0 means no arb; >1.0 or <1.0 = mispricing
 
     # Probability features
     implied_prob: float = 0.5  # midpoint as probability
@@ -157,6 +164,11 @@ class MarketFeatures:
                 self.time_decay_factor,
                 self.hour_of_day,
                 self.day_of_week,
+                self.hour_sin,
+                self.hour_cos,
+                self.dow_sin,
+                self.dow_cos,
+                self.event_prob_sum,
                 self.implied_prob,
                 self.prob_distance_from_50,
                 float(self.extreme_prob),
@@ -209,6 +221,8 @@ class MarketFeatures:
             "volume", "volume_ma_5", "volume_ratio", "open_interest",
             "oi_change", "book_imbalance", "hours_to_expiry",
             "time_decay_factor", "hour_of_day", "day_of_week",
+            "hour_sin", "hour_cos", "dow_sin", "dow_cos",
+            "event_prob_sum",
             "implied_prob", "prob_distance_from_50", "extreme_prob",
             "convergence_rate", "normalized_time", "price_time_signal",
             "info_rate", "spread_time_ratio", "log_odds",
@@ -444,6 +458,15 @@ class FeatureEngine:
 
         features.hour_of_day = now.hour
         features.day_of_week = now.weekday()
+
+        # Cyclical time encoding: sin/cos so XGBoost knows hour 23 ≈ hour 0
+        features.hour_sin = math.sin(2.0 * math.pi * now.hour / 24.0)
+        features.hour_cos = math.cos(2.0 * math.pi * now.hour / 24.0)
+        features.dow_sin = math.sin(2.0 * math.pi * now.weekday() / 7.0)
+        features.dow_cos = math.cos(2.0 * math.pi * now.weekday() / 7.0)
+
+        # Cross-market event probability sum (populated externally by brain)
+        # Default 1.0 = no mispricing detected
 
         # Probability features
         features.implied_prob = mid

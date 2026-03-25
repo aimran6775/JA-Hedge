@@ -90,22 +90,25 @@ class CalibrationTracker:
     Tracks predicted-vs-actual outcomes to measure and correct
     model calibration.
 
-    Uses histogram binning: predictions are binned into N buckets,
-    and for each bucket we track the actual hit rate.  When enough
-    data accumulates, we shift future predictions to match the
-    observed empirical rate (isotonic-lite correction).
+    Uses 20-bin histogram with isotonic monotonicity enforcement.
+    More bins = finer calibration, which matters when the typical
+    edge is only 5-10%.  After enough samples, the calibration map
+    is forced to be monotonically non-decreasing (isotonic) so that
+    higher predicted probabilities always map to higher calibrated ones.
     """
 
-    N_BINS = 10
-    MIN_SAMPLES_PER_BIN = 5   # need at least 5 observations to trust a bin
+    N_BINS = 20               # 5pp granularity (was 10 → 10pp, too coarse)
+    MIN_SAMPLES_PER_BIN = 3   # need at least 3 observations to trust a bin
     MIN_TOTAL_SAMPLES = 30    # need 30 total before calibration kicks in
 
     def __init__(self) -> None:
-        self._bin_counts = np.zeros(self.N_BINS, dtype=np.int64)   # predictions in each bin
-        self._bin_positives = np.zeros(self.N_BINS, dtype=np.int64)  # actual YES outcomes
-        self._bin_pred_sum = np.zeros(self.N_BINS, dtype=np.float64)  # sum of predicted probs per bin
+        self._bin_counts = np.zeros(self.N_BINS, dtype=np.int64)
+        self._bin_positives = np.zeros(self.N_BINS, dtype=np.int64)
+        self._bin_pred_sum = np.zeros(self.N_BINS, dtype=np.float64)
         self._total_samples = 0
-        self._ece: float = 0.0  # Expected Calibration Error
+        self._ece: float = 0.0
+        # Isotonic calibration map: bin_index → calibrated probability
+        self._isotonic_map: np.ndarray | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -135,9 +138,10 @@ class CalibrationTracker:
         self._bin_pred_sum[idx] += predicted_prob
         self._total_samples += 1
 
-        # Re-compute ECE every 10 samples
+        # Re-compute ECE and isotonic map every 10 samples
         if self._total_samples % 10 == 0:
             self._recompute_ece()
+            self._recompute_isotonic()
 
     def _recompute_ece(self) -> None:
         """Recompute Expected Calibration Error."""
@@ -152,27 +156,74 @@ class CalibrationTracker:
             ece += weight * abs(actual_rate - avg_pred)
         self._ece = ece
 
+    def _recompute_isotonic(self) -> None:
+        """Build isotonic (monotonically non-decreasing) calibration map.
+
+        Pool-Adjacent-Violators (PAV) algorithm — O(N_BINS) and
+        guarantees monotonicity without needing sklearn.
+        """
+        raw_rates = np.full(self.N_BINS, np.nan)
+        for i in range(self.N_BINS):
+            if self._bin_counts[i] >= self.MIN_SAMPLES_PER_BIN:
+                raw_rates[i] = self._bin_positives[i] / self._bin_counts[i]
+
+        # Forward-fill NaN bins from neighbors
+        filled = raw_rates.copy()
+        last_valid = 0.0
+        for i in range(self.N_BINS):
+            if not np.isnan(filled[i]):
+                last_valid = filled[i]
+            else:
+                filled[i] = last_valid
+
+        # PAV: enforce monotonicity
+        iso = filled.copy()
+        i = 0
+        while i < self.N_BINS:
+            j = i
+            # Find block that needs averaging
+            while j < self.N_BINS - 1 and iso[j] > iso[j + 1]:
+                j += 1
+            if j > i:
+                # Average the block to make it monotone
+                block_avg = np.mean(iso[i:j + 1])
+                iso[i:j + 1] = block_avg
+            i = j + 1
+
+        self._isotonic_map = iso
+
     def calibrate(self, prob: float) -> float:
         """
-        Adjust a raw model probability using observed calibration data.
+        Adjust a raw model probability using isotonic calibration.
 
-        If calibration data is insufficient, returns the raw probability.
-        Uses isotonic-lite: within a populated bin, shift the prediction
-        toward the observed hit rate.
+        Uses the precomputed isotonic map for monotone correction,
+        with linear interpolation between bin centers.
         """
         if not self.is_ready:
             return prob
 
+        # Use isotonic map if available
+        if self._isotonic_map is not None:
+            idx = self._bin_index(prob)
+            # Linear interpolation between adjacent bins
+            bin_center = (idx + 0.5) / self.N_BINS
+            if idx < self.N_BINS - 1:
+                next_center = (idx + 1.5) / self.N_BINS
+                t = (prob - bin_center) / (next_center - bin_center)
+                t = max(0.0, min(1.0, t))
+                adjusted = self._isotonic_map[idx] * (1 - t) + self._isotonic_map[idx + 1] * t
+            else:
+                adjusted = float(self._isotonic_map[idx])
+            return max(0.01, min(0.99, adjusted))
+
+        # Fallback to per-bin blending
         idx = self._bin_index(prob)
         if self._bin_counts[idx] < self.MIN_SAMPLES_PER_BIN:
             return prob
 
         actual_rate = float(self._bin_positives[idx] / self._bin_counts[idx])
-
-        # Blend raw prediction toward observed actual rate
-        # Weight the adjustment by sample confidence
         n = self._bin_counts[idx]
-        blend_weight = min(n / (n + 20), 0.7)  # max 70% correction
+        blend_weight = min(n / (n + 20), 0.7)
         adjusted = prob + blend_weight * (actual_rate - prob)
         return max(0.01, min(0.99, adjusted))
 
