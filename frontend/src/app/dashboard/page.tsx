@@ -56,12 +56,13 @@ export default function DashboardPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [frank, setFrank] = useState<FrankensteinStatus | null>(null);
   const [trades, setTrades] = useState<FrankensteinTrade[]>([]);
+  const [fills, setFills] = useState<Array<{ticker:string;side:string;action:string;count:number|null;price_dollars:string|null;fee_dollars:string|null;created_time:string|null}>>([]);
   const [marketTitles, setMarketTitles] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [h, b, p, r, pos, fs, ft] = await Promise.all([
+      const [h, b, p, r, pos, fs, ft, fl] = await Promise.all([
         api.health().catch(() => null),
         api.portfolio.balance().catch(() => null),
         api.portfolio.pnl().catch(() => null),
@@ -69,6 +70,7 @@ export default function DashboardPage() {
         api.portfolio.positions().catch(() => []),
         api.frankenstein.status().catch(() => null),
         api.frankenstein.recentTrades(10).catch(() => []),
+        api.portfolio.fills({ limit: 15 }).catch(() => []),
       ]);
       setHealth(h);
       setBalance(b);
@@ -77,6 +79,7 @@ export default function DashboardPage() {
       setPositions(pos);
       if (fs) setFrank(fs);
       setTrades(ft);
+      setFills(fl);
       setError(null);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Connection failed");
@@ -94,6 +97,7 @@ export default function DashboardPage() {
     const allTickers = [
       ...positions.map(p => p.ticker),
       ...trades.map(t => t.ticker),
+      ...fills.map(f => f.ticker),
     ];
     const unknown = [...new Set(allTickers)].filter(tk => !marketTitles[tk]);
     if (unknown.length === 0) return;
@@ -113,7 +117,7 @@ export default function DashboardPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [positions, trades, marketTitles]);
+  }, [positions, trades, fills, marketTitles]);
 
   /* ── Derived values ────────────────────────────────────────────────── */
   const snap = frank?.performance?.snapshot;
@@ -337,6 +341,51 @@ export default function DashboardPage() {
           </div>
         </Card>
       </div>
+
+      {/* ── Live Exchange Fills Feed ───────────────────────────────────── */}
+      <Card title="Live Exchange Fills" action={<span className="text-xs text-[var(--text-muted)]">{fills.length} recent</span>}>
+        {fills.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-white/[0.06] text-left text-xs text-[var(--text-muted)] uppercase tracking-wider">
+                  <th className="pb-2 pr-4 font-medium">Market</th>
+                  <th className="pb-2 pr-4 font-medium">Side</th>
+                  <th className="pb-2 pr-4 font-medium">Action</th>
+                  <th className="pb-2 pr-4 text-right font-medium">Qty</th>
+                  <th className="pb-2 pr-4 text-right font-medium">Price</th>
+                  <th className="pb-2 text-right font-medium">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fills.map((f, i) => {
+                  const timeAgo = f.created_time
+                    ? (() => { const m = Math.round((Date.now() - new Date(f.created_time).getTime()) / 60000); return m < 1 ? "now" : m < 60 ? `${m}m` : `${Math.round(m/60)}h`; })()
+                    : "—";
+                  return (
+                    <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
+                      <td className="py-2 pr-4 text-xs font-medium text-[var(--text-primary)] truncate max-w-[200px]">
+                        {marketTitles[f.ticker] || prettifyTicker(f.ticker)}
+                      </td>
+                      <td className="py-2 pr-4">
+                        <span className={`inline-flex rounded-md px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
+                          f.side === "yes" ? "bg-accent/10 text-accent" : "bg-loss/10 text-loss"
+                        }`}>{f.side}</span>
+                      </td>
+                      <td className="py-2 pr-4 text-xs text-[var(--text-muted)]">{f.action}</td>
+                      <td className="py-2 pr-4 text-right text-xs tabular-nums text-[var(--text-primary)]">{f.count ?? "—"}</td>
+                      <td className="py-2 pr-4 text-right text-xs tabular-nums text-[var(--text-primary)]">{f.price_dollars ? `$${f.price_dollars}` : "—"}</td>
+                      <td className="py-2 text-right text-xs tabular-nums text-[var(--text-muted)]">{timeAgo}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="py-8 text-center text-sm text-[var(--text-muted)]">No recent fills</div>
+        )}
+      </Card>
     </div>
   );
 }

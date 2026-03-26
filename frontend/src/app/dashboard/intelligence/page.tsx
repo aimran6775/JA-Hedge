@@ -37,18 +37,30 @@ export default function IntelligencePage() {
   const [signals, setSignals] = useState<IntelligenceSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"overview" | "sources" | "signals" | "alerts">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "sources" | "signals" | "alerts" | "analysis">("overview");
+  const [timeline, setTimeline] = useState<Record<string, unknown>[]>([]);
+  const [correlation, setCorrelation] = useState<Record<string, unknown> | null>(null);
+  const [quality, setQuality] = useState<Record<string, unknown> | null>(null);
+  const [weights, setWeights] = useState<Record<string, number>>({});
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [dashRes, sigRes] = await Promise.allSettled([
+      const [dashRes, sigRes, tlRes, corrRes, qualRes, wRes] = await Promise.allSettled([
         api.intelligence.dashboard(),
         api.intelligence.signals(),
+        api.intelligence.timeline(6),
+        api.intelligence.correlation(),
+        api.intelligence.quality(),
+        api.intelligence.weights(),
       ]);
 
       if (dashRes.status === "fulfilled") setData(dashRes.value);
       if (sigRes.status === "fulfilled") setSignals(sigRes.value.signals);
+      if (tlRes.status === "fulfilled") setTimeline(tlRes.value.timeline);
+      if (corrRes.status === "fulfilled") setCorrelation(corrRes.value);
+      if (qualRes.status === "fulfilled") setQuality(qualRes.value);
+      if (wRes.status === "fulfilled") setWeights(wRes.value.weights);
       setError(null);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load intelligence data");
@@ -132,7 +144,7 @@ export default function IntelligencePage() {
 
       {/* Tabs */}
       <div className="flex gap-2">
-        {(["overview", "sources", "signals", "alerts"] as const).map((tab) => (
+        {(["overview", "sources", "signals", "alerts", "analysis"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -148,7 +160,9 @@ export default function IntelligencePage() {
                 ? `Sources (${sources.length})`
                 : tab === "signals"
                   ? `Signals (${signals.length})`
-                  : `Alerts (${alerts.length})`}
+                  : tab === "analysis"
+                    ? "Deep Analysis"
+                    : `Alerts (${alerts.length})`}
           </button>
         ))}
       </div>
@@ -166,6 +180,8 @@ export default function IntelligencePage() {
         <SourcesTab sources={sources} />
       ) : activeTab === "signals" ? (
         <SignalsTab signals={signals} />
+      ) : activeTab === "analysis" ? (
+        <AnalysisTab timeline={timeline} correlation={correlation} quality={quality} weights={weights} />
       ) : (
         <AlertsTab alerts={alerts} />
       )}
@@ -512,6 +528,152 @@ function SignalRow({ signal: sig, expanded }: { signal: IntelligenceSignal; expa
           {sig.signal_value.toFixed(2)}
         </span>
       </div>
+    </div>
+  );
+}
+
+/* ── Analysis Tab (Timeline, Correlation, Quality, Weights) ───── */
+
+function AnalysisTab({
+  timeline,
+  correlation,
+  quality,
+  weights,
+}: {
+  timeline: Record<string, unknown>[];
+  correlation: Record<string, unknown> | null;
+  quality: Record<string, unknown> | null;
+  weights: Record<string, number>;
+}) {
+  const qualityScore = quality ? Math.round(Number(quality.overall_quality ?? 1) * 100) : 100;
+  const issues = (quality?.issues ?? []) as Array<{ source: string; issue: string; severity: string }>;
+  const sourceScores = (quality?.source_scores ?? {}) as Record<string, number>;
+  const corrMatrix = (correlation?.matrix ?? correlation ?? {}) as Record<string, Record<string, number>>;
+
+  return (
+    <div className="space-y-6">
+      {/* Source Weights */}
+      <Card>
+        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">Adaptive Source Weights</h3>
+        {Object.keys(weights).length === 0 ? (
+          <p className="text-xs text-[var(--text-muted)] py-4 text-center">No weight data available</p>
+        ) : (
+          <div className="space-y-2">
+            {Object.entries(weights)
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, w]) => (
+                <div key={name} className="flex items-center gap-3">
+                  <span className="text-xs text-[var(--text-secondary)] w-32 truncate">{name}</span>
+                  <div className="flex-1 h-2 rounded-full bg-white/5 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-accent transition-all"
+                      style={{ width: `${Math.min(100, w * 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-mono text-accent tabular-nums w-12 text-right">{w.toFixed(2)}×</span>
+                </div>
+              ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Data Quality */}
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Data Quality</h3>
+          <span className={`text-lg font-bold tabular-nums ${qualityScore >= 80 ? "text-accent" : qualityScore >= 50 ? "text-[var(--warning)]" : "text-loss"}`}>
+            {qualityScore}%
+          </span>
+        </div>
+        {Object.keys(sourceScores).length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+            {Object.entries(sourceScores)
+              .sort((a, b) => b[1] - a[1])
+              .map(([src, score]) => (
+                <div key={src} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
+                  <span className="text-xs text-[var(--text-muted)] truncate">{src}</span>
+                  <span className={`text-xs font-bold tabular-nums ${score >= 0.8 ? "text-accent" : score >= 0.5 ? "text-[var(--warning)]" : "text-loss"}`}>
+                    {Math.round(score * 100)}%
+                  </span>
+                </div>
+              ))}
+          </div>
+        )}
+        {issues.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-medium">Issues</p>
+            {issues.map((iss, i) => (
+              <div key={i} className={`rounded-lg px-3 py-2 text-xs border ${
+                iss.severity === "critical" ? "border-loss/20 bg-loss/5 text-loss" : "border-[var(--warning)]/20 bg-[var(--warning)]/5 text-[var(--warning)]"
+              }`}>
+                <span className="font-semibold">{iss.source}:</span> {iss.issue}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Correlation Matrix */}
+      {Object.keys(corrMatrix).length > 0 && (
+        <Card>
+          <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">Source Correlation Matrix</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[10px]">
+              <thead>
+                <tr>
+                  <th className="pb-2 text-left text-[var(--text-muted)]" />
+                  {Object.keys(corrMatrix).map((k) => (
+                    <th key={k} className="pb-2 px-1 text-center text-[var(--text-muted)] font-medium truncate max-w-[60px]">{k}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(corrMatrix).map(([row, cols]) => (
+                  <tr key={row}>
+                    <td className="pr-2 py-1 text-[var(--text-muted)] font-medium truncate max-w-[80px]">{row}</td>
+                    {Object.values(cols).map((val, i) => {
+                      const v = Number(val);
+                      const bg = v > 0.5 ? "bg-accent/20" : v > 0.2 ? "bg-accent/10" : v < -0.2 ? "bg-loss/10" : "bg-white/[0.02]";
+                      return (
+                        <td key={i} className={`px-1 py-1 text-center tabular-nums rounded ${bg}`}>
+                          {v.toFixed(2)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Signal Timeline */}
+      <Card>
+        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">Signal Timeline (last 6h)</h3>
+        {timeline.length === 0 ? (
+          <p className="text-xs text-[var(--text-muted)] py-4 text-center">No timeline data yet</p>
+        ) : (
+          <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
+            {timeline.map((pt, i) => {
+              const val = Number(pt.value ?? pt.signal_value ?? 0);
+              return (
+                <div key={i} className="flex items-center gap-3 rounded-lg px-3 py-1.5 hover:bg-white/[0.02]">
+                  <span className="text-[10px] text-[var(--text-muted)] tabular-nums w-16 shrink-0">
+                    {String(pt.time ?? pt.timestamp ?? "").slice(11, 16) || `t${i}`}
+                  </span>
+                  <span className="text-xs text-[var(--text-secondary)] truncate flex-1">
+                    {String(pt.source ?? pt.category ?? "")} · {String(pt.ticker ?? "")}
+                  </span>
+                  <span className={`text-xs font-bold tabular-nums ${val > 0 ? "text-accent" : val < 0 ? "text-loss" : "text-[var(--text-muted)]"}`}>
+                    {val > 0 ? "+" : ""}{val.toFixed(2)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

@@ -63,7 +63,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
-  const [tab, setTab] = useState<"simulation" | "strategy" | "brain" | "system">("simulation");
+  const [tab, setTab] = useState<"simulation" | "strategy" | "brain" | "system" | "diagnostics">("simulation");
 
   // Reset dialog
   const [showReset, setShowReset] = useState(false);
@@ -75,6 +75,14 @@ export default function SettingsPage() {
   // Editable strategy fields
   const [editStrat, setEditStrat] = useState<Record<string, string>>({});
   const [savingStrat, setSavingStrat] = useState(false);
+
+  // Editable brain fields
+  const [editBrain, setEditBrain] = useState<Record<string, string>>({});
+  const [savingBrain, setSavingBrain] = useState(false);
+
+  // Diagnostics
+  const [rejections, setRejections] = useState<Record<string, unknown> | null>(null);
+  const [schedule, setSchedule] = useState<Record<string, unknown> | null>(null);
 
   /* ── Fetch ───────────────────────────────────────────────────────────── */
   const refresh = useCallback(async () => {
@@ -102,7 +110,20 @@ export default function SettingsPage() {
           max_spread_cents: String(s.strategy.max_spread_cents),
           aggression: (s.strategy.aggression * 100).toFixed(0),
         });
+        setEditBrain({
+          scan_interval: String(s.brain.scan_interval),
+          retrain_interval: String(s.brain.retrain_interval),
+          min_train_samples: String(s.brain.min_train_samples),
+        });
       }
+
+      // Diagnostics data
+      const [rejRes, schedRes] = await Promise.allSettled([
+        api.frankenstein.debugRejections(),
+        api.frankenstein.schedule(),
+      ]);
+      if (rejRes.status === "fulfilled") setRejections(rejRes.value);
+      if (schedRes.status === "fulfilled") setSchedule(schedRes.value);
     } finally {
       setLoading(false);
     }
@@ -168,6 +189,26 @@ export default function SettingsPage() {
     }
   };
 
+  const saveBrain = async () => {
+    setSavingBrain(true);
+    try {
+      const payload: Record<string, unknown> = {
+        brain: {
+          scan_interval: parseFloat(editBrain.scan_interval),
+          retrain_interval: parseFloat(editBrain.retrain_interval),
+          min_train_samples: parseInt(editBrain.min_train_samples),
+        },
+      };
+      const res = await api.frankenstein.updateSettings(payload);
+      flash(`✓ ${res.message}`);
+      refresh();
+    } catch (e: unknown) {
+      flash(`✗ Save failed: ${e instanceof Error ? e.message : "unknown"}`, true);
+    } finally {
+      setSavingBrain(false);
+    }
+  };
+
   const toggleSportsOnly = async () => {
     if (!settings) return;
     try {
@@ -216,11 +257,11 @@ export default function SettingsPage() {
 
       {/* ── Tab Nav ────────────────────────────────────────────────────── */}
       <div className="flex gap-1 rounded-2xl glass p-1">
-        {(["simulation", "strategy", "brain", "system"] as const).map(t => (
+        {(["simulation", "strategy", "brain", "system", "diagnostics"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`flex-1 rounded-xl px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all
               ${tab === t ? "bg-violet-500/10 text-violet-400 border border-violet-500/20" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] border border-transparent"}`}>
-            {t === "simulation" ? "💰 Simulation" : t === "strategy" ? "🎯 Strategy" : t === "brain" ? "🧠 Brain" : "⚙️ System"}
+            {t === "simulation" ? "💰 Sim" : t === "strategy" ? "🎯 Strategy" : t === "brain" ? "🧠 Brain" : t === "diagnostics" ? "🔍 Debug" : "⚙️ System"}
           </button>
         ))}
       </div>
@@ -465,14 +506,33 @@ export default function SettingsPage() {
       {/* ════════════ TAB: BRAIN ═════════════════════════════════════════ */}
       {tab === "brain" && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <Card title="Frankenstein Brain">
-            <div className="space-y-2">
+          <Card title="Brain Configuration" action={
+            <button onClick={saveBrain} disabled={savingBrain}
+              className="rounded-lg px-4 py-1.5 text-xs font-bold bg-accent text-white hover:bg-accent/90 transition-all disabled:opacity-50">
+              {savingBrain ? "Saving..." : "Save Brain Config"}
+            </button>
+          }>
+            <div className="space-y-3">
               <InfoRow label="Model Version" value={br?.model_version ?? "—"} mono />
               <InfoRow label="Generation" value={`Gen ${br?.generation ?? 0}`} />
-              <InfoRow label="Scan Interval" value={br ? `${br.scan_interval}s` : "—"} />
-              <InfoRow label="Retrain Interval" value={br ? `${br.retrain_interval / 60}min` : "—"} />
-              <InfoRow label="Min Training Samples" value={`${br?.min_train_samples ?? 50}`} />
-              <InfoRow label="Features" value="60 (Phase 5)" />
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1 font-medium">Scan Interval (seconds)</label>
+                <input type="number" value={editBrain.scan_interval ?? ""} onChange={e => setEditBrain(p => ({ ...p, scan_interval: e.target.value }))}
+                  className="w-full rounded-lg bg-white/[0.03] border border-white/[0.08] px-3 py-2.5 text-sm font-mono text-[var(--text-primary)] focus:border-accent/40 transition-all" />
+                <p className="text-[10px] text-[var(--text-muted)] mt-0.5">How often the brain scans for trades (10-300s)</p>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1 font-medium">Retrain Interval (seconds)</label>
+                <input type="number" value={editBrain.retrain_interval ?? ""} onChange={e => setEditBrain(p => ({ ...p, retrain_interval: e.target.value }))}
+                  className="w-full rounded-lg bg-white/[0.03] border border-white/[0.08] px-3 py-2.5 text-sm font-mono text-[var(--text-primary)] focus:border-accent/40 transition-all" />
+                <p className="text-[10px] text-[var(--text-muted)] mt-0.5">How often the model retrains (300-3600s)</p>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1 font-medium">Min Training Samples</label>
+                <input type="number" value={editBrain.min_train_samples ?? ""} onChange={e => setEditBrain(p => ({ ...p, min_train_samples: e.target.value }))}
+                  className="w-full rounded-lg bg-white/[0.03] border border-white/[0.08] px-3 py-2.5 text-sm font-mono text-[var(--text-primary)] focus:border-accent/40 transition-all" />
+                <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Minimum trades needed before model trains</p>
+              </div>
             </div>
           </Card>
 
@@ -560,6 +620,136 @@ export default function SettingsPage() {
               </div>
             </div>
           </Card>
+        </div>
+      )}
+
+      {/* ════════════ TAB: DIAGNOSTICS ═══════════════════════════════════ */}
+      {tab === "diagnostics" && (
+        <div className="space-y-4">
+          {/* Scheduler */}
+          <Card title="Frankenstein Scheduler">
+            {schedule ? (
+              <div className="space-y-2">
+                {Object.entries(schedule).filter(([k]) => !k.startsWith("_")).map(([key, val]) => (
+                  <div key={key} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
+                    <span className="text-xs text-[var(--text-muted)]">{key.replace(/_/g, " ")}</span>
+                    <span className="text-xs font-mono text-[var(--text-primary)] tabular-nums truncate max-w-[250px]">
+                      {typeof val === "object" ? JSON.stringify(val) : String(val)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-8 text-center text-[var(--text-muted)]">Schedule data not available</div>
+            )}
+          </Card>
+
+          {/* Trade Rejections */}
+          <Card title="Trade Rejections & Debug">
+            {rejections ? (
+              <DiagnosticsContent rejections={rejections} />
+            ) : (
+              <div className="py-8 text-center text-[var(--text-muted)]">No rejection data available</div>
+            )}
+          </Card>
+
+          {/* Quick Debug Actions */}
+          <Card title="Debug Actions">
+            <div className="grid grid-cols-2 gap-3">
+              <button onClick={() => { api.frankenstein.retrain().then(() => flash("✓ Retrain triggered")).catch(() => flash("✗ Retrain failed", true)); }}
+                className="rounded-xl py-3 text-sm font-bold bg-accent/20 text-accent hover:bg-accent/30 border border-accent/20 transition-all">
+                🔄 Force Retrain
+              </button>
+              <button onClick={() => { api.frankenstein.bootstrap().then(() => flash("✓ Bootstrap triggered")).catch(() => flash("✗ Bootstrap failed", true)); }}
+                className="rounded-xl py-3 text-sm font-bold bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 border border-blue-500/20 transition-all">
+                📦 Re-Bootstrap Data
+              </button>
+              <button onClick={cancelAllOrders}
+                className="rounded-xl py-3 text-sm font-bold bg-loss/20 text-loss hover:bg-loss/30 border border-loss/20 transition-all">
+                ✕ Cancel All Orders
+              </button>
+              <button onClick={refresh}
+                className="rounded-xl py-3 text-sm font-bold bg-violet-500/20 text-violet-400 hover:bg-violet-500/30 border border-violet-500/20 transition-all">
+                🔃 Refresh All Data
+              </button>
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Diagnostics Content (extracted to avoid TS unknown-as-ReactNode issues) ── */
+
+function DiagnosticsContent({ rejections }: { rejections: Record<string, unknown> }) {
+  const portfolioCheck = rejections.portfolio_check;
+  const riskLimits = rejections.risk_limits as Record<string, unknown> | undefined;
+  const candidates = rejections.recent_scan_candidates as Array<Record<string, unknown>> | undefined;
+
+  return (
+    <div className="space-y-3">
+      {portfolioCheck !== undefined && (
+        <div className={`rounded-xl p-3 border ${portfolioCheck ? "border-accent/20 bg-accent/5" : "border-loss/20 bg-loss/5"}`}>
+          <div className="flex items-center gap-2">
+            <span className={`h-2 w-2 rounded-full ${portfolioCheck ? "bg-accent" : "bg-loss"}`} />
+            <span className="text-xs font-semibold text-[var(--text-primary)]">Portfolio Check</span>
+            <span className={`text-xs ${portfolioCheck ? "text-accent" : "text-loss"}`}>
+              {portfolioCheck ? "PASS" : "FAIL"}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {riskLimits && Object.keys(riskLimits).length > 0 && (
+        <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3">
+          <div className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">Risk Limits</div>
+          <div className="space-y-1">
+            {Object.entries(riskLimits).map(([k, v]) => (
+              <div key={k} className="flex items-center justify-between text-xs">
+                <span className="text-[var(--text-muted)]">{k.replace(/_/g, " ")}</span>
+                <span className="font-mono text-[var(--text-primary)]">{String(v)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {candidates && candidates.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">Recent Scan Candidates</div>
+          <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
+            {candidates.map((c, i) => (
+              <div key={i} className="rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2 flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-mono text-[var(--text-primary)]">{String(c.ticker ?? "")}</span>
+                  <div className="text-[10px] text-[var(--text-muted)]">
+                    {String(c.side ?? "")} · conf: {Number(c.confidence ?? 0).toFixed(2)} · edge: {Number(c.edge ?? 0).toFixed(3)}
+                  </div>
+                </div>
+                <span className={`inline-flex rounded-md px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
+                  String(c.stage ?? "") === "executed" ? "bg-accent/10 text-accent" :
+                  String(c.stage ?? "") === "risk_rejected" ? "bg-loss/10 text-loss" :
+                  "bg-white/5 text-[var(--text-muted)]"
+                }`}>{String(c.stage ?? "unknown")}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!candidates && (
+        <div className="space-y-1">
+          {Object.entries(rejections)
+            .filter(([k]) => !["portfolio_check", "risk_limits"].includes(k))
+            .map(([key, val]) => (
+              <div key={key} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
+                <span className="text-xs text-[var(--text-muted)]">{key.replace(/_/g, " ")}</span>
+                <span className="text-xs font-mono text-[var(--text-primary)] truncate max-w-[200px]">
+                  {typeof val === "object" ? JSON.stringify(val) : String(val)}
+                </span>
+              </div>
+            ))}
         </div>
       )}
     </div>

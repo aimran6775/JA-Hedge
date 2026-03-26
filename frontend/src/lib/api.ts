@@ -775,6 +775,10 @@ export const api = {
       apiFetch<Record<string, unknown>>("/frankenstein/model/intelligence"),
     modelCalibration: () =>
       apiFetch<Record<string, unknown>>("/frankenstein/model/calibration"),
+    debugRejections: () =>
+      apiFetch<Record<string, unknown>>("/frankenstein/debug/rejections"),
+    schedule: () =>
+      apiFetch<Record<string, unknown>>("/frankenstein/schedule"),
     // Simulation reset & settings
     resetSimulation: (opts?: { balance_cents?: number; clear_memory?: boolean; restart_brain?: boolean }) =>
       apiFetch<{

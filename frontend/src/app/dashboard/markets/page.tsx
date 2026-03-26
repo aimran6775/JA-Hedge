@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { IconSearch, IconRefresh, IconCircle } from "@/components/ui/Icons";
 import { api, type Market } from "@/lib/api";
 
 export default function MarketsPage() {
+  const router = useRouter();
   const [markets, setMarkets] = useState<Market[]>([]);
   const [total, setTotal] = useState(0);
   const [source, setSource] = useState("");
@@ -99,17 +101,18 @@ export default function MarketsPage() {
                 <th className="pb-3 pr-4 text-right font-medium">Last</th>
                 <th className="pb-3 pr-4 text-right font-medium">Spread</th>
                 <th className="pb-3 pr-4 text-right font-medium">Volume</th>
+                <th className="pb-3 pr-4 text-right font-medium">Open Int.</th>
                 <th className="pb-3 text-right font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
               {loading && markets.length === 0 ? (
-                <tr><td colSpan={7} className="py-16 text-center text-[var(--text-muted)]"><div className="animate-shimmer rounded-lg p-4">Loading live markets from Kalshi...</div></td></tr>
+                <tr><td colSpan={8} className="py-16 text-center text-[var(--text-muted)]"><div className="animate-shimmer rounded-lg p-4">Loading live markets from Kalshi...</div></td></tr>
               ) : markets.length === 0 ? (
-                <tr><td colSpan={7} className="py-16 text-center text-[var(--text-muted)]">No markets found {search ? `matching "${search}"` : ""}</td></tr>
+                <tr><td colSpan={8} className="py-16 text-center text-[var(--text-muted)]">No markets found {search ? `matching "${search}"` : ""}</td></tr>
               ) : (
                 markets.map((m) => (
-                  <tr key={m.ticker} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors cursor-pointer group">
+                  <tr key={m.ticker} onClick={() => router.push(`/dashboard/trading?ticker=${encodeURIComponent(m.ticker)}`)} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors cursor-pointer group">
                     <td className="py-3.5 pr-4">
                       <div className="text-sm font-medium text-[var(--text-primary)] group-hover:text-accent transition-colors">{m.title || m.ticker}</div>
                       <div className="text-xs text-[var(--text-muted)] font-mono">{m.ticker}</div>
@@ -132,6 +135,9 @@ export default function MarketsPage() {
                     </td>
                     <td className="py-3.5 pr-4 text-right tabular-nums text-[var(--text-muted)]">
                       {m.volume != null ? formatVolume(m.volume) : "—"}
+                    </td>
+                    <td className="py-3.5 pr-4 text-right tabular-nums text-[var(--text-muted)]">
+                      {m.open_interest != null ? formatVolume(m.open_interest) : "—"}
                     </td>
                     <td className="py-3.5 text-right">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${

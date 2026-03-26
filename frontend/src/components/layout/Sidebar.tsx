@@ -15,6 +15,8 @@ import {
   IconStrategy,
   IconBook,
   IconIntelligence,
+  IconAlertTriangle,
+  IconTarget,
 } from "@/components/ui/Icons";
 
 const NAV_ITEMS = [
@@ -27,6 +29,8 @@ const NAV_ITEMS = [
   { href: "/dashboard/trading", label: "Trading", icon: IconTrading },
   { href: "/dashboard/portfolio", label: "Portfolio", icon: IconPortfolio },
   { href: "/dashboard/risk", label: "Risk", icon: IconShield },
+  { href: "/dashboard/alerts", label: "Alerts", icon: IconAlertTriangle },
+  { href: "/dashboard/backtest", label: "Backtest", icon: IconTarget },
   { href: "/dashboard/settings", label: "Settings", icon: IconSettings },
   { href: "/dashboard/guide", label: "How It Works", icon: IconBook },
 ];

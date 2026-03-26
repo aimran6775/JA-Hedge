@@ -37,6 +37,7 @@ export default function RiskPage() {
   const [status, setStatus] = useState<RiskStatus | null>(null);
   const [killActive, setKillActive] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [rejections, setRejections] = useState<Record<string, unknown> | null>(null);
 
   // Editable limits
   const [maxPositions, setMaxPositions] = useState(10);
@@ -48,12 +49,14 @@ export default function RiskPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [limRes, stRes] = await Promise.all([
+      const [limRes, stRes, rejRes] = await Promise.all([
         api.risk.limits().catch(() => null),
         api.risk.status().catch(() => null),
+        api.frankenstein.debugRejections().catch(() => null),
       ]);
       setLimits(limRes);
       setStatus(stRes);
+      setRejections(rejRes);
       if (limRes) {
         setMaxPositions(limRes.max_positions ?? 10);
         setMaxExposure(limRes.max_exposure_cents ?? 5000);
@@ -193,10 +196,58 @@ export default function RiskPage() {
         </div>
       </Card>
 
-      {/* Violations Log */}
-      <Card title="Recent Violations">
+      {/* Violations / Rejections Log */}
+      <Card title="Trade Rejections & Risk Events">
         <div className="space-y-1.5">
-          {(status?.recent_violations ?? []).length === 0 ? (
+          {rejections ? (
+            <>
+              {/* Portfolio check */}
+              {rejections.portfolio_check && (
+                <div className={`flex items-center gap-3 rounded-xl px-4 py-3 ${
+                  (rejections.portfolio_check as { passed: boolean }).passed
+                    ? "bg-accent/[0.04] border border-accent/10"
+                    : "bg-loss/[0.04] border border-loss/10"
+                }`}>
+                  {(rejections.portfolio_check as { passed: boolean }).passed
+                    ? <IconCheck size={14} className="text-accent flex-shrink-0" />
+                    : <IconAlertTriangle size={14} className="text-loss flex-shrink-0" />}
+                  <span className="text-sm text-[var(--text-secondary)]">
+                    Portfolio Check: {(rejections.portfolio_check as { passed: boolean }).passed ? "Passing" : (rejections.portfolio_check as { reason: string }).reason || "Failed"}
+                  </span>
+                </div>
+              )}
+              {/* Risk limits from debug */}
+              {rejections.risk_limits && typeof rejections.risk_limits === "object" && (
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+                  <div className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">Risk Limits State</div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {Object.entries(rejections.risk_limits as Record<string, unknown>).map(([k, v]) => (
+                      <div key={k} className="flex justify-between">
+                        <span className="text-[var(--text-muted)]">{k.replace(/_/g, " ")}</span>
+                        <span className="text-[var(--text-primary)] tabular-nums font-mono">{String(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Recent scan candidates */}
+              {rejections.recent_scan_results && Array.isArray((rejections.recent_scan_results as { top_candidates?: unknown[] }).top_candidates) && (
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+                  <div className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">Recent Scan Candidates</div>
+                  {((rejections.recent_scan_results as { top_candidates: Array<{ ticker: string; stage: string; error?: string; order_id?: string }> }).top_candidates).map((c, i) => (
+                    <div key={i} className="flex items-center gap-2 py-1 text-xs">
+                      <span className={`inline-flex rounded-md px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
+                        c.stage === "executed" ? "bg-accent/10 text-accent" : c.stage === "rejected" ? "bg-loss/10 text-loss" : "bg-white/5 text-[var(--text-muted)]"
+                      }`}>{c.stage}</span>
+                      <span className="text-[var(--text-primary)] font-mono">{c.ticker}</span>
+                      {c.error && <span className="text-loss truncate">{c.error}</span>}
+                      {c.order_id && <span className="text-[var(--text-muted)] font-mono truncate">{c.order_id.slice(0, 8)}...</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (status?.recent_violations ?? []).length === 0 ? (
             <div className="py-6 text-center">
               <IconCheck size={20} className="mx-auto text-accent mb-2" />
               <div className="text-sm text-[var(--text-muted)]">No violations recorded</div>

@@ -14,15 +14,17 @@ export default function SportsPage() {
   const [vegasGames, setVegasGames] = useState<VegasGame[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"markets" | "odds" | "live">("markets");
+  const [activeTab, setActiveTab] = useState<"markets" | "odds" | "live" | "performance">("markets");
+  const [performance, setPerformance] = useState<Record<string, unknown> | null>(null);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [statusRes, marketsRes, oddsRes] = await Promise.allSettled([
+      const [statusRes, marketsRes, oddsRes, perfRes] = await Promise.allSettled([
         api.sports.status(),
         api.sports.markets(),
         api.sports.odds(),
+        api.sports.performance(),
       ]);
 
       if (statusRes.status === "fulfilled") setStatus(statusRes.value);
@@ -31,6 +33,7 @@ export default function SportsPage() {
         setTotalSports(marketsRes.value.total_sports_markets);
       }
       if (oddsRes.status === "fulfilled") setVegasGames(oddsRes.value.games);
+      if (perfRes.status === "fulfilled") setPerformance(perfRes.value);
       setError(null);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load sports data");
@@ -88,7 +91,7 @@ export default function SportsPage() {
 
       {/* Tabs */}
       <div className="flex gap-2">
-        {(["markets", "odds", "live"] as const).map((tab) => (
+        {(["markets", "odds", "live", "performance"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -98,7 +101,7 @@ export default function SportsPage() {
                 : "glass text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.03]"
             }`}
           >
-            {tab === "markets" ? "Sports Markets" : tab === "odds" ? "Vegas Odds" : "Live Games"}
+            {tab === "markets" ? "Sports Markets" : tab === "odds" ? "Vegas Odds" : tab === "performance" ? "📊 Performance" : "Live Games"}
           </button>
         ))}
       </div>
@@ -110,6 +113,8 @@ export default function SportsPage() {
         <MarketsTab marketsBySport={marketsBySport} />
       ) : activeTab === "odds" ? (
         <OddsTab games={vegasGames} />
+      ) : activeTab === "performance" ? (
+        <PerformanceTab data={performance} />
       ) : (
         <LiveTab />
       )}
@@ -366,6 +371,84 @@ function LiveTab() {
             ))}
           </div>
         )}
+      </Card>
+    </div>
+  );
+}
+
+/* ── Performance Tab ──────────────────────────────────────── */
+
+function PerformanceTab({ data }: { data: Record<string, unknown> | null }) {
+  if (!data) {
+    return (
+      <Card>
+        <div className="py-12 text-center text-[var(--text-muted)]">
+          Sports performance data not available — monitor may not be initialized.
+        </div>
+      </Card>
+    );
+  }
+
+  const entries = Object.entries(data).filter(([k]) => !k.startsWith("_"));
+
+  // Try to extract common performance fields
+  const totalTrades = Number(data.total_trades ?? data.trades ?? 0);
+  const wins = Number(data.wins ?? 0);
+  const losses = Number(data.losses ?? 0);
+  const winRate = totalTrades > 0 ? ((wins / totalTrades) * 100).toFixed(1) : "0.0";
+  const pnl = Number(data.total_pnl ?? data.pnl ?? 0);
+  const bySport = (data.by_sport ?? data.sport_breakdown ?? {}) as Record<string, Record<string, unknown>>;
+
+  return (
+    <div className="space-y-6">
+      {/* Summary Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <StatCard label="Total Trades" value={totalTrades} />
+        <StatCard label="Win Rate" value={`${winRate}%`} accent={Number(winRate) >= 50} />
+        <StatCard label="Wins / Losses" value={`${wins} / ${losses}`} />
+        <StatCard label="P&L" value={pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`} accent={pnl >= 0} />
+      </div>
+
+      {/* By-Sport Breakdown */}
+      {Object.keys(bySport).length > 0 && (
+        <Card>
+          <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">Performance by Sport</h3>
+          <div className="space-y-2">
+            {Object.entries(bySport).map(([sport, stats]) => (
+              <div key={sport} className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3 flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-semibold text-[var(--text-primary)] uppercase">{sport}</span>
+                  <div className="text-xs text-[var(--text-muted)]">
+                    {String(stats.trades ?? stats.total ?? 0)} trades
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={`text-sm font-bold tabular-nums ${Number(stats.pnl ?? 0) >= 0 ? "text-accent" : "text-loss"}`}>
+                    {Number(stats.pnl ?? 0) >= 0 ? "+" : ""}${Number(stats.pnl ?? 0).toFixed(2)}
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)]">
+                    {String(stats.win_rate ?? "?")}% WR
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Raw Performance Data */}
+      <Card>
+        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">Full Performance Data</h3>
+        <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
+          {entries.map(([key, val]) => (
+            <div key={key} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
+              <span className="text-xs text-[var(--text-muted)]">{key.replace(/_/g, " ")}</span>
+              <span className="text-xs font-mono text-[var(--text-primary)] tabular-nums truncate max-w-[200px]">
+                {typeof val === "object" ? JSON.stringify(val) : String(val)}
+              </span>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   );
