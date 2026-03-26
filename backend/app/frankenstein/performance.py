@@ -354,8 +354,14 @@ class PerformanceTracker:
         # During learning mode, we let Frankenstein trade freely
         # so it can gather enough data to actually learn
         # Phase 5: Much lower threshold — agents handle their own gating
+        # CRITICAL: Only check accuracy when we have enough resolved
+        # trades in the snapshot period.  If no trades resolved yet
+        # (accuracy == 0.0 from empty data), that's not a real signal.
         if not in_learning_mode and latest.prediction_accuracy < 0.08:
-            return True, f"low_accuracy_{latest.prediction_accuracy:.1%}"
+            # Need at least 20 real trades with outcomes to judge accuracy
+            real_with_outcomes = latest.real_trades - latest.bootstrap_trades
+            if real_with_outcomes >= 20:
+                return True, f"low_accuracy_{latest.prediction_accuracy:.1%}"
 
         return False, "ok"
 
