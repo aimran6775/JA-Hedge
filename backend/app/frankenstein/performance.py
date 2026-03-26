@@ -321,47 +321,27 @@ class PerformanceTracker:
         return False
 
     def should_pause_trading(self) -> tuple[bool, str]:
-        """Determine if Frankenstein should pause trading.
-        
-        LEARNING MODE: For the first 100 real trades, we NEVER pause
-        on accuracy — the system needs time to learn from real outcomes.
-        We only pause on hard loss limits during learning mode.
+        """Check trading health — NEVER pauses.
+
+        Frankenstein trades 24/7.  We log warnings for visibility
+        but never return True.  The system learns from every trade,
+        including losses — pausing destroys that feedback loop.
         """
         if not self._snapshots:
-            return False, "no_data"
+            return False, "ok"
 
         latest = self._snapshots[-1]
-        in_learning_mode = latest.real_trades < 100
 
-        # Rule 1: Consecutive losses — relaxed during learning mode
-        # During learning, tiny paper trades losing a few cents each
-        # should NOT pause the system.  Allow up to 25 consecutive losses.
-        # After learning, tighten to 8.
-        max_consec = 100 if in_learning_mode else 50
-        if latest.consecutive_losses >= max_consec:
-            return True, f"consecutive_losses_{latest.consecutive_losses}"
-
-        # Rule 2: Daily loss limit — always enforced but relaxed in learning
-        daily_limit = -200 if in_learning_mode else -150
-        if latest.daily_pnl < daily_limit:
-            return True, f"daily_loss_${abs(latest.daily_pnl):.0f}"
-
-        # Rule 3: Max drawdown — always enforced
+        # Log warnings for monitoring — but NEVER pause
+        if latest.consecutive_losses >= 50:
+            log.warning("health_warning", kind="consecutive_losses",
+                        value=latest.consecutive_losses)
+        if latest.daily_pnl < -150:
+            log.warning("health_warning", kind="daily_loss",
+                        value=f"${abs(latest.daily_pnl):.0f}")
         if latest.max_drawdown < -1500:
-            return True, f"max_drawdown_${abs(latest.max_drawdown):.0f}"
-
-        # Rule 4: Model accuracy — ONLY after 100+ real trades
-        # During learning mode, we let Frankenstein trade freely
-        # so it can gather enough data to actually learn
-        # Phase 5: Much lower threshold — agents handle their own gating
-        # CRITICAL: Only check accuracy when we have enough resolved
-        # trades in the snapshot period.  If no trades resolved yet
-        # (accuracy == 0.0 from empty data), that's not a real signal.
-        if not in_learning_mode and latest.prediction_accuracy < 0.08:
-            # Need at least 20 real trades with outcomes to judge accuracy
-            real_with_outcomes = latest.real_trades - latest.bootstrap_trades
-            if real_with_outcomes >= 20:
-                return True, f"low_accuracy_{latest.prediction_accuracy:.1%}"
+            log.warning("health_warning", kind="max_drawdown",
+                        value=f"${abs(latest.max_drawdown):.0f}")
 
         return False, "ok"
 

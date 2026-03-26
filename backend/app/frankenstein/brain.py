@@ -1911,25 +1911,24 @@ class Frankenstein:
         self.memory.save()
 
     async def _health_check_task(self) -> None:
-        """Periodic health check — pause if degrading.
-        
-        CRITICAL: During learning mode (first 100 real trades),
-        we do NOT pause on accuracy. The system needs to trade
-        freely to gather enough data to learn.
+        """Periodic health check — monitor and retrain, NEVER pause.
+
+        Frankenstein trades 24/7.  Every trade (win or loss) is data.
+        Pausing destroys the feedback loop the model needs to learn.
+        We only force a retrain if the model is degrading.
         """
-        should_pause, reason = self.performance.should_pause_trading()
-
-        if should_pause and not self._state.is_paused:
-            self._state.is_paused = True
-            self._state.pause_reason = reason
-            log.warning("🧟🛑 FRANKENSTEIN PAUSED", reason=reason)
-
-        elif not should_pause and self._state.is_paused:
+        # Always ensure trading is on — undo any stale pause state
+        if self._state.is_paused:
             self._state.is_paused = False
             self._state.pause_reason = ""
-            log.info("🧟✅ FRANKENSTEIN RESUMED (auto-recovery)")
+            log.info("🧟✅ FRANKENSTEIN UNPAUSED (24/7 mode)")
 
-        # Check for model degradation
+        # Log health warnings (for dashboard visibility)
+        _should_pause, _reason = self.performance.should_pause_trading()
+        if _reason != "ok":
+            log.info("health_note", reason=_reason)
+
+        # Check for model degradation — retrain, but don't pause
         if self.config.pause_on_degradation and self.performance.is_model_degrading():
             log.warning("🧟⚠️ MODEL DEGRADATION DETECTED — forcing retrain")
             await self._retrain_task()
