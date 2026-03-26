@@ -50,6 +50,27 @@ from app.production import SQLiteStore, ExchangeSchedule, HealthMonitor
 log = get_logger("frankenstein.brain")
 
 
+# ── Fee constants ────────────────────────────────────────────────────
+# Kalshi taker fee: 7¢/contract, maker fee: 0¢.
+# A round-trip (buy + sell) as taker costs 14¢/contract in fees.
+# This is the single biggest drag on profitability.
+TAKER_FEE_CENTS = 7       # per contract, per side
+ROUND_TRIP_FEE_CENTS = 14  # buy fee + sell fee
+
+def round_trip_fee_pct(price_cents: int) -> float:
+    """Round-trip fee as a percentage of contract cost.
+    
+    At 22¢: 14/22 = 63.6% (!!)
+    At 50¢: 14/50 = 28.0%
+    At 75¢: 14/75 = 18.7%
+    
+    Cheap contracts are fee DEATH TRAPS.
+    """
+    if price_cents <= 0:
+        return 1.0
+    return ROUND_TRIP_FEE_CENTS / price_cents
+
+
 # ── Dynamic edge caps by market category ────────────────────────────
 # Sports/finance are highly efficient (Vegas lines, tracked indices).
 # Crypto/entertainment are less efficient, larger edges are plausible.
@@ -198,7 +219,7 @@ class Frankenstein:
         # Event-level cooldown: {event_ticker: timestamp}
         # Prevents trading different strike prices on the same event.
         self._recently_traded_events: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 1800.0  # 30-minute cooldown per ticker/event
+        self._trade_cooldown_seconds: float = 7200.0  # 2-HOUR cooldown per ticker/event (was 30 min)
 
         # Phase 9: Category performance tracking for gating
         # {category: {"wins": int, "losses": int}}
@@ -431,6 +452,27 @@ class Frankenstein:
             mid = float(m.midpoint or m.last_price or 0)
             if mid < 0.15 or mid > 0.85:
                 continue
+
+            # ── FEE-AWARE PRICE FLOOR ────────────────────────────
+            # Skip cheap contracts where fees dominate.
+            # At 20¢, round-trip fees (14¢) = 70% of cost → guaranteed loser.
+            # Require contract value ≥ 25¢ so fees are at most 56%.
+            # Combined with edge requirement, this ensures profitability.
+            mid_cents = int(mid * 100)
+            effective_cost_cents = min(mid_cents, 100 - mid_cents)  # cheapest side
+            fee_pct = round_trip_fee_pct(effective_cost_cents)
+            if fee_pct > 0.35:  # fees > 35% of cost → skip (requires ~40¢+ contracts)
+                continue
+
+            # ── MINIMUM TIME-TO-EXPIRY ────────────────────────────
+            # Short-expiry contracts (BTC 15-min etc.) are fee death traps.
+            # Require at least 2 hours to expiry for edge to materialize.
+            if hasattr(m, 'expiration_time') and m.expiration_time:
+                from datetime import datetime, timezone as _tz
+                _delta = (m.expiration_time - datetime.now(_tz.utc)).total_seconds() / 3600
+                if _delta < 2.0:  # 2-hour minimum (was 1h in strategy params)
+                    continue
+
             pre_filtered.append(m)
         candidates = pre_filtered
 
@@ -555,15 +597,11 @@ class Frankenstein:
         trades_rejected = 0
         trade_candidates: list[dict[str, Any]] = []
 
-        # ⭐ Multi-factor confidence scorer (Phase 11)
+        # ⭐ Multi-factor confidence scorer (Phase 11+)
         # Created ONCE outside the loop for performance.
-        # Grade gates: trained model → B minimum, untrained → C+ minimum.
-        # This is relaxed from the old A/B gate because early-stage trading
-        # needs volume to learn — we can tighten later once profitable.
-        # Phase 4: Always require B grade minimum (composite ≥ 60).
-        # The old C+ gate for untrained models let garbage trades through.
-        # B+ when trained — only high-quality signals.
-        min_grade = "B" if not self._model.is_trained else "B+"
+        # ALWAYS require A grade minimum (composite ≥ 80).
+        # No exceptions — only highest-conviction trades.
+        min_grade = "A"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
@@ -589,8 +627,8 @@ class Frankenstein:
         # Prevent concentration: max trades per event and per category
         # in a single scan cycle.  Spread bets across different events
         # and categories to avoid correlated losses.
-        MAX_PER_EVENT = 2     # max 2 trades on same event
-        MAX_PER_CATEGORY = 4  # max 4 trades in same category per scan
+        MAX_PER_EVENT = 1     # max 1 trade on same event (was 2) — no over-concentration
+        MAX_PER_CATEGORY = 3  # max 3 trades in same category per scan (was 4)
         events_this_scan: dict[str, int] = {}   # event_ticker → count
         categories_this_scan: dict[str, int] = {}  # category → count
 
@@ -703,36 +741,43 @@ class Frankenstein:
             # 🛡️ HEURISTIC GUARD: When model isn't trained, require
             # higher edge to compensate for model uncertainty.
             if not self._model.is_trained:
-                effective_min_edge = max(effective_min_edge, 0.08)
+                effective_min_edge = max(effective_min_edge, 0.12)
 
             # Category-aware edge thresholds:
-            # - Sports with Vegas data: lower edge OK (strong external signal)
-            # - Crypto: higher edge needed (volatile)
-            # - Finance: higher edge needed (very efficient markets)
+            # ALL categories must beat round-trip fees (14¢ = 0.14)
+            # The minimum edge should ensure that after fees + spread,
+            # expected profit is still positive.
             # NOTE: cat already detected above for dynamic edge cap
             
             if cat == "sports" and sports_pred is not None:
-                effective_min_edge = max(effective_min_edge, 0.03)  # Vegas gives strong signal
+                effective_min_edge = max(effective_min_edge, 0.06)  # Vegas gives strong signal — lower OK
             elif cat == "crypto":
-                effective_min_edge = max(effective_min_edge, 0.06)  # High volatility
+                effective_min_edge = max(effective_min_edge, 0.10)  # High volatility + fees
             elif cat == "finance":
-                effective_min_edge = max(effective_min_edge, 0.05)  # Efficient markets
+                effective_min_edge = max(effective_min_edge, 0.08)  # Efficient markets
             elif cat == "weather":
-                effective_min_edge = max(effective_min_edge, 0.04)  # Weather forecasts OK
+                effective_min_edge = max(effective_min_edge, 0.07)  # Weather forecasts OK
             elif cat == "politics":
-                effective_min_edge = max(effective_min_edge, 0.05)  # Narrative-driven
+                effective_min_edge = max(effective_min_edge, 0.08)  # Narrative-driven
 
             # Gate: minimum edge (absolute value)
             if abs(prediction.edge) < effective_min_edge:
                 continue
 
-            # ── Phase 1: EDGE MUST EXCEED SPREAD COST ────────────
-            # This is THE most important profitability check.
-            # If our edge doesn't cover the bid-ask spread we pay,
-            # every trade is negative expected value on average.
-            # We need edge > half_spread (one-way crossing cost).
+            # ── Phase 1+: EDGE MUST EXCEED ALL COSTS ──────────
+            # THE most important profitability check.
+            # Edge must cover:
+            #   1) Half-spread (bid-ask crossing cost)
+            #   2) Round-trip fees (7¢ buy + 7¢ sell = 14¢ total)
+            # Without this, every trade is negative EV.
             half_spread = features.spread / 2.0
-            if abs(prediction.edge) <= half_spread:
+            price_cents = int(features.midpoint * 100)
+            effective_cost = min(price_cents, 100 - price_cents)
+            # Express round-trip fee as a fraction of $1 contract
+            fee_as_fraction = ROUND_TRIP_FEE_CENTS / 100.0  # 0.14
+            # Total cost to overcome: spread + fees
+            total_cost_to_beat = half_spread + fee_as_fraction
+            if abs(prediction.edge) <= total_cost_to_beat:
                 continue
 
             # ⭐ Multi-factor confidence scoring (Phase 11)
@@ -793,14 +838,15 @@ class Frankenstein:
             # Cap to risk manager's max position size
             count = min(count, params.max_position_size)
 
-            # Phase 5: Expected value with spread cost
-            # EV = (edge - half_spread) * count * (1 - cost)
-            # Must subtract spread cost — that's what we actually pay.
+            # Phase 5+: Expected value with ALL costs (spread + fees)
+            # EV = (edge - spread_cost - fee_cost) * count * (1 - cost)
+            # This is the REAL profitability metric.
             cost_frac = price_cents / 100.0
             spread_cost = features.spread / 2.0
-            net_edge = abs(prediction.edge) - spread_cost
+            fee_cost = ROUND_TRIP_FEE_CENTS / 100.0  # 0.14 per contract as fraction
+            net_edge = abs(prediction.edge) - spread_cost - fee_cost
             if net_edge <= 0:
-                continue  # no profit after spread cost
+                continue  # no profit after spread + fees
             ev = net_edge * count * (1.0 - cost_frac)
 
             # Enrich confidence breakdown with uncertainty metrics
@@ -923,7 +969,7 @@ class Frankenstein:
         trade_candidates.sort(key=lambda c: c["ev"], reverse=True)
         max_trades_per_scan = min(
             params.max_simultaneous_positions - self._count_open_positions(),
-            5,  # cap at 5 new trades per scan — quality over quantity
+            3,  # cap at 3 new trades per scan — only the very best
         )
 
         # Debug: record scan state
@@ -1169,8 +1215,9 @@ class Frankenstein:
             # This prevents take-profit triggering on paper gains that
             # vanish after execution costs, and makes stop-loss accurate.
             half_spread = features.spread / 2.0
-            est_fee_pct = 0.07  # ~7¢ per contract in fees (Kalshi taker)
-            exit_cost = half_spread + est_fee_pct
+            # Both buy and sell fees (we paid to enter, we'll pay to exit)
+            fee_per_side = TAKER_FEE_CENTS / 100.0  # 0.07
+            exit_cost = half_spread + fee_per_side  # cost to EXIT (spread + sell fee)
 
             if our_side == "yes":
                 current_value = max(mid - exit_cost, 0.01)
@@ -1213,8 +1260,11 @@ class Frankenstein:
                 exit_reason = f"stop_loss ({unrealized_pnl_pct:.1%} < -{stop_loss_pct:.1%})"
 
             # ── Take-profit check ─────────────────────────
-            # Phase 7: 15% take-profit — symmetric with stop-loss.
-            take_profit_pct = getattr(params, 'take_profit_pct', 0.15) or 0.15
+            # Phase 7+: 20% take-profit — must cover ROUND-TRIP fees.
+            # Old 15% take-profit was triggering on paper gains that
+            # didn't exist after fees.  At 14¢ round-trip fees,
+            # a 15% gain on a 50¢ contract = 7.5¢ gain - 14¢ fees = LOSS.
+            take_profit_pct = getattr(params, 'take_profit_pct', 0.20) or 0.20
             # Earlier take-profit near expiry (lock in gains)
             if features.hours_to_expiry < 4:
                 take_profit_pct *= 0.70
@@ -1704,12 +1754,21 @@ class Frankenstein:
             else:
                 c = min(1.0 - mid + 0.01, 0.99)  # fallback
 
+        # Include taker fee in cost basis — this is what we actually pay.
+        # For a BUY at 40¢: real cost = 40¢ + 7¢ fee = 47¢.
+        # On WIN we get $1 and pay 7¢ sell fee, net = 100 - 7 = 93¢.
+        # So: net win = (93 - price*100)/100 instead of (1 - c).
+        fee_per_side = TAKER_FEE_CENTS / 100.0  # 0.07
+        real_cost = c + fee_per_side             # cost + buy fee
+        net_win = (1.0 - fee_per_side) - c       # payout minus sell fee minus cost
+
         # No edge or degenerate cost — skip
-        if p <= c or c <= 0.01 or c >= 0.99:
+        if p <= real_cost or real_cost <= 0.01 or real_cost >= 0.99 or net_win <= 0:
             return 0.0
 
-        # Kelly: f* = (p - c) / (1 - c)
-        kelly = (p - c) / (1.0 - c)
+        # Fee-adjusted Kelly: f* = (p * net_win - (1-p) * real_cost) / net_win
+        # Simplified for binary: f* = (p - real_cost) / net_win
+        kelly = (p - real_cost) / net_win
 
         # Apply fractional Kelly for safety
         adjusted = kelly * params.kelly_fraction

@@ -399,10 +399,14 @@ class XGBoostPredictor(PredictionModel):
             std = float(std_devs[0])
             agreement = float(tree_agr[0])
 
-            # Phase 14: Ensemble blending with heuristic
-            # ML weight grows with training data: 50% at 50 samples → 90% at 500+
+            # Phase 14+: Ensemble blending with heuristic
+            # ML weight grows with training data — but starts higher (0.70)
+            # so the model has actual predictive power instead of just
+            # echoing the market price back.  The old 0.50 start meant
+            # half the prediction was the market price — zero edge.
+            # At 200+ samples, ML weight reaches 0.90 (max).
             n_trained = getattr(self, '_train_samples', 0)
-            ml_weight = min(0.90, 0.50 + n_trained / 1000.0)
+            ml_weight = min(0.92, 0.70 + n_trained / 1000.0)
             heuristic_prob = features.midpoint  # market price is the heuristic baseline
 
             blended_prob = ml_weight * prob_yes + (1.0 - ml_weight) * heuristic_prob

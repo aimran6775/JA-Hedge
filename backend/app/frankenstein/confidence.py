@@ -32,12 +32,13 @@ log = get_logger("frankenstein.confidence")
 # ── Factor Weights (must sum to 1.0) ─────────────────────────────────────
 
 FACTOR_WEIGHTS = {
-    "model_strength": 0.30,    # Phase 17: Increase — model quality is most important
-    "edge_quality": 0.30,      # Phase 17: Increase — edge must be real
-    "liquidity": 0.20,         # Phase 17: Increase — can't profit in illiquid markets
-    "timing": 0.10,            # Phase 17: Decrease — less important
-    "volume_signal": 0.05,     # Phase 17: Decrease — weak signal
-    "risk_context": 0.05,      # Phase 17: Decrease — handled by risk manager
+    "model_strength": 0.25,    # Model quality is critical
+    "edge_quality": 0.25,      # Edge must be real
+    "fee_impact": 0.15,        # NEW: Fees are the #1 profitability killer
+    "liquidity": 0.15,         # Can't profit in illiquid markets
+    "timing": 0.10,            # Less important
+    "volume_signal": 0.05,     # Weak signal
+    "risk_context": 0.05,      # Handled by risk manager
 }
 
 # ── Grade Thresholds ──────────────────────────────────────────────────────
@@ -141,6 +142,9 @@ class ConfidenceScorer:
 
         # 2. Edge Quality
         factors.append(self._score_edge_quality(prediction, features))
+
+        # 2b. Fee Impact (NEW)
+        factors.append(self._score_fee_impact(prediction, features))
 
         # 3. Liquidity
         factors.append(self._score_liquidity(features))
@@ -331,6 +335,91 @@ class ConfidenceScorer:
         w = FACTOR_WEIGHTS["edge_quality"]
         return ConfidenceFactor(
             name="Edge Quality",
+            score=score,
+            weight=w,
+            weighted=score * w,
+            reason=" · ".join(reasons),
+        )
+
+    # ── Factor 2b: Fee Impact ───────────────────────────────────────
+
+    def _score_fee_impact(
+        self, prediction: Prediction, features: MarketFeatures
+    ) -> ConfidenceFactor:
+        """Score how much fees eat into the edge.
+        
+        This is THE #1 profitability factor. Kalshi charges 7¢/contract
+        per side (taker). A round-trip costs 14¢ in fees.
+        
+        At 22¢ contract: fees = 63% of cost → DEATH TRAP
+        At 50¢ contract: fees = 28% of cost → Marginal  
+        At 75¢ contract: fees = 19% of cost → Acceptable
+        
+        We score based on:
+        1. Edge-to-fee ratio: how much edge remains after fees
+        2. Fee-to-cost ratio: what % of cost goes to fees
+        3. Net profit potential: edge - spread - fees
+        """
+        edge_abs = abs(prediction.edge)
+        mid = features.midpoint
+        reasons = []
+        
+        # Contract cost in cents (use cheaper side for binary)
+        price_cents = int(mid * 100)
+        effective_cost = min(price_cents, 100 - price_cents)
+        
+        # Round-trip fee as fraction of $1 contract
+        ROUND_TRIP_FEE = 0.14  # 7¢ buy + 7¢ sell
+        
+        # Half-spread cost
+        half_spread = features.spread_pct / 2.0
+        
+        # Net edge after ALL costs
+        net_edge = edge_abs - half_spread - ROUND_TRIP_FEE
+        
+        # Fee-to-cost ratio
+        fee_cost_ratio = ROUND_TRIP_FEE / max(effective_cost / 100.0, 0.01)
+        
+        # Edge-to-fee ratio (how many times does edge cover fees?)
+        edge_fee_ratio = edge_abs / ROUND_TRIP_FEE if ROUND_TRIP_FEE > 0 else 0
+        
+        # Scoring
+        if net_edge > 0.10:
+            score = 95
+            reasons.append(f"Excellent: {net_edge:.1%} net edge after all costs")
+        elif net_edge > 0.05:
+            score = 80
+            reasons.append(f"Good: {net_edge:.1%} net edge after costs")
+        elif net_edge > 0.02:
+            score = 60
+            reasons.append(f"Thin: {net_edge:.1%} net edge after costs")
+        elif net_edge > 0:
+            score = 35
+            reasons.append(f"Razor thin: {net_edge:.1%} net edge after costs")
+        else:
+            score = 5
+            reasons.append(f"NEGATIVE after costs: {net_edge:.1%} net edge")
+        
+        # Fee burden penalty
+        if fee_cost_ratio > 0.50:
+            score -= 30
+            reasons.append(f"FEE TRAP: fees={fee_cost_ratio:.0%} of cost")
+        elif fee_cost_ratio > 0.30:
+            score -= 15
+            reasons.append(f"High fees: {fee_cost_ratio:.0%} of cost")
+        elif fee_cost_ratio < 0.20:
+            score += 10
+            reasons.append(f"Low fee burden: {fee_cost_ratio:.0%} of cost")
+        
+        # Bonus: edge covers fees multiple times
+        if edge_fee_ratio > 3.0:
+            score += 10
+            reasons.append(f"Edge covers fees {edge_fee_ratio:.1f}x")
+        
+        score = max(0, min(100, score))
+        w = FACTOR_WEIGHTS["fee_impact"]
+        return ConfidenceFactor(
+            name="Fee Impact",
             score=score,
             weight=w,
             weighted=score * w,

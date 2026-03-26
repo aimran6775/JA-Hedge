@@ -28,30 +28,30 @@ log = get_logger("frankenstein.strategy")
 class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
-    # Signal filters — CONSERVATIVE: quality over quantity
-    min_confidence: float = 0.45     # Phase 11: Higher floor — only trade strong signals
-    min_edge: float = 0.06           # Phase 11: 6% min edge — must beat spread
+    # Signal filters — FEE-AWARE: edge must exceed round-trip cost
+    min_confidence: float = 0.50     # Higher floor — only trade strong signals
+    min_edge: float = 0.10           # 10% min edge — must beat spread + 14¢ round-trip fees
 
     # Position sizing — small and cautious
-    kelly_fraction: float = 0.15     # Phase 11: Conservative Kelly (was 0.25)
-    max_position_size: int = 5       # Phase 11: Small positions (was 12)
-    max_simultaneous_positions: int = 30   # Phase 11: Fewer concurrent (was 75)
+    kelly_fraction: float = 0.15     # Conservative Kelly (was 0.25)
+    max_position_size: int = 4       # Smaller positions (was 5) — reduce fee exposure
+    max_simultaneous_positions: int = 20   # Fewer concurrent (was 30) — focus capital
 
     # Timing
-    scan_interval: float = 30.0  # scan every 30s — patient, not frantic
+    scan_interval: float = 45.0  # scan every 45s — patience, not churning (was 30s)
 
     # Risk overrides — TIGHT
-    max_daily_loss: float = 150.0    # Phase 11: Tighter loss cap (was 300)
-    stop_loss_pct: float = 0.15      # Phase 11: Match brain.py (was 0.30)
-    take_profit_pct: float = 0.15    # Phase 11: Match brain.py (was 0.25)
+    max_daily_loss: float = 100.0    # Tighter loss cap (was 150) — preserve capital
+    stop_loss_pct: float = 0.15      # Match brain.py
+    take_profit_pct: float = 0.20    # Let winners run more (was 0.15)
 
     # Model thresholds
-    max_spread_cents: int = 20   # Phase 11: Tight spreads ONLY (was 40)
-    min_volume: float = 10.0     # Phase 11: Need real liquidity (was 3)
-    min_hours_to_expiry: float = 1.0  # Phase 11: No sub-1h expiry trades
+    max_spread_cents: int = 15   # Very tight spreads ONLY (was 20)
+    min_volume: float = 20.0    # Need real liquidity (was 10)
+    min_hours_to_expiry: float = 2.0  # 2h minimum — no short-expiry fee traps (was 1.0)
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)
-    aggression: float = 0.35         # Phase 11: Conservative (was 0.70)
+    aggression: float = 0.30         # Very conservative (was 0.35)
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -92,15 +92,15 @@ class AdaptiveStrategy:
         self.params = base_params or StrategyParams()
         self.adaptation_interval = adaptation_interval
 
-        # Defaults (never go below/above these) — TIGHT bounds to prevent over-trading
-        self._MIN_CONFIDENCE = 0.35    # Phase 12: Never drop below 35% (was 0.15)
-        self._MAX_CONFIDENCE = 0.65    # Phase 12: Can tighten up to 65% (was 0.55)
-        self._MIN_EDGE = 0.04          # Phase 12: Never trade below 4% edge (was 0.02)
-        self._MAX_EDGE = 0.15          # Phase 12: Raise max (was 0.12)
-        self._MIN_KELLY = 0.05         # Phase 12: Smaller minimum kelly (was 0.08)
-        self._MAX_KELLY = 0.25         # Phase 12: Cap kelly at 25% (was 0.50)
-        self._MIN_AGGRESSION = 0.10    # Phase 12: Can go very conservative
-        self._MAX_AGGRESSION = 0.60    # Phase 12: Never go full aggressive (was 0.85)
+        # Defaults (never go below/above these) — FEE-AWARE bounds
+        self._MIN_CONFIDENCE = 0.40    # Never drop below 40%
+        self._MAX_CONFIDENCE = 0.70    # Can tighten up to 70%
+        self._MIN_EDGE = 0.06          # NEVER trade below 6% edge — fees are 14¢ round-trip
+        self._MAX_EDGE = 0.18          # Raise max — good trades have big edges
+        self._MIN_KELLY = 0.05         # Smaller minimum kelly
+        self._MAX_KELLY = 0.20         # Cap kelly at 20% (was 0.25) — more conservative
+        self._MIN_AGGRESSION = 0.10    # Can go very conservative
+        self._MAX_AGGRESSION = 0.50    # Lower max aggression (was 0.60)
 
         # History
         self._adaptations: list[AdaptationEvent] = []
@@ -184,36 +184,37 @@ class AdaptiveStrategy:
 
         if regime == "volatile":
             # High vol: VERY conservative — wide thresholds, tiny sizes,
-            # tighter stops (volatile markets move fast against you)
-            events.extend(self._adjust("min_confidence", 0.55, "volatile_regime"))
-            events.extend(self._adjust("min_edge", 0.10, "volatile_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.08, "volatile_regime"))
+            # tighter stops. In volatile markets fees compound losses.
+            events.extend(self._adjust("min_confidence", 0.60, "volatile_regime"))
+            events.extend(self._adjust("min_edge", 0.14, "volatile_regime"))  # Must overcome fees + vol
+            events.extend(self._adjust("kelly_fraction", 0.06, "volatile_regime"))
             events.extend(self._adjust("max_position_size", 2, "volatile_regime"))
-            events.extend(self._adjust("stop_loss_pct", 0.10, "volatile_regime"))  # tighter stop
-            events.extend(self._adjust("take_profit_pct", 0.12, "volatile_regime"))  # take profits early
+            events.extend(self._adjust("stop_loss_pct", 0.10, "volatile_regime"))
+            events.extend(self._adjust("take_profit_pct", 0.15, "volatile_regime"))
 
         elif regime == "quiet":
             # Low vol: wider stops (less noise-triggered exits), be patient
-            events.extend(self._adjust("min_confidence", 0.40, "quiet_regime"))
-            events.extend(self._adjust("min_edge", 0.06, "quiet_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.18, "quiet_regime"))
-            events.extend(self._adjust("max_position_size", 5, "quiet_regime"))
+            # Still require meaningful edge to cover fees
+            events.extend(self._adjust("min_confidence", 0.45, "quiet_regime"))
+            events.extend(self._adjust("min_edge", 0.08, "quiet_regime"))  # Fees still apply in quiet markets
+            events.extend(self._adjust("kelly_fraction", 0.15, "quiet_regime"))
+            events.extend(self._adjust("max_position_size", 4, "quiet_regime"))
             events.extend(self._adjust("stop_loss_pct", 0.18, "quiet_regime"))  # wider — less noise
             events.extend(self._adjust("take_profit_pct", 0.20, "quiet_regime"))  # let winners run
 
         elif regime == "trending":
             # Trending: wider trailing stop to ride the trend
-            events.extend(self._adjust("min_confidence", 0.45, "trending_regime"))
-            events.extend(self._adjust("min_edge", 0.07, "trending_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.15, "trending_regime"))
+            events.extend(self._adjust("min_confidence", 0.50, "trending_regime"))
+            events.extend(self._adjust("min_edge", 0.09, "trending_regime"))  # Cover fees + ride trend
+            events.extend(self._adjust("kelly_fraction", 0.12, "trending_regime"))
             events.extend(self._adjust("stop_loss_pct", 0.15, "trending_regime"))  # standard
             events.extend(self._adjust("take_profit_pct", 0.25, "trending_regime"))  # wider — ride trend
 
         elif regime == "mean_reverting":
             # Mean-revert: tight take-profit (grab the bounce), tight stop
-            events.extend(self._adjust("min_confidence", 0.50, "mean_reverting_regime"))
-            events.extend(self._adjust("min_edge", 0.08, "mean_reverting_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.10, "mean_reverting_regime"))
+            events.extend(self._adjust("min_confidence", 0.55, "mean_reverting_regime"))
+            events.extend(self._adjust("min_edge", 0.10, "mean_reverting_regime"))  # Fees make scalping hard
+            events.extend(self._adjust("kelly_fraction", 0.08, "mean_reverting_regime"))
             events.extend(self._adjust("stop_loss_pct", 0.12, "mean_reverting_regime"))  # tight stop
             events.extend(self._adjust("take_profit_pct", 0.10, "mean_reverting_regime"))  # quick scalp
 
