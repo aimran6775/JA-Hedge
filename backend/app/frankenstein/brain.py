@@ -766,20 +766,17 @@ class Frankenstein:
             if abs(prediction.edge) < effective_min_edge:
                 continue
 
-            # ── Phase 1+: EDGE MUST EXCEED COSTS ──────────
-            # TRAINED: Edge must cover spread + round-trip fees.
-            # LEARNING: Edge must cover half-spread only (we accept
-            #   small losses to collect training data with 1-contract bets).
+            # ── COST SANITY CHECK (trained mode only) ──────────
+            # In trained mode, edge should cover costs for profitability.
+            # In learning mode, the confidence scorer handles this via fee_impact.
             half_spread = features.spread / 2.0
             price_cents = int(features.midpoint * 100)
             effective_cost = min(price_cents, 100 - price_cents)
             fee_as_fraction = ROUND_TRIP_FEE_CENTS / 100.0  # 0.14
             if self._model.is_trained:
                 total_cost_to_beat = half_spread + fee_as_fraction
-            else:
-                total_cost_to_beat = half_spread  # learning: just beat the spread
-            if abs(prediction.edge) <= total_cost_to_beat:
-                continue
+                if abs(prediction.edge) <= total_cost_to_beat:
+                    continue
 
             # ⭐ Multi-factor confidence scoring (Phase 11)
             # Only A-grade trades are executed — prioritise quality over quantity.
@@ -803,8 +800,15 @@ class Frankenstein:
             # Kelly criterion position sizing (binary contract formula)
             # 🎯 Phase 2: Confidence-driven sizing — scale Kelly by confidence grade
             kelly = self._kelly_size(prediction, features, params, market=market)
+
+            # In learning mode, Kelly may say 0 because fees eat the edge.
+            # That's OK — we override with fixed 1-contract sizing to collect data.
+            # The confidence scorer already approved this trade.
             if kelly <= 0:
-                continue
+                if _is_learning:
+                    kelly = 0.01  # minimal fixed sizing for data collection
+                else:
+                    continue
 
             # Confidence-based position scaling:
             # A+ → 100%, A → 85%, B+ → 65%, B → 45%, C+ → 25%

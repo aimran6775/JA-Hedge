@@ -198,7 +198,7 @@ async def debug_rejections() -> dict:
 
     # Confidence scorer
     conf_scorer = ConfidenceScorer(
-        min_grade="B" if is_learning else "A",
+        min_grade="B" if is_learning else "B+",
         portfolio_heat=frank._adv_risk.portfolio_heat if hasattr(frank._adv_risk, 'portfolio_heat') else 0.0,
         current_drawdown_pct=frank._adv_risk.current_drawdown_pct if hasattr(frank._adv_risk, 'current_drawdown_pct') else 0.0,
         open_positions=frank._count_open_positions(),
@@ -220,9 +220,11 @@ async def debug_rejections() -> dict:
         if edge < effective_min_edge:
             gates.append(f"edge {edge:.4f} < min {effective_min_edge}")
 
-        cost_to_beat = half_spread if is_learning else (half_spread + fee_frac)
-        if edge <= cost_to_beat:
-            gates.append(f"edge {edge:.4f} <= cost {cost_to_beat:.4f}")
+        # Cost gate (trained mode only)
+        if not is_learning:
+            cost_to_beat = half_spread + fee_frac
+            if edge <= cost_to_beat:
+                gates.append(f"edge {edge:.4f} <= cost {cost_to_beat:.4f}")
 
         # Confidence scoring
         conf = conf_scorer.score(
@@ -235,8 +237,10 @@ async def debug_rejections() -> dict:
 
         # Kelly
         kelly = frank._kelly_size(pred, feat, params)
-        if kelly <= 0:
+        if kelly <= 0 and not is_learning:
             gates.append(f"kelly={kelly:.4f} (no +EV)")
+        elif kelly <= 0 and is_learning:
+            kelly = 0.01  # learning mode override
 
         # Net EV
         net_edge = edge - half_spread - fee_frac
