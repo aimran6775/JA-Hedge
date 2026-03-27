@@ -219,7 +219,7 @@ class Frankenstein:
         # Event-level cooldown: {event_ticker: timestamp}
         # Prevents trading different strike prices on the same event.
         self._recently_traded_events: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 7200.0  # 2-HOUR cooldown per ticker/event (was 30 min)
+        self._trade_cooldown_seconds: float = 1800.0  # 30-min cooldown (learning needs faster data collection)
 
         # Phase 9: Category performance tracking for gating
         # {category: {"wins": int, "losses": int}}
@@ -455,22 +455,24 @@ class Frankenstein:
 
             # ── FEE-AWARE PRICE FLOOR ────────────────────────────
             # Skip cheap contracts where fees dominate.
-            # At 20¢, round-trip fees (14¢) = 70% of cost → guaranteed loser.
-            # Require contract value ≥ 25¢ so fees are at most 56%.
-            # Combined with edge requirement, this ensures profitability.
+            # LEARNING MODE: relax to 56% so we can collect data on
+            # mid-priced contracts (25¢+).  TRAINED: strict 35% (40¢+).
             mid_cents = int(mid * 100)
             effective_cost_cents = min(mid_cents, 100 - mid_cents)  # cheapest side
             fee_pct = round_trip_fee_pct(effective_cost_cents)
-            if fee_pct > 0.35:  # fees > 35% of cost → skip (requires ~40¢+ contracts)
+            _fee_cap = 0.56 if not self._model.is_trained else 0.35
+            if fee_pct > _fee_cap:
                 continue
 
             # ── MINIMUM TIME-TO-EXPIRY ────────────────────────────
-            # Short-expiry contracts (BTC 15-min etc.) are fee death traps.
-            # Require at least 2 hours to expiry for edge to materialize.
+            # Short-expiry contracts are fee traps.
+            # LEARNING MODE: 30 min minimum (need data variety).
+            # TRAINED: 2 hour minimum (need time for edge).
             if hasattr(m, 'expiration_time') and m.expiration_time:
                 from datetime import datetime, timezone as _tz
                 _delta = (m.expiration_time - datetime.now(_tz.utc)).total_seconds() / 3600
-                if _delta < 2.0:  # 2-hour minimum (was 1h in strategy params)
+                _min_hours = 0.5 if not self._model.is_trained else 2.0
+                if _delta < _min_hours:
                     continue
 
             pre_filtered.append(m)
@@ -599,9 +601,11 @@ class Frankenstein:
 
         # ⭐ Multi-factor confidence scorer (Phase 11+)
         # Created ONCE outside the loop for performance.
-        # ALWAYS require A grade minimum (composite ≥ 80).
-        # No exceptions — only highest-conviction trades.
-        min_grade = "A"
+        # LEARNING MODE: B grade (composite ≥ 60) — collect training data.
+        # TRAINED MODE: A grade (composite ≥ 80) — only highest conviction.
+        # The confidence scorer IS the gatekeeper. Let it decide.
+        _is_learning = not self._model.is_trained
+        min_grade = "B" if _is_learning else "A"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
@@ -736,47 +740,43 @@ class Frankenstein:
                 continue
 
             # Apply adaptive thresholds
-            effective_min_edge = params.min_edge
-
-            # 🛡️ HEURISTIC GUARD: When model isn't trained, require
-            # higher edge to compensate for model uncertainty.
+            # LEARNING MODE: low edge bar — let the confidence scorer decide.
+            # TRAINED MODE: category-aware thresholds for real profitability.
             if not self._model.is_trained:
-                effective_min_edge = max(effective_min_edge, 0.12)
-
-            # Category-aware edge thresholds:
-            # ALL categories must beat round-trip fees (14¢ = 0.14)
-            # The minimum edge should ensure that after fees + spread,
-            # expected profit is still positive.
-            # NOTE: cat already detected above for dynamic edge cap
-            
-            if cat == "sports" and sports_pred is not None:
-                effective_min_edge = max(effective_min_edge, 0.06)  # Vegas gives strong signal — lower OK
-            elif cat == "crypto":
-                effective_min_edge = max(effective_min_edge, 0.10)  # High volatility + fees
-            elif cat == "finance":
-                effective_min_edge = max(effective_min_edge, 0.08)  # Efficient markets
-            elif cat == "weather":
-                effective_min_edge = max(effective_min_edge, 0.07)  # Weather forecasts OK
-            elif cat == "politics":
-                effective_min_edge = max(effective_min_edge, 0.08)  # Narrative-driven
+                # 🎓 LEARNING: minimum edge = 2% (just need a signal direction)
+                # Position sizing is capped at 1 contract so risk is minimal.
+                # The confidence scorer + Kelly still gate bad trades.
+                effective_min_edge = 0.02
+            else:
+                effective_min_edge = params.min_edge
+                # Category-aware edge thresholds (trained mode only):
+                if cat == "sports" and sports_pred is not None:
+                    effective_min_edge = max(effective_min_edge, 0.06)
+                elif cat == "crypto":
+                    effective_min_edge = max(effective_min_edge, 0.10)
+                elif cat == "finance":
+                    effective_min_edge = max(effective_min_edge, 0.08)
+                elif cat == "weather":
+                    effective_min_edge = max(effective_min_edge, 0.07)
+                elif cat == "politics":
+                    effective_min_edge = max(effective_min_edge, 0.08)
 
             # Gate: minimum edge (absolute value)
             if abs(prediction.edge) < effective_min_edge:
                 continue
 
-            # ── Phase 1+: EDGE MUST EXCEED ALL COSTS ──────────
-            # THE most important profitability check.
-            # Edge must cover:
-            #   1) Half-spread (bid-ask crossing cost)
-            #   2) Round-trip fees (7¢ buy + 7¢ sell = 14¢ total)
-            # Without this, every trade is negative EV.
+            # ── Phase 1+: EDGE MUST EXCEED COSTS ──────────
+            # TRAINED: Edge must cover spread + round-trip fees.
+            # LEARNING: Edge must cover half-spread only (we accept
+            #   small losses to collect training data with 1-contract bets).
             half_spread = features.spread / 2.0
             price_cents = int(features.midpoint * 100)
             effective_cost = min(price_cents, 100 - price_cents)
-            # Express round-trip fee as a fraction of $1 contract
             fee_as_fraction = ROUND_TRIP_FEE_CENTS / 100.0  # 0.14
-            # Total cost to overcome: spread + fees
-            total_cost_to_beat = half_spread + fee_as_fraction
+            if self._model.is_trained:
+                total_cost_to_beat = half_spread + fee_as_fraction
+            else:
+                total_cost_to_beat = half_spread  # learning: just beat the spread
             if abs(prediction.edge) <= total_cost_to_beat:
                 continue
 
@@ -827,9 +827,12 @@ class Frankenstein:
             price_cents = self._compute_price(prediction, features, market=market)
 
             # Grade-based sizing: only scale up for proven signals
-            if conf_breakdown.grade in ("A+",) and self._model.is_trained:
+            # LEARNING MODE: always 1 contract — minimize risk while collecting data
+            if not self._model.is_trained:
+                min_count = 1
+            elif conf_breakdown.grade in ("A+",):
                 min_count = 3  # A+ with trained model: confident
-            elif conf_breakdown.grade in ("A",) and self._model.is_trained:
+            elif conf_breakdown.grade in ("A",):
                 min_count = 2  # A with trained model: moderate
             else:
                 min_count = 1  # Everything else: minimum bet

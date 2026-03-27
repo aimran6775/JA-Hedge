@@ -148,10 +148,10 @@ async def purge_bootstrap_data() -> dict:
 
 @router.get("/debug/rejections")
 async def debug_rejections() -> dict:
-    """Debug: show why trades are being rejected."""
+    """Debug: show ALL candidates with full confidence analysis."""
     frank = _get_frank()
     from app.pipeline import market_cache
-    from app.ai.features import MarketFeatures
+    from app.frankenstein.confidence import ConfidenceScorer
 
     markets = market_cache.get_active()
     candidates = frank._filter_candidates(markets)
@@ -159,51 +159,125 @@ async def debug_rejections() -> dict:
     if not candidates:
         return {"error": "no_candidates", "total_active": len(markets)}
 
-    # Try one candidate
-    m = candidates[0]
-    features = frank._features.compute(m)
-    predictions = frank._model.predict_batch([features])
-    pred = predictions[0] if predictions else None
+    # Pre-filter like the scan loop does
+    from datetime import datetime, timezone as _tz
+    pre_filtered = []
+    for m in candidates:
+        mid = float(m.midpoint or m.last_price or 0)
+        if mid < 0.15 or mid > 0.85:
+            continue
+        mid_cents = int(mid * 100)
+        effective_cost = min(mid_cents, 100 - mid_cents)
+        from app.frankenstein.brain import round_trip_fee_pct, ROUND_TRIP_FEE_CENTS
+        fee_pct = round_trip_fee_pct(effective_cost)
+        _fee_cap = 0.56 if not frank._model.is_trained else 0.35
+        if fee_pct > _fee_cap:
+            continue
+        if getattr(m, 'market_type', 'binary') != 'binary':
+            continue
+        pre_filtered.append(m)
+    candidates = pre_filtered[:30]  # cap for performance
 
-    if pred is None:
-        return {"error": "no_prediction", "ticker": m.ticker}
+    if not candidates:
+        return {"error": "all_filtered", "total_active": len(markets)}
+
+    # Compute features + predictions
+    for m in candidates:
+        mid = float(m.midpoint or m.last_price or 0)
+        vol = float(m.volume or 0)
+        oi = float(m.open_interest or 0)
+        spread = float(m.spread or 0)
+        if mid > 0:
+            frank._features.update(m.ticker, mid, vol, oi, spread)
+
+    features_list = [frank._features.compute(m) for m in candidates]
+    predictions = frank._model.predict_batch(features_list)
 
     params = frank.strategy.params
-    kelly = frank._kelly_size(pred, features, params)
-    count = max(1, int(kelly * params.max_position_size))
-    price_cents = frank._compute_price(pred, features)
+    is_learning = not frank._model.is_trained
 
-    # Check portfolio risk
-    passed, reject_reason = frank._adv_risk.portfolio_check(
-        ticker=m.ticker,
-        count=count,
-        price_cents=price_cents,
-        event_ticker=getattr(m, "event_ticker", ""),
-        category=getattr(m, "category", ""),
+    # Confidence scorer
+    conf_scorer = ConfidenceScorer(
+        min_grade="B" if is_learning else "A",
+        portfolio_heat=frank._adv_risk.portfolio_heat if hasattr(frank._adv_risk, 'portfolio_heat') else 0.0,
+        current_drawdown_pct=frank._adv_risk.current_drawdown_pct if hasattr(frank._adv_risk, 'current_drawdown_pct') else 0.0,
+        open_positions=frank._count_open_positions(),
+        max_positions=params.max_simultaneous_positions,
     )
 
-    # Check execution risk (without actually executing)
-    risk_ok, risk_reason = None, None
-    if frank._execution._risk_manager:
-        from app.kalshi.models import OrderSide, OrderAction
-        side = OrderSide.YES if pred.side == "yes" else OrderSide.NO
-        import asyncio
-        risk_ok, risk_reason = await frank._execution._risk_manager.pre_trade_check(
-            ticker=m.ticker, side=side, action=OrderAction.BUY,
-            count=count, price_cents=price_cents,
+    results = []
+    for m, feat, pred in zip(candidates, features_list, predictions):
+        edge = abs(pred.edge)
+        half_spread = feat.spread / 2.0
+        fee_frac = ROUND_TRIP_FEE_CENTS / 100.0
+        mid_cents = int(feat.midpoint * 100)
+        eff_cost = min(mid_cents, 100 - mid_cents)
+        fee_pct_val = round_trip_fee_pct(eff_cost)
+
+        # Determine what blocks this trade
+        gates = []
+        effective_min_edge = 0.02 if is_learning else params.min_edge
+        if edge < effective_min_edge:
+            gates.append(f"edge {edge:.4f} < min {effective_min_edge}")
+
+        cost_to_beat = half_spread if is_learning else (half_spread + fee_frac)
+        if edge <= cost_to_beat:
+            gates.append(f"edge {edge:.4f} <= cost {cost_to_beat:.4f}")
+
+        # Confidence scoring
+        conf = conf_scorer.score(
+            pred, feat,
+            model_trained=frank._model.is_trained,
         )
 
+        if not conf.should_trade:
+            gates.append(f"grade {conf.grade} < min {conf.min_grade_to_trade}")
+
+        # Kelly
+        kelly = frank._kelly_size(pred, feat, params)
+        if kelly <= 0:
+            gates.append(f"kelly={kelly:.4f} (no +EV)")
+
+        # Net EV
+        net_edge = edge - half_spread - fee_frac
+        price_cents = frank._compute_price(pred, feat)
+
+        results.append({
+            "ticker": m.ticker,
+            "title": (m.title or "")[:80],
+            "prediction": {
+                "side": pred.side,
+                "confidence": round(pred.confidence, 4),
+                "edge": round(pred.edge, 4),
+                "prob": round(pred.predicted_prob, 4),
+            },
+            "market": {
+                "midpoint": feat.midpoint,
+                "spread": feat.spread,
+                "volume": feat.volume,
+                "fee_pct": round(fee_pct_val, 3),
+                "price_cents": price_cents,
+            },
+            "confidence_grade": {
+                "grade": conf.grade,
+                "score": round(conf.composite_score, 1),
+                "should_trade": conf.should_trade,
+                "factors": {f.name: {"score": round(f.score, 1), "weighted": round(f.weighted, 1), "reason": f.reason} for f in conf.factors},
+            },
+            "sizing": {"kelly": round(kelly, 4), "net_edge": round(net_edge, 4)},
+            "gates_blocking": gates,
+            "would_execute": len(gates) == 0,
+        })
+
+    # Sort: trades that would execute first, then by confidence score
+    results.sort(key=lambda r: (-int(r["would_execute"]), -r["confidence_grade"]["score"]))
+
     return {
-        "ticker": m.ticker,
-        "title": m.title,
-        "prediction": {"side": pred.side, "confidence": pred.confidence, "edge": pred.edge, "prob": pred.predicted_prob},
-        "features": {"midpoint": features.midpoint, "spread": features.spread, "volume": features.volume},
-        "sizing": {"kelly": kelly, "count": count, "price_cents": price_cents},
-        "params": {"min_confidence": params.min_confidence, "min_edge": params.min_edge},
-        "portfolio_check": {"passed": passed, "reason": reject_reason},
-        "execution_risk": {"passed": risk_ok, "reason": risk_reason},
-        "total_candidates": len(candidates),
         "total_active": len(markets),
+        "total_pre_filtered": len(pre_filtered),
+        "model_trained": frank._model.is_trained,
+        "is_learning_mode": is_learning,
+        "candidates": results,
     }
 
 

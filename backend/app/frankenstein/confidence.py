@@ -215,8 +215,8 @@ class ConfidenceScorer:
             score += 35
             reasons.append("Trained ML model active")
         else:
-            score += 10
-            reasons.append("Heuristic only (no ML)")
+            score += 25
+            reasons.append("Heuristic mode (collecting training data)")
 
         # ── Tree Agreement (0–1, from individual tree variance) ──
         agreement = getattr(prediction, "tree_agreement", 1.0)

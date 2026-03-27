@@ -757,10 +757,10 @@ class XGBoostPredictor(PredictionModel):
         adjustments (1-5%), not big swings. A heuristic claiming 20%
         edge over the market is wrong, not smart.
 
-        Phase 18: DRAMATICALLY reduced max adjustment from ±20% to ±5%.
-        Without a trained ML model, we have almost no edge. The heuristic
-        exists to allow the system to collect training data, not to
-        generate alpha.
+        Phase 18: Adjusted max adjustment to ±10% to allow the heuristic
+        to express genuine signals from momentum, RSI, volume, and convergence.
+        The confidence scorer and Kelly criterion will still gate bad trades,
+        but the heuristic needs room to generate tradeable edges.
         """
         mid = features.midpoint
         if mid <= 0 or mid >= 1:
@@ -775,55 +775,52 @@ class XGBoostPredictor(PredictionModel):
         else:
             time_trust = 0.95
 
-        # -- Signal 2: Momentum (TINY adjustments only) --
-        # Phase 18: Max contribution: +-1.5% (was +-3%)
+        # -- Signal 2: Momentum adjustments --
+        # Allow bigger contributions so strong moves generate real edge
         momentum_adj = 0.0
-        if features.price_change_5m > 0.015:
-            momentum_adj = min(features.price_change_5m * 0.5, 0.015)
-        elif features.price_change_5m < -0.015:
-            momentum_adj = max(features.price_change_5m * 0.5, -0.015)
-        elif features.price_change_1m > 0.008:
-            momentum_adj = min(features.price_change_1m * 0.4, 0.008)
-        elif features.price_change_1m < -0.008:
-            momentum_adj = max(features.price_change_1m * 0.4, -0.008)
+        if features.price_change_5m > 0.01:
+            momentum_adj = min(features.price_change_5m * 0.6, 0.03)
+        elif features.price_change_5m < -0.01:
+            momentum_adj = max(features.price_change_5m * 0.6, -0.03)
+        elif features.price_change_1m > 0.005:
+            momentum_adj = min(features.price_change_1m * 0.5, 0.015)
+        elif features.price_change_1m < -0.005:
+            momentum_adj = max(features.price_change_1m * 0.5, -0.015)
 
         # -- Signal 3: Convergence boost near expiry --
-        # Phase 18: Max contribution: +-1% (was +-2%)
+        # Near-expiry convergence is a genuine signal
         convergence_adj = 0.0
         if features.hours_to_expiry < 12:
             dist = abs(mid - 0.5)
-            if dist > 0.30:
+            if dist > 0.25:
                 direction = 1.0 if mid > 0.5 else -1.0
-                convergence_adj = direction * dist * time_trust * 0.03
+                convergence_adj = direction * dist * time_trust * 0.06
 
         # -- Signal 4: Volume confirmation --
-        # Phase 18: Max contribution: +-0.8% (was +-1.5%)
         volume_adj = 0.0
-        if features.volume_ratio > 1.5 and abs(features.price_change_5m) > 0.01:
-            volume_adj = features.price_change_5m * 0.15 * min(features.volume_ratio / 3.0, 1.0)
-            volume_adj = max(-0.008, min(0.008, volume_adj))
+        if features.volume_ratio > 1.3 and abs(features.price_change_5m) > 0.008:
+            volume_adj = features.price_change_5m * 0.2 * min(features.volume_ratio / 2.5, 1.0)
+            volume_adj = max(-0.015, min(0.015, volume_adj))
 
         # -- Signal 5: RSI-based adjustment --
-        # Phase 18: Max contribution: +-1% (was +-1.5%)
         rsi_adj = 0.0
         if features.rsi_14 > 0:
             if features.rsi_14 > 70 and features.hours_to_expiry < 48:
-                rsi_adj = 0.01
+                rsi_adj = 0.02
             elif features.rsi_14 < 30 and features.hours_to_expiry < 48:
-                rsi_adj = -0.01
+                rsi_adj = -0.02
             elif features.rsi_14 > 70 and features.hours_to_expiry >= 48:
-                rsi_adj = -0.005
+                rsi_adj = -0.01
             elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
-                rsi_adj = 0.005
+                rsi_adj = 0.01
 
         # -- Signal 6: MACD crossover --
-        # Phase 18: Max contribution: +-0.8% (was +-1.5%)
         macd_adj = 0.0
         if features.macd != 0:
-            if features.macd > 0.02:
-                macd_adj = min(features.macd * 0.2, 0.008)
-            elif features.macd < -0.02:
-                macd_adj = max(features.macd * 0.2, -0.008)
+            if features.macd > 0.015:
+                macd_adj = min(features.macd * 0.3, 0.015)
+            elif features.macd < -0.015:
+                macd_adj = max(features.macd * 0.3, -0.015)
 
         # -- Combine signals --
         signal_weight = max(0.30, 1.0 - time_trust * 0.5)
@@ -832,9 +829,9 @@ class XGBoostPredictor(PredictionModel):
             + convergence_adj
         )
 
-        # Phase 18: Hard cap total heuristic adjustment at +-5% (was +-20%)
-        # Without ML, we have almost zero edge. Be humble.
-        total_adjustment = max(-0.05, min(0.05, total_adjustment))
+        # Hard cap total heuristic adjustment at +-10%
+        # This allows genuine signals to create tradeable edges.
+        total_adjustment = max(-0.10, min(0.10, total_adjustment))
 
         prob_yes = base_prob + total_adjustment
 
@@ -846,8 +843,8 @@ class XGBoostPredictor(PredictionModel):
         prob_yes = max(0.05, min(0.95, prob_yes))
         pred = self._build_prediction(
             prob_yes, features,
-            prediction_std=0.20,  # Phase 18: even higher uncertainty for heuristic (was 0.15)
-            tree_agreement=0.20,  # Phase 18: lower agreement — no real model (was 0.3)
+            prediction_std=0.12,  # moderate uncertainty for heuristic
+            tree_agreement=0.40,  # heuristic has some signal, not zero
         )
         pred.raw_prob = prob_yes
         return pred
