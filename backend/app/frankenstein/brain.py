@@ -601,11 +601,12 @@ class Frankenstein:
 
         # ⭐ Multi-factor confidence scorer (Phase 11+)
         # Created ONCE outside the loop for performance.
+        # The confidence scorer IS the gatekeeper — it evaluates model
+        # strength, edge quality, fees, liquidity, timing, volume, risk.
         # LEARNING MODE: B grade (composite ≥ 60) — collect training data.
-        # TRAINED MODE: A grade (composite ≥ 80) — only highest conviction.
-        # The confidence scorer IS the gatekeeper. Let it decide.
+        # TRAINED MODE: B+ grade (composite ≥ 70) — solid signal required.
         _is_learning = not self._model.is_trained
-        min_grade = "B" if _is_learning else "A"
+        min_grade = "B" if _is_learning else "B+"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
