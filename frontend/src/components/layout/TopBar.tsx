@@ -96,10 +96,15 @@ export function TopBar() {
       <div className="flex items-center gap-3">
         {/* Alert bell */}
         {alertCount > 0 && (
-          <a href="/dashboard/intelligence" className="relative flex items-center gap-1.5 rounded-lg bg-[var(--warning)]/5 border border-[var(--warning)]/20 px-2.5 py-1.5 text-xs font-medium text-[var(--warning)] hover:bg-[var(--warning)]/10 transition-all">
+          <button
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("ja-switch-tab", { detail: "markets" }));
+            }}
+            className="relative flex items-center gap-1.5 rounded-lg bg-[var(--warning)]/5 border border-[var(--warning)]/20 px-2.5 py-1.5 text-xs font-medium text-[var(--warning)] hover:bg-[var(--warning)]/10 transition-all"
+          >
             <IconAlertTriangle size={13} />
             <span>{alertCount}</span>
-          </a>
+          </button>
         )}
 
         {/* Kill switch */}
