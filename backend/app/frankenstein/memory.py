@@ -314,6 +314,7 @@ class TradeMemory:
         min_trades: int = 50,
         only_resolved: bool = True,
         max_age_hours: float = 0,  # 0 = no limit
+        holdout_pct: float = 0.0,  # Phase 16: reserve % for validation
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
         """
         Extract feature matrix X and labels y for model retraining.
@@ -425,6 +426,20 @@ class TradeMemory:
 
         if weights.sum() > 0:
             weights = weights * (len(weights) / weights.sum())
+
+        # Phase 16: Feedback-resistant training — time-based holdout
+        # Reserve the most recent holdout_pct of trades as validation
+        # that the learner can use for champion/challenger comparison.
+        # This prevents the model from training on data it will be
+        # validated against, breaking the feedback loop.
+        if holdout_pct > 0 and len(X) > min_trades:
+            split_idx = int(len(X) * (1 - holdout_pct))
+            if split_idx >= min_trades:
+                X = X[:split_idx]
+                y = y[:split_idx]
+                weights = weights[:split_idx]
+                log.info("holdout_applied", train_size=split_idx,
+                         holdout_size=len(X) - split_idx, holdout_pct=holdout_pct)
 
         return X, y, weights
 

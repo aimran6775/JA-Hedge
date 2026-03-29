@@ -96,6 +96,15 @@ class OnlineLearner:
         self._category_models: dict[str, XGBoostPredictor] = {}
         self._MIN_CATEGORY_SAMPLES = 40  # need at least 40 resolved per category
 
+        # Phase 5: Pretrained model blending
+        # After N real trades, we blend pretrained historical data with
+        # live trade data for retraining.  This prevents the model from
+        # forgetting historical patterns while adapting to live conditions.
+        self._FINETUNE_MIN_REAL_TRADES = 200   # start fine-tuning after 200 real trades
+        self._FINETUNE_HISTORICAL_RATIO = 0.3  # 30% historical, 70% live in blended training
+        self._pretrained_X: np.ndarray | None = None
+        self._pretrained_y: np.ndarray | None = None
+
         log.info(
             "online_learner_initialized",
             min_samples=min_samples,
@@ -141,6 +150,32 @@ class OnlineLearner:
         else:
             X, y = data
             sample_weights = None
+
+        # Phase 5: Blend pretrained historical data with live data
+        # After enough real trades, mix in historical data to prevent
+        # catastrophic forgetting of base patterns.
+        if (self._pretrained_X is not None 
+            and len(X) >= self._FINETUNE_MIN_REAL_TRADES):
+            n_hist = int(len(X) * self._FINETUNE_HISTORICAL_RATIO / (1 - self._FINETUNE_HISTORICAL_RATIO))
+            n_hist = min(n_hist, len(self._pretrained_X))
+            if n_hist > 0:
+                # Random sample from pretrained data
+                indices = np.random.choice(len(self._pretrained_X), n_hist, replace=False)
+                hist_X = self._pretrained_X[indices]
+                hist_y = self._pretrained_y[indices]
+                X = np.vstack([X, hist_X])
+                y = np.concatenate([y, hist_y])
+                # Weight: live data 2× more than historical (recency matters)
+                if sample_weights is not None:
+                    hist_weights = np.ones(n_hist) * 0.5  # half weight for historical
+                    sample_weights = np.concatenate([sample_weights, hist_weights])
+                else:
+                    live_weights = np.ones(len(X) - n_hist) * 1.0
+                    hist_weights = np.ones(n_hist) * 0.5
+                    sample_weights = np.concatenate([live_weights, hist_weights])
+                log.info("pretrained_blend", live_samples=len(X)-n_hist,
+                         historical_samples=n_hist, ratio=f"{self._FINETUNE_HISTORICAL_RATIO:.0%}")
+
         log.info(
             "retrain_starting",
             samples=len(X),
@@ -452,6 +487,9 @@ class OnlineLearner:
             "champion_auc": self._champion.val_auc if self._champion else 0.0,
             "champion_samples": self._champion.train_samples if self._champion else 0,
             "checkpoints": len(self._checkpoints),
+            "pretrained_data_loaded": self._pretrained_X is not None,
+            "pretrained_samples": len(self._pretrained_X) if self._pretrained_X is not None else 0,
+            "finetune_threshold": self._FINETUNE_MIN_REAL_TRADES,
             "top_features": dict(
                 sorted(
                     self.get_feature_importance().items(),
@@ -460,3 +498,27 @@ class OnlineLearner:
                 )[:10]
             ),
         }
+
+    # ── Phase 5: Pretrained data loading ────────────────────────────
+
+    def load_pretrained_data(self) -> bool:
+        """Load historical training data for blending with live data.
+        
+        Call this after the pretrained model is loaded.  The data comes from
+        the same historical feature pipeline that produced the pretrained model.
+        """
+        try:
+            from app.frankenstein.historical_features import build_training_dataset
+            X, y, meta = build_training_dataset()
+            if X is not None and len(X) > 0:
+                self._pretrained_X = X
+                self._pretrained_y = y
+                log.info(
+                    "pretrained_data_loaded_for_blending",
+                    samples=len(X),
+                    positive_rate=f"{y.mean():.3f}",
+                )
+                return True
+        except Exception as e:
+            log.warning("pretrained_data_load_failed", error=str(e))
+        return False

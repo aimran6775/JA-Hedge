@@ -28,30 +28,30 @@ log = get_logger("frankenstein.strategy")
 class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
-    # Signal filters — FEE-AWARE: edge must exceed round-trip cost
-    min_confidence: float = 0.50     # Higher floor — only trade strong signals
-    min_edge: float = 0.10           # 10% min edge — must beat spread + 14¢ round-trip fees
+    # Signal filters — MAKER-AWARE: edge only needs to beat spread (no fees)
+    min_confidence: float = 0.45     # Slightly lower for maker (more volume)
+    min_edge: float = 0.05           # 5% min edge — just beat spread (no 14¢ fee overhead)
 
     # Position sizing — small and cautious
-    kelly_fraction: float = 0.15     # Conservative Kelly (was 0.25)
-    max_position_size: int = 4       # Smaller positions (was 5) — reduce fee exposure
-    max_simultaneous_positions: int = 20   # Fewer concurrent (was 30) — focus capital
+    kelly_fraction: float = 0.15     # Conservative Kelly
+    max_position_size: int = 5       # Slightly larger ok with 0 fees
+    max_simultaneous_positions: int = 30   # More concurrent ok with 0 fees
 
     # Timing
-    scan_interval: float = 45.0  # scan every 45s — patience, not churning (was 30s)
+    scan_interval: float = 45.0  # scan every 45s
 
-    # Risk overrides — TIGHT
-    max_daily_loss: float = 100.0    # Tighter loss cap (was 150) — preserve capital
-    stop_loss_pct: float = 0.15      # Match brain.py
-    take_profit_pct: float = 0.20    # Let winners run more (was 0.15)
+    # Risk overrides
+    max_daily_loss: float = 150.0    # Higher cap — maker losses are just cost, no fee multiplier
+    stop_loss_pct: float = 0.15      # Not used in maker mode (hold to settlement)
+    take_profit_pct: float = 0.20    # Not used in maker mode (hold to settlement)
 
     # Model thresholds
-    max_spread_cents: int = 15   # Very tight spreads ONLY (was 20)
-    min_volume: float = 20.0    # Need real liquidity (was 10)
-    min_hours_to_expiry: float = 2.0  # 2h minimum — no short-expiry fee traps (was 1.0)
+    max_spread_cents: int = 15   # Tight spreads only
+    min_volume: float = 15.0    # Need liquidity for maker fills
+    min_hours_to_expiry: float = 1.0  # 1h minimum (maker orders need time to fill)
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)
-    aggression: float = 0.30         # Very conservative (was 0.35)
+    aggression: float = 0.35         # Moderate (maker risk is lower)
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -92,11 +92,11 @@ class AdaptiveStrategy:
         self.params = base_params or StrategyParams()
         self.adaptation_interval = adaptation_interval
 
-        # Defaults (never go below/above these) — FEE-AWARE bounds
-        self._MIN_CONFIDENCE = 0.40    # Never drop below 40%
-        self._MAX_CONFIDENCE = 0.70    # Can tighten up to 70%
-        self._MIN_EDGE = 0.06          # NEVER trade below 6% edge — fees are 14¢ round-trip
-        self._MAX_EDGE = 0.18          # Raise max — good trades have big edges
+        # Defaults (never go below/above these) — MAKER-AWARE bounds
+        self._MIN_CONFIDENCE = 0.35    # Lower floor — maker risk is lower
+        self._MAX_CONFIDENCE = 0.65    # Can tighten up to 65%
+        self._MIN_EDGE = 0.03          # 3% min edge — maker has no fees
+        self._MAX_EDGE = 0.15          # Reasonable max
         self._MIN_KELLY = 0.05         # Smaller minimum kelly
         self._MAX_KELLY = 0.20         # Cap kelly at 20% (was 0.25) — more conservative
         self._MIN_AGGRESSION = 0.10    # Can go very conservative

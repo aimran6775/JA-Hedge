@@ -69,8 +69,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     api_for_engine = kalshi  # default: real API
     if settings.paper_trading:
+        # MAKER MODE: 0¢ fees for maker orders
+        from app.frankenstein.brain import USE_MAKER_ORDERS
+        _paper_fee = 0 if USE_MAKER_ORDERS else 7
         simulator = PaperTradingSimulator(
             starting_balance_cents=settings.paper_trading_balance,
+            fee_rate_cents=_paper_fee,
         )
         api_for_engine = simulator.wrap_api(kalshi)
         state.paper_simulator = simulator

@@ -348,18 +348,11 @@ class ConfidenceScorer:
     ) -> ConfidenceFactor:
         """Score how much fees eat into the edge.
         
-        This is THE #1 profitability factor. Kalshi charges 7¢/contract
-        per side (taker). A round-trip costs 14¢ in fees.
-        
-        At 22¢ contract: fees = 63% of cost → DEATH TRAP
-        At 50¢ contract: fees = 28% of cost → Marginal  
-        At 75¢ contract: fees = 19% of cost → Acceptable
-        
-        We score based on:
-        1. Edge-to-fee ratio: how much edge remains after fees
-        2. Fee-to-cost ratio: what % of cost goes to fees
-        3. Net profit potential: edge - spread - fees
+        MAKER MODE: Fees are 0¢ — this factor scores high for everything.
+        TAKER MODE: 7¢/contract per side = 14¢ round-trip.
         """
+        from app.frankenstein.brain import USE_MAKER_ORDERS
+        
         edge_abs = abs(prediction.edge)
         mid = features.midpoint
         reasons = []
@@ -368,8 +361,8 @@ class ConfidenceScorer:
         price_cents = int(mid * 100)
         effective_cost = min(price_cents, 100 - price_cents)
         
-        # Round-trip fee as fraction of $1 contract
-        ROUND_TRIP_FEE = 0.14  # 7¢ buy + 7¢ sell
+        # Round-trip fee — 0 for maker, 14¢ for taker
+        ROUND_TRIP_FEE = 0.0 if USE_MAKER_ORDERS else 0.14
         
         # Half-spread cost
         half_spread = features.spread_pct / 2.0
@@ -381,40 +374,55 @@ class ConfidenceScorer:
         fee_cost_ratio = ROUND_TRIP_FEE / max(effective_cost / 100.0, 0.01)
         
         # Edge-to-fee ratio (how many times does edge cover fees?)
-        edge_fee_ratio = edge_abs / ROUND_TRIP_FEE if ROUND_TRIP_FEE > 0 else 0
+        edge_fee_ratio = edge_abs / ROUND_TRIP_FEE if ROUND_TRIP_FEE > 0 else 99.0
         
         # Scoring
-        if net_edge > 0.10:
-            score = 95
-            reasons.append(f"Excellent: {net_edge:.1%} net edge after all costs")
-        elif net_edge > 0.05:
-            score = 80
-            reasons.append(f"Good: {net_edge:.1%} net edge after costs")
-        elif net_edge > 0.02:
-            score = 60
-            reasons.append(f"Thin: {net_edge:.1%} net edge after costs")
-        elif net_edge > 0:
-            score = 35
-            reasons.append(f"Razor thin: {net_edge:.1%} net edge after costs")
+        if USE_MAKER_ORDERS:
+            # Maker mode: fees are 0, just check edge vs spread
+            if net_edge > 0.05:
+                score = 95
+                reasons.append(f"Maker: {net_edge:.1%} net edge (0¢ fees)")
+            elif net_edge > 0.02:
+                score = 80
+                reasons.append(f"Maker: {net_edge:.1%} net edge (0¢ fees)")
+            elif net_edge > 0:
+                score = 65
+                reasons.append(f"Maker: thin {net_edge:.1%} net edge (0¢ fees)")
+            else:
+                score = 30
+                reasons.append(f"Spread eats edge: {net_edge:.1%} net")
         else:
-            score = 5
-            reasons.append(f"NEGATIVE after costs: {net_edge:.1%} net edge")
-        
-        # Fee burden penalty
-        if fee_cost_ratio > 0.50:
-            score -= 30
-            reasons.append(f"FEE TRAP: fees={fee_cost_ratio:.0%} of cost")
-        elif fee_cost_ratio > 0.30:
-            score -= 15
-            reasons.append(f"High fees: {fee_cost_ratio:.0%} of cost")
-        elif fee_cost_ratio < 0.20:
-            score += 10
-            reasons.append(f"Low fee burden: {fee_cost_ratio:.0%} of cost")
-        
-        # Bonus: edge covers fees multiple times
-        if edge_fee_ratio > 3.0:
-            score += 10
-            reasons.append(f"Edge covers fees {edge_fee_ratio:.1f}x")
+            if net_edge > 0.10:
+                score = 95
+                reasons.append(f"Excellent: {net_edge:.1%} net edge after all costs")
+            elif net_edge > 0.05:
+                score = 80
+                reasons.append(f"Good: {net_edge:.1%} net edge after costs")
+            elif net_edge > 0.02:
+                score = 60
+                reasons.append(f"Thin: {net_edge:.1%} net edge after costs")
+            elif net_edge > 0:
+                score = 35
+                reasons.append(f"Razor thin: {net_edge:.1%} net edge after costs")
+            else:
+                score = 5
+                reasons.append(f"NEGATIVE after costs: {net_edge:.1%} net edge")
+            
+            # Fee burden penalty (taker only)
+            if fee_cost_ratio > 0.50:
+                score -= 30
+                reasons.append(f"FEE TRAP: fees={fee_cost_ratio:.0%} of cost")
+            elif fee_cost_ratio > 0.30:
+                score -= 15
+                reasons.append(f"High fees: {fee_cost_ratio:.0%} of cost")
+            elif fee_cost_ratio < 0.20:
+                score += 10
+                reasons.append(f"Low fee burden: {fee_cost_ratio:.0%} of cost")
+            
+            # Bonus: edge covers fees multiple times
+            if edge_fee_ratio > 3.0:
+                score += 10
+                reasons.append(f"Edge covers fees {edge_fee_ratio:.1f}x")
         
         score = max(0, min(100, score))
         w = FACTOR_WEIGHTS["fee_impact"]

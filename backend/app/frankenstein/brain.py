@@ -37,6 +37,7 @@ from app.engine.risk import RiskManager
 from app.frankenstein.learner import OnlineLearner
 from app.frankenstein.memory import TradeMemory, TradeOutcome, TradeRecord
 from app.frankenstein.performance import PerformanceTracker, PerformanceSnapshot
+from app.frankenstein.pretrained import load_pretrained_model, PRETRAINED_PATH
 from app.frankenstein.scheduler import FrankensteinScheduler
 from app.frankenstein.strategy import AdaptiveStrategy, StrategyParams
 from app.frankenstein.categories import CategoryStrategyRegistry
@@ -53,27 +54,59 @@ log = get_logger("frankenstein.brain")
 # ── Fee constants ────────────────────────────────────────────────────
 # Kalshi taker fee: 7¢/contract, maker fee: 0¢.
 # A round-trip (buy + sell) as taker costs 14¢/contract in fees.
-# This is the single biggest drag on profitability.
+# MAKER ORDERS PAY NO FEES — this is the profitability unlock.
 TAKER_FEE_CENTS = 7       # per contract, per side
-ROUND_TRIP_FEE_CENTS = 14  # buy fee + sell fee
+ROUND_TRIP_FEE_CENTS = 14  # buy fee + sell fee (taker path)
+MAKER_FEE_CENTS = 0       # maker orders are FREE on Kalshi
+
+# ── MAKER MODE ───────────────────────────────────────────────────────
+# When True, Frankenstein places limit orders at the bid (maker) instead
+# of crossing the spread (taker).  With 0¢ maker fees:
+#   - Breakeven at 50¢: 50.0% WR (vs 61.3% as taker)
+#   - Breakeven at 70¢: 70.0% WR (vs 82.8% as taker)
+# Backtested result: +$47.47 on 1,180 trades at 67.5% WR (maker)
+#                    vs -$115.72 on same trades as taker.
+# Trade-off: fill rate is lower (~50-70%) because we don't cross spread.
+# Strategy: hold to settlement — no early exit (avoids sell-side fees).
+USE_MAKER_ORDERS = True
+
+# Phase 6: Hard daily trade cap — prevents churning
+# Raised for maker mode: 0¢ fees means more trades = more profit.
+MAX_DAILY_TRADES = 50
+
+# Phase 7: Price floor — minimum contract cost to avoid fee traps
+# With maker mode the fee-trap concern is gone, but extreme-probability
+# contracts still have poor risk/reward, so keep a floor.
+MIN_PRICE_FLOOR_CENTS = 35   # 35¢ minimum (trained mode, lowered for maker)
+MIN_PRICE_FLOOR_LEARNING_CENTS = 30  # 30¢ minimum (learning mode)
+
+# Phase 15: Circuit breaker — pause trading if accuracy drops below threshold
+CIRCUIT_BREAKER_MIN_TRADES = 30
+CIRCUIT_BREAKER_MIN_ACCURACY = 0.35   # pause if accuracy < 35%
+CIRCUIT_BREAKER_COOLDOWN_HOURS = 4    # stay paused for 4 hours
 
 def round_trip_fee_pct(price_cents: int) -> float:
     """Round-trip fee as a percentage of contract cost.
     
-    At 22¢: 14/22 = 63.6% (!!)
-    At 50¢: 14/50 = 28.0%
-    At 75¢: 14/75 = 18.7%
+    MAKER MODE (USE_MAKER_ORDERS=True): 0% — no fees!
+    TAKER MODE:
+      At 22¢: 14/22 = 63.6% (!!)
+      At 50¢: 14/50 = 28.0%
+      At 75¢: 14/75 = 18.7%
     
-    Cheap contracts are fee DEATH TRAPS.
+    Cheap contracts are fee DEATH TRAPS for takers — but free for makers.
     """
     if price_cents <= 0:
         return 1.0
+    if USE_MAKER_ORDERS:
+        return 0.0
     return ROUND_TRIP_FEE_CENTS / price_cents
 
 
 # ── Dynamic edge caps by market category ────────────────────────────
-# Sports/finance are highly efficient (Vegas lines, tracked indices).
-# Crypto/entertainment are less efficient, larger edges are plausible.
+# Maximum edge the model is allowed to claim. Edges above these caps
+# are almost certainly model errors — markets are too efficient.
+# MAKER MODE: caps unchanged (these limit MODEL claims, not fee math).
 CATEGORY_EDGE_CAPS: dict[str, float] = {
     "sports":        0.08,   # Very efficient — Vegas lines
     "finance":       0.08,   # Very efficient — tracked indices
@@ -137,6 +170,14 @@ class FrankensteinState:
     generation: int = 0
     model_version: str = "untrained"
     last_scan_debug: dict = field(default_factory=dict)
+    # Phase 6: Daily trade counter — reset at midnight UTC
+    daily_trade_count: int = 0
+    daily_trade_date: str = ""  # "YYYY-MM-DD"
+    # Phase 15: Circuit breaker state
+    circuit_breaker_triggered: bool = False
+    circuit_breaker_triggered_at: float = 0.0
+    # Phase 4: Track whether pretrained model is loaded
+    pretrained_loaded: bool = False
 
 
 class Frankenstein:
@@ -219,7 +260,7 @@ class Frankenstein:
         # Event-level cooldown: {event_ticker: timestamp}
         # Prevents trading different strike prices on the same event.
         self._recently_traded_events: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 1800.0  # 30-min cooldown (learning needs faster data collection)
+        self._trade_cooldown_seconds: float = 600.0  # 10-min cooldown (maker: low risk per trade)
 
         # Phase 9: Category performance tracking for gating
         # {category: {"wins": int, "losses": int}}
@@ -228,7 +269,7 @@ class Frankenstein:
         # Phase 17: Order lifecycle tracking
         # {order_id: {"ticker": str, "placed_at": float, "price_cents": int}}
         self._pending_orders: dict[str, dict[str, Any]] = {}
-        self._ORDER_STALE_SECONDS = 300.0  # cancel unfilled orders after 5 min
+        self._ORDER_STALE_SECONDS = 720.0  # cancel unfilled orders after 12 min (maker orders need time to fill)
         self._fill_rate_stats: dict[str, int] = {"placed": 0, "filled": 0, "cancelled": 0}
 
         # Phase 18: Category-specific model registry
@@ -323,12 +364,68 @@ class Frankenstein:
         # Try loading latest checkpoint before deciding to bootstrap
         self._try_load_latest_checkpoint()
 
-        # Auto-bootstrap if model is STILL untrained after checkpoint load
+        # ── Phase 4: Try pretrained model if checkpoint didn't work ──
+        if not self._model.is_trained:
+            pretrained_result = load_pretrained_model()
+            if pretrained_result is not None:
+                try:
+                    xgb_model, calibration_tracker, metadata = pretrained_result
+                    self._model._model = xgb_model
+                    if calibration_tracker:
+                        self._model._calibration = calibration_tracker
+                    self._model._train_samples = metadata.get("train_samples", 5000)
+                    self._model._is_trained = True
+                    self._model._version = "pretrained_v1"
+                    self._state.pretrained_loaded = True
+                    self._state.model_version = self._model._version
+                    log.info(
+                        "🧟🧠 PRETRAINED MODEL LOADED — real historical data!",
+                        version=self._model._version,
+                        train_samples=self._model._train_samples,
+                        holdout_auc=metadata.get("holdout_auc", "?"),
+                        holdout_accuracy=metadata.get("holdout_accuracy", "?"),
+                    )
+                except Exception as e:
+                    log.error("pretrained_load_failed", error=str(e))
+
+        # Auto-bootstrap if model is STILL untrained after checkpoint + pretrained
         if not self._model.is_trained:
             asyncio.create_task(
                 self._auto_bootstrap(),
                 name="frankenstein_bootstrap",
             )
+
+        # ── Phase 5: Load pretrained data for future fine-tuning blending ──
+        if self._state.pretrained_loaded:
+            try:
+                self.learner.load_pretrained_data()
+            except Exception as e:
+                log.warning("pretrained_data_load_skip", error=str(e))
+
+        # ── Phase 13+17: Load backtest recommendations if available ──
+        try:
+            from app.frankenstein.backtest import BacktestResult
+            import json
+            _rec_path = Path("data/models/backtest_recommendations.json")
+            if _rec_path.exists():
+                with open(_rec_path) as f:
+                    recs = json.load(f)
+                if recs.get("recommended_min_edge"):
+                    old_edge = self.strategy.params.min_edge
+                    self.strategy.params.min_edge = max(recs["recommended_min_edge"], 0.05)
+                    log.info("backtest_param_applied", param="min_edge",
+                             old=old_edge, new=self.strategy.params.min_edge)
+                if recs.get("recommended_daily_cap"):
+                    import app.frankenstein.brain as _brain_mod
+                    _brain_mod.MAX_DAILY_TRADES = min(recs["recommended_daily_cap"], 20)
+                    log.info("backtest_param_applied", param="daily_cap",
+                             new=_brain_mod.MAX_DAILY_TRADES)
+                if recs.get("category_edge_caps"):
+                    for cat, cap in recs["category_edge_caps"].items():
+                        CATEGORY_EDGE_CAPS[cat] = cap
+                    log.info("backtest_edge_caps_applied", caps=recs["category_edge_caps"])
+        except Exception as e:
+            log.debug("backtest_recs_load_skip", error=str(e))
 
         log.info(
             "🧟⚡ FRANKENSTEIN IS ALIVE!",
@@ -396,6 +493,36 @@ class Frankenstein:
         """One full scan cycle: manage positions → find opportunities → trade."""
         start = time.monotonic()
         self._state.total_scans += 1
+
+        # ── Phase 9: Daily trade counter reset ──────────────────
+        from datetime import datetime, timezone as _tz
+        _today = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+        if self._state.daily_trade_date != _today:
+            self._state.daily_trade_count = 0
+            self._state.daily_trade_date = _today
+        
+        # Phase 9: Skip scan entirely if daily cap reached
+        if self._state.daily_trade_count >= MAX_DAILY_TRADES:
+            self._state.last_scan_debug = {
+                "exit": "daily_trade_cap_reached",
+                "daily_trades": self._state.daily_trade_count,
+                "cap": MAX_DAILY_TRADES,
+            }
+            return
+
+        # Phase 15: Check circuit breaker
+        if self._state.circuit_breaker_triggered:
+            elapsed_hours = (time.time() - self._state.circuit_breaker_triggered_at) / 3600
+            if elapsed_hours < CIRCUIT_BREAKER_COOLDOWN_HOURS:
+                self._state.last_scan_debug = {
+                    "exit": "circuit_breaker_active",
+                    "hours_remaining": round(CIRCUIT_BREAKER_COOLDOWN_HOURS - elapsed_hours, 1),
+                }
+                return
+            else:
+                # Cooldown expired — reset circuit breaker
+                self._state.circuit_breaker_triggered = False
+                log.info("🧟🔄 Circuit breaker cooldown expired, resuming trading")
 
         # Phase 10: Exchange schedule — note the session for liquidity
         # adjustment, but ALWAYS allow trading (Kalshi is 24/7).
@@ -504,17 +631,18 @@ class Frankenstein:
         # 4. Compute features for remaining candidates
         features_list = [self._features.compute(m) for m in candidates]
 
-        # 4a. FEATURE COMPLETENESS GATE (Phase 7)
-        #     Skip markets where >50% of features are at their defaults
+        # 4a. FEATURE COMPLETENESS GATE (Phase 7 + Phase 10 tightened)
+        #     Skip markets where >30% of features are at their defaults
         #     (0.0). These are markets we have no history for — the model
         #     is predicting on garbage inputs and its output is meaningless.
-        #     This prevents the vast majority of bad trades.
+        #     Phase 10: tightened from 50% → 30% (require 70%+ real features).
         filtered_candidates = []
         filtered_features = []
         for m, feat in zip(candidates, features_list):
             arr = feat.to_array()
             zero_pct = (arr == 0.0).sum() / max(len(arr), 1)
-            if zero_pct > 0.50:
+            _zero_threshold = 0.50 if not self._model.is_trained else 0.30
+            if zero_pct > _zero_threshold:
                 log.debug("feature_gate_skip", ticker=m.ticker,
                           zero_pct=f"{zero_pct:.0%}")
                 continue
@@ -604,9 +732,9 @@ class Frankenstein:
         # The confidence scorer IS the gatekeeper — it evaluates model
         # strength, edge quality, fees, liquidity, timing, volume, risk.
         # LEARNING MODE: B grade (composite ≥ 60) — collect training data.
-        # TRAINED MODE: B+ grade (composite ≥ 70) — solid signal required.
+        # TRAINED MODE: B grade (composite ≥ 60) — maker risk is lower, more trades.
         _is_learning = not self._model.is_trained
-        min_grade = "B" if _is_learning else "B+"
+        min_grade = "B" if _is_learning else "B"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, 'portfolio_heat') else 0.0,
@@ -710,13 +838,14 @@ class Frankenstein:
                         continue
 
             # ── PRICE FLOOR: Skip extreme-probability contracts ────
-            # Contracts priced < 15¢ or > 85¢ are lottery tickets.
-            # The model cannot reliably predict these — they need
-            # near-perfect information to have an edge.
-            # Phase 3: Tightened from 10/90 → 15/85. Extreme-price
-            # contracts have terrible win rates in our data.
+            # Phase 7 HARDENED: Contracts priced below the price floor
+            # are fee death traps.  At 22¢, fees are 63% of cost!
+            # LEARNING: min 30¢.  TRAINED: min 40¢.
             mid_price = features.midpoint
-            if mid_price < 0.15 or mid_price > 0.85:
+            _floor_cents = MIN_PRICE_FLOOR_LEARNING_CENTS if not self._model.is_trained else MIN_PRICE_FLOOR_CENTS
+            _floor = _floor_cents / 100.0
+            _ceiling = 1.0 - _floor
+            if mid_price < _floor or mid_price > _ceiling:
                 continue
 
             # ── MARKET-ANCHOR SANITY CHECK ────────────────────────
@@ -741,42 +870,47 @@ class Frankenstein:
                 continue
 
             # Apply adaptive thresholds
-            # LEARNING MODE: low edge bar — let the confidence scorer decide.
-            # TRAINED MODE: category-aware thresholds for real profitability.
+            # Phase 6 HARDENED: fee-aware minimum edge.
+            # MAKER MODE: fees are 0¢, so edge only needs to beat the spread.
+            # TAKER MODE: edge must cover round-trip fees + half spread + margin.
+            half_spread = features.spread / 2.0
+            price_cents = int(features.midpoint * 100)
+            effective_cost = min(price_cents, 100 - price_cents)
+
+            if USE_MAKER_ORDERS:
+                # ── MAKER: zero fees, just need real edge over spread ──
+                fee_as_fraction = 0.0
+            else:
+                fee_as_fraction = ROUND_TRIP_FEE_CENTS / 100.0  # 0.14
+            
             if not self._model.is_trained:
-                # 🎓 LEARNING: minimum edge = 2% (just need a signal direction)
-                # Position sizing is capped at 1 contract so risk is minimal.
-                # The confidence scorer + Kelly still gate bad trades.
-                effective_min_edge = 0.02
+                # 🎓 LEARNING: edge must still beat fees + spread.
+                cost_to_beat = fee_as_fraction + half_spread
+                effective_min_edge = max(0.03 if USE_MAKER_ORDERS else 0.05,
+                                         cost_to_beat * 1.2)
             else:
                 effective_min_edge = params.min_edge
                 # Category-aware edge thresholds (trained mode only):
                 if cat == "sports" and sports_pred is not None:
-                    effective_min_edge = max(effective_min_edge, 0.06)
+                    effective_min_edge = max(effective_min_edge, 0.04 if USE_MAKER_ORDERS else 0.06)
                 elif cat == "crypto":
-                    effective_min_edge = max(effective_min_edge, 0.10)
+                    effective_min_edge = max(effective_min_edge, 0.06 if USE_MAKER_ORDERS else 0.10)
                 elif cat == "finance":
-                    effective_min_edge = max(effective_min_edge, 0.08)
+                    effective_min_edge = max(effective_min_edge, 0.05 if USE_MAKER_ORDERS else 0.08)
                 elif cat == "weather":
-                    effective_min_edge = max(effective_min_edge, 0.07)
+                    effective_min_edge = max(effective_min_edge, 0.04 if USE_MAKER_ORDERS else 0.07)
                 elif cat == "politics":
-                    effective_min_edge = max(effective_min_edge, 0.08)
+                    effective_min_edge = max(effective_min_edge, 0.05 if USE_MAKER_ORDERS else 0.08)
+
+                # Trained mode must also beat costs
+                cost_to_beat = fee_as_fraction + half_spread
+                effective_min_edge = max(effective_min_edge,
+                                         cost_to_beat * (1.2 if USE_MAKER_ORDERS else 1.5))
 
             # Gate: minimum edge (absolute value)
+            # Phase 6: cost check is now baked into effective_min_edge above
             if abs(prediction.edge) < effective_min_edge:
                 continue
-
-            # ── COST SANITY CHECK (trained mode only) ──────────
-            # In trained mode, edge should cover costs for profitability.
-            # In learning mode, the confidence scorer handles this via fee_impact.
-            half_spread = features.spread / 2.0
-            price_cents = int(features.midpoint * 100)
-            effective_cost = min(price_cents, 100 - price_cents)
-            fee_as_fraction = ROUND_TRIP_FEE_CENTS / 100.0  # 0.14
-            if self._model.is_trained:
-                total_cost_to_beat = half_spread + fee_as_fraction
-                if abs(prediction.edge) <= total_cost_to_beat:
-                    continue
 
             # ⭐ Multi-factor confidence scoring (Phase 11)
             # Only A-grade trades are executed — prioritise quality over quantity.
@@ -975,9 +1109,12 @@ class Frankenstein:
             log.debug("strategy_engine_merge_error", error=str(e))
 
         trade_candidates.sort(key=lambda c: c["ev"], reverse=True)
+        # Phase 9: Respect daily trade cap in per-scan limit too
+        _daily_remaining = MAX_DAILY_TRADES - self._state.daily_trade_count
         max_trades_per_scan = min(
             params.max_simultaneous_positions - self._count_open_positions(),
             3,  # cap at 3 new trades per scan — only the very best
+            _daily_remaining,  # Phase 9: never exceed daily cap
         )
 
         # Debug: record scan state
@@ -1059,6 +1196,8 @@ class Frankenstein:
             if result and result.success:
                 trades_executed += 1
                 self._state.total_trades_executed += 1
+                # Phase 9: Increment daily trade counter
+                self._state.daily_trade_count += 1
                 scan_debug["exec_successes"] += 1
                 scan_debug["top_candidates"].append({"ticker": market.ticker, "stage": "executed", "order_id": result.order_id})
 
@@ -1177,16 +1316,23 @@ class Frankenstein:
         """
         Active position management — decide whether to hold or exit.
 
-        Exit triggers:
-          1. Stop-loss: position lost too much → cut losses
-          2. Take-profit: position reached target → lock gains
-          3. Edge reversal: model now says the other side → flip
-          4. Near-expiry liquidation: uncertain near expiry → close
+        MAKER MODE: Hold to settlement. Early exits incur taker sell fees
+        (7¢/contract) which destroy the maker fee advantage. Only exit on:
+          1. Edge reversal with very high confidence (model flipped sides)
+          2. Near-expiry liquidation of highly uncertain positions
+
+        TAKER MODE: Full exit management with stop-loss, take-profit, etc.
         """
         from app.pipeline.portfolio_tracker import portfolio_state
 
         if not portfolio_state.positions:
             return
+
+        # MAKER MODE: minimal position management — hold to settlement
+        # The entire strategy depends on paying 0¢ fees. Selling early
+        # makes us a taker (7¢ fee), destroying the edge.
+        if USE_MAKER_ORDERS:
+            return  # Hold everything to settlement
 
         params = self.strategy.params
         markets_by_ticker = {m.ticker: m for m in markets}
@@ -1740,35 +1886,55 @@ class Frankenstein:
         Kelly optimal fraction:  f* = (p - c) / (1 - c)
         where p = our estimated probability of winning the bet.
 
-        We use the ACTUAL ask price from the orderbook (not mid+1¢)
-        because that's what we'd really pay as a taker.
+        MAKER MODE: Use the BID price (what we'd post as maker).
+        TAKER MODE: Use the ASK price (what we'd cross as taker).
         """
         mid = features.midpoint
 
         if prediction.side == "yes":
             p = prediction.predicted_prob          # P(YES settles)
-            # Use real ask if available — that's our actual cost
-            if market and market.yes_ask is not None and float(market.yes_ask) > 0:
-                c = min(float(market.yes_ask), 0.99)
+            if USE_MAKER_ORDERS:
+                # MAKER: our cost is the bid (we're posting at bid+1¢)
+                if market and market.yes_bid is not None and float(market.yes_bid) > 0:
+                    c = min(float(market.yes_bid) + 0.01, 0.99)
+                else:
+                    c = max(mid - 0.01, 0.01)  # fallback: mid - 1¢
             else:
-                c = min(mid + 0.01, 0.99)  # fallback: mid + 1¢
+                # TAKER: our cost is the ask
+                if market and market.yes_ask is not None and float(market.yes_ask) > 0:
+                    c = min(float(market.yes_ask), 0.99)
+                else:
+                    c = min(mid + 0.01, 0.99)  # fallback: mid + 1¢
         else:
             p = 1.0 - prediction.predicted_prob    # P(NO settles)
-            # NO cost = 1 - yes_bid (what we pay to buy NO)
-            if market and market.no_ask is not None and float(market.no_ask) > 0:
-                c = min(float(market.no_ask), 0.99)
-            elif market and market.yes_bid is not None and float(market.yes_bid) > 0:
-                c = min(1.0 - float(market.yes_bid), 0.99)
+            if USE_MAKER_ORDERS:
+                # MAKER: post at no_bid + 1¢
+                if market and market.no_bid is not None and float(market.no_bid) > 0:
+                    c = min(float(market.no_bid) + 0.01, 0.99)
+                elif market and market.yes_ask is not None and float(market.yes_ask) > 0:
+                    c = max(1.0 - float(market.yes_ask) + 0.01, 0.01)
+                else:
+                    c = max(1.0 - mid - 0.01, 0.01)  # fallback
             else:
-                c = min(1.0 - mid + 0.01, 0.99)  # fallback
+                # TAKER: our cost is no_ask
+                if market and market.no_ask is not None and float(market.no_ask) > 0:
+                    c = min(float(market.no_ask), 0.99)
+                elif market and market.yes_bid is not None and float(market.yes_bid) > 0:
+                    c = min(1.0 - float(market.yes_bid), 0.99)
+                else:
+                    c = min(1.0 - mid + 0.01, 0.99)  # fallback
 
-        # Include taker fee in cost basis — this is what we actually pay.
-        # For a BUY at 40¢: real cost = 40¢ + 7¢ fee = 47¢.
-        # On WIN we get $1 and pay 7¢ sell fee, net = 100 - 7 = 93¢.
-        # So: net win = (93 - price*100)/100 instead of (1 - c).
-        fee_per_side = TAKER_FEE_CENTS / 100.0  # 0.07
-        real_cost = c + fee_per_side             # cost + buy fee
-        net_win = (1.0 - fee_per_side) - c       # payout minus sell fee minus cost
+        # Include fee in cost basis — this is what we actually pay.
+        # MAKER MODE: 0¢ fees, so cost = price and payout = $1.
+        # TAKER MODE: buy at 40¢ + 7¢ fee = 47¢; win → $1 - 7¢ sell fee = 93¢.
+        if USE_MAKER_ORDERS:
+            fee_per_side = 0.0                       # maker pays nothing
+            real_cost = c                            # just the contract price
+            net_win = 1.0 - c                        # full payout minus cost
+        else:
+            fee_per_side = TAKER_FEE_CENTS / 100.0   # 0.07
+            real_cost = c + fee_per_side              # cost + buy fee
+            net_win = (1.0 - fee_per_side) - c        # payout minus sell fee minus cost
 
         # No edge or degenerate cost — skip
         if p <= real_cost or real_cost <= 0.01 or real_cost >= 0.99 or net_win <= 0:
@@ -1796,9 +1962,13 @@ class Frankenstein:
         """
         Compute optimal order price — spread-aware placement.
 
-        Strategy for profitability:
-        - Use REAL bid/ask from the market when available
-        - Always try to be maker (inside spread) to avoid paying spread
+        MAKER MODE (USE_MAKER_ORDERS=True):
+        - Always place at the bid (or bid+1¢ to improve queue position)
+        - NEVER cross the spread — that makes us a taker (7¢ fee)
+        - Lower fill rate (~50-70%) but 0¢ fees makes up for it
+        - Hold to settlement: no early exit (avoids sell-side taker fees)
+
+        TAKER MODE (original):
         - Confidence-aware: high confidence → cross spread for fill
         - Low confidence → post passive limit for better fill price
         """
@@ -1815,39 +1985,69 @@ class Frankenstein:
         else:
             real_yes_bid = real_yes_ask = real_no_bid = real_no_ask = None
 
-        if prediction.side == "yes":
-            bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - features.spread / 2)
-            ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + features.spread / 2)
-
-            if spread_cents <= 2:
-                # Tight spread — take the ask for guaranteed fill
-                price_frac = min(ask, 0.99)
-            elif confidence >= 0.75:
-                # High confidence — cross spread, get filled quickly
-                price_frac = min(ask, 0.99)
-            elif confidence >= 0.60:
-                # Medium confidence — place inside the spread (bid + 1¢)
-                price_frac = min(bid + 0.01, ask)
+        if USE_MAKER_ORDERS:
+            # ── MAKER PRICING: place at bid to guarantee maker status ──
+            # On Kalshi, placing at or below the best bid = maker (0¢ fee).
+            # Crossing the spread (hitting the ask) = taker (7¢ fee).
+            # We place at bid+1¢ to get priority in the queue while
+            # still being a maker (as long as we don't hit the ask).
+            if prediction.side == "yes":
+                bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - features.spread / 2)
+                ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + features.spread / 2)
+                if spread_cents <= 1:
+                    # 1¢ spread: place at bid (can't improve without crossing)
+                    price_frac = max(bid, 0.01)
+                elif spread_cents <= 3:
+                    # Tight spread: bid+1¢ gets queue priority, stays maker
+                    price_frac = min(bid + 0.01, ask - 0.01)
+                else:
+                    # Wide spread: bid+1¢ is safe maker territory
+                    price_frac = min(bid + 0.01, ask - 0.01)
             else:
-                # Lower confidence — be passive, place at bid + 1¢
-                price_frac = max(bid + 0.01, 0.01)
+                # NO contracts
+                if real_no_bid is not None and real_no_ask is not None and real_no_ask > 0:
+                    no_bid = real_no_bid if real_no_bid > 0 else 0.01
+                    no_ask = real_no_ask
+                else:
+                    no_bid = 1.0 - (mid + features.spread / 2)
+                    no_ask = 1.0 - (mid - features.spread / 2)
+
+                if spread_cents <= 1:
+                    price_frac = max(no_bid, 0.01)
+                elif spread_cents <= 3:
+                    price_frac = min(no_bid + 0.01, no_ask - 0.01)
+                else:
+                    price_frac = min(no_bid + 0.01, no_ask - 0.01)
         else:
-            # For NO contracts: use real no_bid/no_ask when available
-            if real_no_bid is not None and real_no_ask is not None and real_no_ask > 0:
-                no_bid = real_no_bid if real_no_bid > 0 else 0.01
-                no_ask = real_no_ask
-            else:
-                no_bid = 1.0 - (mid + features.spread / 2)
-                no_ask = 1.0 - (mid - features.spread / 2)
+            # ── TAKER PRICING (original logic) ──
+            if prediction.side == "yes":
+                bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - features.spread / 2)
+                ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + features.spread / 2)
 
-            if spread_cents <= 2:
-                price_frac = min(no_ask, 0.99)
-            elif confidence >= 0.75:
-                price_frac = min(no_ask, 0.99)
-            elif confidence >= 0.60:
-                price_frac = min(no_bid + 0.01, no_ask)
+                if spread_cents <= 2:
+                    price_frac = min(ask, 0.99)
+                elif confidence >= 0.75:
+                    price_frac = min(ask, 0.99)
+                elif confidence >= 0.60:
+                    price_frac = min(bid + 0.01, ask)
+                else:
+                    price_frac = max(bid + 0.01, 0.01)
             else:
-                price_frac = max(no_bid + 0.01, 0.01)
+                if real_no_bid is not None and real_no_ask is not None and real_no_ask > 0:
+                    no_bid = real_no_bid if real_no_bid > 0 else 0.01
+                    no_ask = real_no_ask
+                else:
+                    no_bid = 1.0 - (mid + features.spread / 2)
+                    no_ask = 1.0 - (mid - features.spread / 2)
+
+                if spread_cents <= 2:
+                    price_frac = min(no_ask, 0.99)
+                elif confidence >= 0.75:
+                    price_frac = min(no_ask, 0.99)
+                elif confidence >= 0.60:
+                    price_frac = min(no_bid + 0.01, no_ask)
+                else:
+                    price_frac = max(no_bid + 0.01, 0.01)
 
         return max(1, min(99, int(price_frac * 100)))
 
@@ -1978,24 +2178,50 @@ class Frankenstein:
         self.memory.save()
 
     async def _health_check_task(self) -> None:
-        """Periodic health check — monitor and retrain, NEVER pause.
+        """Periodic health check — monitor, circuit break, retrain.
 
-        Frankenstein trades 24/7.  Every trade (win or loss) is data.
-        Pausing destroys the feedback loop the model needs to learn.
-        We only force a retrain if the model is degrading.
+        Phase 15: REMOVED the always-unpause hack.  This was THE reason
+        Frankenstein couldn't protect itself.  Now: if real accuracy
+        drops below 35% over the last 30+ trades, trigger circuit breaker
+        which pauses trading for 4 hours and forces retrain.
+        
+        Trading SHOULD be paused when the model is objectively bad.
+        Burning money is not "collecting data" — it's poisoning data.
         """
-        # Always ensure trading is on — undo any stale pause state
-        if self._state.is_paused:
-            self._state.is_paused = False
-            self._state.pause_reason = ""
-            log.info("🧟✅ FRANKENSTEIN UNPAUSED (24/7 mode)")
+
+        # Phase 15: CIRCUIT BREAKER — check recent real accuracy
+        resolved = self.memory.get_resolved_trades()
+        if len(resolved) >= CIRCUIT_BREAKER_MIN_TRADES:
+            # Look at last N resolved trades (real trades only, not bootstrap)
+            recent = [t for t in resolved[-100:] if not getattr(t, 'is_bootstrap', False)]
+            if len(recent) >= CIRCUIT_BREAKER_MIN_TRADES:
+                wins = sum(1 for t in recent if t.outcome == TradeOutcome.WIN)
+                accuracy = wins / len(recent)
+                
+                if accuracy < CIRCUIT_BREAKER_MIN_ACCURACY and not self._state.circuit_breaker_triggered:
+                    log.warning(
+                        "🧟🛑 CIRCUIT BREAKER TRIGGERED — accuracy too low!",
+                        accuracy=f"{accuracy:.1%}",
+                        recent_trades=len(recent),
+                        threshold=f"{CIRCUIT_BREAKER_MIN_ACCURACY:.0%}",
+                    )
+                    self._state.circuit_breaker_triggered = True
+                    self._state.circuit_breaker_triggered_at = time.time()
+                    self._state.is_paused = True
+                    self._state.pause_reason = f"Circuit breaker: accuracy {accuracy:.1%} < {CIRCUIT_BREAKER_MIN_ACCURACY:.0%}"
+                    # Force retrain immediately
+                    await self._retrain_task()
+                    return
+
+        # If manually paused (by user or API), respect it — don't auto-unpause
+        # Only unpause if the circuit breaker cooldown has expired (handled in _scan_and_trade)
 
         # Log health warnings (for dashboard visibility)
         _should_pause, _reason = self.performance.should_pause_trading()
         if _reason != "ok":
             log.info("health_note", reason=_reason)
 
-        # Check for model degradation — retrain, but don't pause
+        # Check for model degradation — retrain, but respect pauses
         if self.config.pause_on_degradation and self.performance.is_model_degrading():
             log.warning("🧟⚠️ MODEL DEGRADATION DETECTED — forcing retrain")
             await self._retrain_task()
@@ -2075,19 +2301,26 @@ class Frankenstein:
                             trade.trade_id, TradeOutcome.CANCELLED,
                         )
                     elif correct:
-                        pnl_cents = trade.count * 100 - trade.total_cost_cents
+                        # Payout = count × $1.00, Cost = buy price (already in total_cost_cents)
+                        # MAKER: hold to settlement → no sell fee, no buy fee = 0¢
+                        # TAKER: sell fee = 7¢ × count
+                        _sell_fee = 0 if USE_MAKER_ORDERS else TAKER_FEE_CENTS * trade.count
+                        pnl_cents = trade.count * 100 - trade.total_cost_cents - _sell_fee
                         self.memory.resolve_trade(
                             trade.trade_id, TradeOutcome.WIN,
                             pnl_cents=pnl_cents, market_result=result_str,
                         )
                         self._report_sports_outcome(trade, pnl_cents)
+                        self._track_category_outcome(trade, True)
                     else:
+                        # MAKER: no buy fee was charged, loss = just cost
                         pnl_cents = -trade.total_cost_cents
                         self.memory.resolve_trade(
                             trade.trade_id, TradeOutcome.LOSS,
                             pnl_cents=pnl_cents, market_result=result_str,
                         )
                         self._report_sports_outcome(trade, pnl_cents)
+                        self._track_category_outcome(trade, False)
                     resolved_count += 1
                     continue
 
@@ -2141,7 +2374,9 @@ class Frankenstein:
                             self._model.calibration.record(raw_p, actual_yes)
 
                         if correct:
-                            pnl_cents = trade.count * 100 - trade.total_cost_cents
+                            # MAKER: 0 sell fee; TAKER: 7¢ sell fee
+                            _sell_fee = 0 if USE_MAKER_ORDERS else TAKER_FEE_CENTS * trade.count
+                            pnl_cents = trade.count * 100 - trade.total_cost_cents - _sell_fee
                             self.memory.resolve_trade(
                                 trade.trade_id, TradeOutcome.WIN,
                                 pnl_cents=pnl_cents, market_result=market_result_str,
@@ -2153,6 +2388,7 @@ class Frankenstein:
                                 pnl_cents=pnl_cents, market_result=market_result_str,
                             )
                         self._report_sports_outcome(trade, pnl_cents)
+                        self._track_category_outcome(trade, correct)
                         resolved_count += 1
                         resolved_via_market = True
                     elif market_settled:
@@ -2183,24 +2419,28 @@ class Frankenstein:
                             # markets were still in play, fabricating outcomes.
                             if current_price >= 0.99:
                                 correct = trade.predicted_side == "yes"
-                                pnl_cents = (trade.count * 100 - trade.total_cost_cents) if correct else -trade.total_cost_cents
+                                _sell_fee = 0 if USE_MAKER_ORDERS else TAKER_FEE_CENTS * trade.count
+                                pnl_cents = (trade.count * 100 - trade.total_cost_cents - _sell_fee) if correct else -trade.total_cost_cents
                                 self.memory.resolve_trade(
                                     trade.trade_id,
                                     TradeOutcome.WIN if correct else TradeOutcome.LOSS,
                                     pnl_cents=pnl_cents,
                                     market_result="yes",
                                 )
+                                self._track_category_outcome(trade, correct)
                                 resolved_count += 1
                                 continue
                             elif current_price <= 0.01:
                                 correct = trade.predicted_side == "no"
-                                pnl_cents = (trade.count * 100 - trade.total_cost_cents) if correct else -trade.total_cost_cents
+                                _sell_fee = 0 if USE_MAKER_ORDERS else TAKER_FEE_CENTS * trade.count
+                                pnl_cents = (trade.count * 100 - trade.total_cost_cents - _sell_fee) if correct else -trade.total_cost_cents
                                 self.memory.resolve_trade(
                                     trade.trade_id,
                                     TradeOutcome.WIN if correct else TradeOutcome.LOSS,
                                     pnl_cents=pnl_cents,
                                     market_result="no",
                                 )
+                                self._track_category_outcome(trade, correct)
                                 resolved_count += 1
                                 continue
                     except Exception:
@@ -2257,6 +2497,23 @@ class Frankenstein:
         except Exception as e:
             log.debug("sports_monitor_report_error", error=str(e))
 
+    def _track_category_outcome(self, trade: TradeRecord, correct: bool) -> None:
+        """Phase 15: Track outcome by category for circuit breaker & gating."""
+        try:
+            from app.frankenstein.categories import detect_category
+            cat = detect_category(
+                trade.market_title or "", trade.category or "",
+                ticker=trade.ticker,
+            )
+            if cat not in self._category_stats:
+                self._category_stats[cat] = {"wins": 0, "losses": 0}
+            if correct:
+                self._category_stats[cat]["wins"] += 1
+            else:
+                self._category_stats[cat]["losses"] += 1
+        except Exception:
+            pass
+
     # ── Manual Controls ───────────────────────────────────────────────
 
     def pause(self, reason: str = "manual") -> None:
@@ -2267,6 +2524,8 @@ class Frankenstein:
 
     def resume(self) -> None:
         """Resume Frankenstein's trading."""
+        # Phase 15: Also reset circuit breaker on manual resume
+        self._state.circuit_breaker_triggered = False
         self._state.is_paused = False
         self._state.pause_reason = ""
         log.info("🧟▶️ FRANKENSTEIN RESUMED")
@@ -2385,6 +2644,13 @@ class Frankenstein:
             "total_trades_rejected": self._state.total_trades_rejected,
             "last_scan_ms": f"{self._state.current_scan_time_ms:.1f}",
             "last_scan_debug": self._state.last_scan_debug,
+
+            # Phase 4-17: New operational state
+            "daily_trades": self._state.daily_trade_count,
+            "daily_trade_cap": MAX_DAILY_TRADES,
+            "pretrained_loaded": self._state.pretrained_loaded,
+            "circuit_breaker_active": self._state.circuit_breaker_triggered,
+            "category_stats": dict(self._category_stats),
 
             # Subsystem status
             "memory": self.memory.stats(),
