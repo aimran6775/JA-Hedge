@@ -69,12 +69,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     api_for_engine = kalshi  # default: real API
     if settings.paper_trading:
-        # MAKER MODE: 0¢ fees for maker orders
+        # MAKER MODE: 0¢ fees for maker orders, realistic fill simulation
         from app.frankenstein.brain import USE_MAKER_ORDERS
         _paper_fee = 0 if USE_MAKER_ORDERS else 7
         simulator = PaperTradingSimulator(
             starting_balance_cents=settings.paper_trading_balance,
             fee_rate_cents=_paper_fee,
+            maker_mode=USE_MAKER_ORDERS,  # Phase 21: realistic maker fill rates
         )
         api_for_engine = simulator.wrap_api(kalshi)
         state.paper_simulator = simulator
@@ -264,45 +265,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("feature_engine_seeded", markets=len(_mc.get_active()))
 
     # ── Phase 5: WebSocket real-time data feed ────────────
-    ws_client = None
-    ws_feeder = None
+    # Phase 2 upgrade: WS is now managed by Frankenstein's WSBridge.
+    # We just pass the URL and auth token — the bridge handles
+    # connection, subscriptions, and event routing internally.
+    ws_url = settings.kalshi_ws_url
+    ws_auth = None
     try:
-        from app.kalshi.websocket import KalshiWebSocket, WSDataFeeder
+        if hasattr(kalshi, '_client') and hasattr(kalshi._client, '_auth'):
+            ws_auth = kalshi._client._auth  # KalshiAuth with RSA-PSS signing
+    except Exception:
+        pass
 
-        ws_url = settings.kalshi_ws_url
-
-        # Get auth token from Kalshi API if available (WS needs session token)
-        ws_auth_token = None
-        if hasattr(kalshi, '_auth') and kalshi._auth and hasattr(kalshi._auth, 'token'):
-            ws_auth_token = kalshi._auth.token
-
-        ws_client = KalshiWebSocket(ws_url=ws_url, auth_token=ws_auth_token)
-        ws_feeder = WSDataFeeder(feature_engine=feat_engine)
-
-        # Register data handlers
-        ws_client.on_ticker(ws_feeder.handle_ticker)
-        ws_client.on_trade(ws_feeder.handle_trade)
-        ws_client.on_fill(ws_feeder.handle_fill)
-
-        await ws_client.connect()
-
-        # Subscribe to active market tickers (top 200 by volume)
-        active_tickers = [m.ticker for m in _mc.get_active()[:200]]
-        if active_tickers:
-            await ws_client.subscribe_tickers(active_tickers)
-
-        log.info("ws_feeds_started", tickers=len(active_tickers), auth=bool(ws_auth_token))
-    except ImportError:
-        log.warning("websockets_not_installed", hint="pip install websockets for real-time feeds")
-    except Exception as e:
-        log.warning("ws_feeds_skipped", error=str(e), hint="Falling back to REST polling — this is normal")
-        # Disconnect to stop reconnect loop if connect failed
-        if ws_client:
-            try:
-                await ws_client.disconnect()
-            except Exception:
-                pass
-            ws_client = None
+    # Wire WS config into Frankenstein (it starts the bridge in awaken())
+    frankenstein._ws_url = ws_url
+    frankenstein._ws_auth = ws_auth  # RSA auth object
+    log.info("ws_config_passed_to_frankenstein",
+             ws_url=ws_url, auth=bool(ws_auth))
 
     # ── Auto-awaken Frankenstein (AI brain) ───────────────
     try:
@@ -454,12 +432,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             pass
 
-    # Stop WebSocket feeds
-    if ws_client:
-        try:
-            await ws_client.disconnect()
-        except Exception:
-            pass
+    # WebSocket feeds are now stopped by Frankenstein.sleep()
 
     # Stop market data pipeline
     if state.market_pipeline:

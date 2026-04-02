@@ -23,9 +23,12 @@ import asyncio
 import json
 import time
 from collections import defaultdict
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from app.logging_config import get_logger
+
+if TYPE_CHECKING:
+    from app.kalshi.auth import KalshiAuth
 
 log = get_logger("kalshi.websocket")
 
@@ -56,12 +59,14 @@ class KalshiWebSocket:
         ws_url: str,
         auth_token: str | None = None,
         *,
+        auth: "KalshiAuth | None" = None,
         heartbeat_interval: float = 10.0,
         reconnect_delay: float = 5.0,
         max_reconnect_delay: float = 60.0,
     ):
         self._ws_url = ws_url
         self._auth_token = auth_token
+        self._auth = auth  # RSA-PSS signer (preferred over bearer token)
         self._heartbeat_interval = heartbeat_interval
         self._reconnect_delay = reconnect_delay
         self._max_reconnect_delay = max_reconnect_delay
@@ -117,7 +122,10 @@ class KalshiWebSocket:
 
         try:
             headers = {}
-            if self._auth_token:
+            if self._auth:
+                # RSA-PSS signed auth (preferred — matches REST API pattern)
+                headers = self._auth.sign("GET", "/trade-api/ws/v2")
+            elif self._auth_token:
                 headers["Authorization"] = f"Bearer {self._auth_token}"
 
             self._ws = await websockets.connect(
@@ -294,18 +302,17 @@ class KalshiWebSocket:
     # ── Reconnect ─────────────────────────────────────────────────────
 
     async def _schedule_reconnect(self) -> None:
-        """Exponential backoff reconnection (non-blocking)."""
+        """Exponential backoff reconnection (non-blocking). Never gives up."""
         self._reconnect_attempts += 1
         delay = min(
-            self._reconnect_delay * (2 ** min(self._reconnect_attempts - 1, 5)),
+            self._reconnect_delay * (2 ** min(self._reconnect_attempts - 1, 6)),
             self._max_reconnect_delay,
         )
 
-        if self._reconnect_attempts > 5:
-            log.warning("ws_reconnect_giving_up", attempts=self._reconnect_attempts,
-                        hint="Falling back to REST polling")
-            self._running = False
-            return
+        # Never give up — 24/7 operation requires persistent reconnection.
+        # After many failures, just keep trying at max delay interval.
+        if self._reconnect_attempts > 20:
+            delay = self._max_reconnect_delay  # cap at max delay, don't stop
 
         log.info("ws_reconnecting", attempt=self._reconnect_attempts, delay=f"{delay:.0f}s")
         # Non-blocking: schedule reconnect as a background task

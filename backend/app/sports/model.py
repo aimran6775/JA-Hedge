@@ -238,9 +238,10 @@ class SportsPredictor:
                 self._stats["vegas_used"] += 1
                 return pred
         
-        # Kalshi-only fallback: trade extreme mispricing using market
-        # microstructure signals when Vegas odds are unavailable.
-        return self._predict_kalshi_only(sports_features, base_features)
+        # Kalshi-only fallback DISABLED — without Vegas anchor, mean-reversion
+        # assumptions lose money on live sports where prices are efficient.
+        # Only trade sports when we have real Vegas odds.
+        return None
     
     def _predict_xgb(self, sports_features: Any) -> SportsPrediction | None:
         """Use trained XGBoost model for prediction."""

@@ -158,7 +158,7 @@ class TradeMemory:
         # Core storage
         self._trades: deque[TradeRecord] = deque(maxlen=max_trades)
         self._snapshots: deque[MarketSnapshot] = deque(maxlen=max_snapshots)
-        self._important_trades: list[TradeRecord] = []  # Never evicted (big wins/losses)
+        self._important_trades: list[TradeRecord] = []  # High-impact trades (capped at 500)
 
         # Indexes for fast lookup
         self._by_ticker: dict[str, list[str]] = {}  # ticker → [trade_id]
@@ -274,16 +274,19 @@ class TradeMemory:
         # Update counters
         self._by_outcome[TradeOutcome.PENDING] = max(0, self._by_outcome[TradeOutcome.PENDING] - 1)
         self._by_outcome[outcome] += 1
-        self.total_resolved += 1
+        if outcome not in (TradeOutcome.EXPIRED, TradeOutcome.CANCELLED):
+            self.total_resolved += 1
 
         if outcome == TradeOutcome.WIN:
             self.total_wins += 1
         elif outcome == TradeOutcome.LOSS:
             self.total_losses += 1
 
-        # Pin high-impact trades
+        # Pin high-impact trades (capped at 500)
         if abs(pnl_cents) > 500:  # > $5 P&L
             self._important_trades.append(record)
+            if len(self._important_trades) > 500:
+                self._important_trades = self._important_trades[-500:]
 
         log.info(
             "trade_resolved",
@@ -454,6 +457,13 @@ class TradeMemory:
         """Get all trades awaiting resolution."""
         return list(self._pending_trades.values())
 
+    def get_resolved_trades(self) -> list[TradeRecord]:
+        """Get all trades that have been resolved (WIN/LOSS/BREAKEVEN only)."""
+        return [
+            t for t in self._trades
+            if t.outcome not in (TradeOutcome.PENDING, TradeOutcome.EXPIRED, TradeOutcome.CANCELLED)
+        ]
+
     # ── Statistics ────────────────────────────────────────────────────
 
     @property
@@ -476,6 +486,24 @@ class TradeMemory:
     def size(self) -> int:
         return len(self._trades)
 
+    def prune_ticker_index(self) -> int:
+        """Remove stale entries from _by_ticker that reference evicted trades.
+
+        Called periodically to prevent unbounded growth from deque eviction.
+        """
+        active_ids = {t.trade_id for t in self._trades}
+        pruned = 0
+        empty_tickers = []
+        for ticker, trade_ids in self._by_ticker.items():
+            before = len(trade_ids)
+            self._by_ticker[ticker] = [tid for tid in trade_ids if tid in active_ids]
+            pruned += before - len(self._by_ticker[ticker])
+            if not self._by_ticker[ticker]:
+                empty_tickers.append(ticker)
+        for ticker in empty_tickers:
+            del self._by_ticker[ticker]
+        return pruned
+
     def stats(self) -> dict[str, Any]:
         """Full memory statistics."""
         resolved = [t for t in self._trades if t.outcome != TradeOutcome.PENDING]
@@ -490,7 +518,43 @@ class TradeMemory:
             "avg_pnl_per_trade": f"${self.avg_pnl_per_trade / 100:.2f}",
             "outcomes": {k.value: v for k, v in self._by_outcome.items()},
             "unique_tickers": len(self._by_ticker),
+            "category_analytics": self.category_analytics(),
         }
+
+    def category_analytics(self) -> dict[str, dict[str, Any]]:
+        """Phase 15: Detailed per-category analytics from memory."""
+        cats: dict[str, list] = {}
+        for t in self._trades:
+            if t.outcome in (TradeOutcome.PENDING, TradeOutcome.CANCELLED, TradeOutcome.EXPIRED):
+                continue
+            cat = t.category or "unknown"
+            cats.setdefault(cat, []).append(t)
+
+        result = {}
+        for cat, trades in sorted(cats.items()):
+            wins = sum(1 for t in trades if t.outcome == TradeOutcome.WIN)
+            losses = sum(1 for t in trades if t.outcome == TradeOutcome.LOSS)
+            pnls = [t.pnl_cents / 100.0 for t in trades]
+            total_pnl = sum(pnls)
+            # Streak tracking
+            streak = 0
+            for t in reversed(trades):
+                if t.outcome == TradeOutcome.LOSS:
+                    streak += 1
+                else:
+                    break
+            result[cat] = {
+                "trades": len(trades),
+                "wins": wins,
+                "losses": losses,
+                "win_rate": round(wins / len(trades), 3) if trades else 0.0,
+                "total_pnl": round(total_pnl, 2),
+                "avg_pnl": round(total_pnl / len(trades), 2) if trades else 0.0,
+                "best": round(max(pnls), 2) if pnls else 0.0,
+                "worst": round(min(pnls), 2) if pnls else 0.0,
+                "current_loss_streak": streak,
+            }
+        return result
 
     # ── Persistence ───────────────────────────────────────────────────
 
@@ -499,6 +563,9 @@ class TradeMemory:
         save_path = path or self.persist_path
         if not save_path:
             return
+
+        # Prune stale ticker index entries before saving
+        self.prune_ticker_index()
 
         data = {
             "version": 1,
@@ -620,7 +687,7 @@ class TradeMemory:
             self._by_outcome[t.outcome] = self._by_outcome.get(t.outcome, 0) + 1
             if t.outcome == TradeOutcome.PENDING:
                 self._pending_trades[t.trade_id] = t
-            elif t.outcome not in (TradeOutcome.CANCELLED,):
+            elif t.outcome not in (TradeOutcome.CANCELLED, TradeOutcome.EXPIRED):
                 self.total_resolved += 1
             if t.outcome == TradeOutcome.WIN:
                 self.total_wins += 1

@@ -113,6 +113,32 @@ CATEGORY_KEYWORDS = {
         "moon", "satellite", "ai", "artificial intelligence",
         "fda", "vaccine", "drug approval", "clinical trial",
     ],
+    "culture": [
+        "tiktok", "instagram", "youtube", "subscriber", "follower",
+        "influencer", "viral", "trend", "meme", "podcast",
+        "celebrity", "famous", "social media", "twitter", "x.com",
+        "twitch", "streamer", "content creator", "views",
+    ],
+    "social_media": [
+        "tweet", "post", "followers", "likes", "retweet",
+        "engagement", "trending", "hashtag", "viral",
+        "mentions", "truth social", "threads",
+    ],
+    "current_events": [
+        "breaking", "news", "announcement", "ruling", "decision",
+        "summit", "meeting", "conference", "deadline", "deal",
+        "agreement", "ceasefire", "negotiation", "indictment",
+    ],
+    "tech": [
+        "apple", "google", "microsoft", "meta", "amazon",
+        "iphone", "android", "chip", "semiconductor", "nvidia",
+        "openai", "chatgpt", "app store", "antitrust", "regulation",
+    ],
+    "legal": [
+        "court", "judge", "verdict", "trial", "lawsuit",
+        "settlement", "ruling", "appeal", "conviction", "acquittal",
+        "scotus", "doj", "sec", "ftc", "indictment",
+    ],
 }
 
 # Kalshi ticker prefix → category mapping (fast path, no title NLP needed)
@@ -168,16 +194,43 @@ KALSHI_PREFIX_CATEGORY = {
     "KXRUSSELLL": "finance", "KXTSLA": "finance", "KXAAPL": "finance",
     "KXNVDA": "finance", "KXAMZN": "finance", "KXMSFT": "finance",
     "KXIPO": "finance", "KXBOND": "finance",
+    "KXGOLDMON": "finance",     # Gold monthly — NOT golf
+    "KXSILVER": "finance", "KXCOPPER": "finance",
+    "KXCOPPERMON": "finance",   # Copper monthly
+    "KXCOFFEEMON": "finance",   # Coffee monthly commodity
+    "KXCOFFEE": "finance",
+    "KXNATGAS": "finance", "KXOILMON": "finance",
+    "KXWHEAT": "finance", "KXCORN": "finance", "KXSOYBEAN": "finance",
     # ── Entertainment ──────────────────────────────────────
     "KXOSCAR": "entertainment", "KXGRAMMY": "entertainment",
     "KXEMMY": "entertainment", "KXGOLDEN": "entertainment",
-    "KXBOX": "entertainment", "KXNETFLIX": "entertainment",
+    "KXBOXOFFICE": "entertainment", "KXNETFLIX": "entertainment",
     "KXSPOT": "entertainment", "KXBILLBOARD": "entertainment",
     "KXBACHELOR": "entertainment", "KXSURVIVOR": "entertainment",
     # ── Science ────────────────────────────────────────────
     "KXSPACEX": "science", "KXNASA": "science",
     "KXFDA": "science", "KXDRUG": "science",
     "KXLAUNCH": "science", "KXROCKET": "science",
+    # ── Culture / Social Media ───────────────────────────
+    "KXYT": "culture", "KXTIKTOK": "culture",
+    "KXIG": "culture", "KXTWITCH": "culture",
+    "KXPODCAST": "culture", "KXCELEB": "culture",
+    "KXMENTION": "social_media", "KXTWEET": "social_media",
+    "KXTRUTH": "social_media", "KXTHREAD": "social_media",
+    # ── Current Events / General Kalshi ──────────────────
+    "KXRT": "current_events",      # Real-time event markets
+    "KXNEWS": "current_events",
+    "KXDEAL": "current_events",
+    "KXCEASEFIRE": "current_events",
+    "KXSUMMIT": "current_events",
+    # ── Tech ──────────────────────────────────────────────
+    "KXAPPLE": "tech", "KXGOOG": "tech",
+    "KXMETA": "tech", "KXAI": "tech",
+    "KXCHIP": "tech", "KXSEMI": "tech",
+    # ── Legal ─────────────────────────────────────────────
+    "KXSCOTUS": "legal", "KXCOURT": "legal",
+    "KXDOJ": "legal", "KXSEC": "legal",
+    "KXFTC": "legal", "KXCASE": "legal",
 }
 
 
@@ -189,9 +242,11 @@ def detect_category(title: str, category_hint: str = "", ticker: str = "") -> st
               3) Title keyword matching (fuzzy)
     """
     # Fast path: ticker prefix mapping (deterministic, no NLP)
+    # Sort by longest prefix first to avoid partial matches
+    # (e.g., KXGOLD=finance must match before KXGOL=sports)
     if ticker:
         ticker_upper = ticker.upper()
-        for prefix, cat in KALSHI_PREFIX_CATEGORY.items():
+        for prefix, cat in sorted(KALSHI_PREFIX_CATEGORY.items(), key=lambda x: len(x[0]), reverse=True):
             if ticker_upper.startswith(prefix):
                 return cat
 
@@ -641,7 +696,224 @@ class ScienceStrategy(CategoryStrategy):
         )
 
 
-# ── Strategy Registry ────────────────────────────────────────────────────
+# ── Entertainment Strategy ──────────────────────────────────────────
+
+
+class EntertainmentStrategy(CategoryStrategy):
+    """Entertainment markets (awards, box office, reality TV)."""
+
+    @property
+    def category(self) -> str:
+        return "entertainment"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        adjustment = 0.0
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # Entertainment markets are relatively inefficient
+        if features.volume < 100:
+            confidence_boost *= 1.10
+            reason_parts.append("low_vol_inefficient_opportunity")
+
+        # Near-event (awards night, box office weekend) = higher info
+        if features.hours_to_expiry < 12:
+            confidence_boost *= 1.15
+            reason_parts.append("near_event_high_info")
+
+        return CategoryAdjustment(
+            category="entertainment",
+            adjustment=adjustment,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Culture Strategy ──────────────────────────────────────────────
+
+
+class CultureStrategy(CategoryStrategy):
+    """Culture/social media personality markets."""
+
+    @property
+    def category(self) -> str:
+        return "culture"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # Culture markets are inefficient — good opportunity
+        if features.volume < 200:
+            confidence_boost *= 1.10
+            reason_parts.append("inefficient_culture_market")
+
+        # Viral events move fast — reduce confidence if near expiry
+        if features.hours_to_expiry < 2:
+            confidence_boost *= 0.75
+            reason_parts.append("fast_moving_viral")
+
+        return CategoryAdjustment(
+            category="culture",
+            adjustment=0.0,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Social Media Strategy ───────────────────────────────────────
+
+
+class SocialMediaStrategy(CategoryStrategy):
+    """Social media mention/count markets (Trump tweets, etc)."""
+
+    @property
+    def category(self) -> str:
+        return "social_media"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # Social media markets are noisy but can be very inefficient
+        confidence_boost *= 1.05
+        reason_parts.append("social_media_inefficient")
+
+        # Short-term social media markets are more predictable
+        if features.hours_to_expiry < 6:
+            confidence_boost *= 1.10
+            reason_parts.append("short_term_predictable")
+
+        return CategoryAdjustment(
+            category="social_media",
+            adjustment=0.0,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Current Events Strategy ────────────────────────────────────
+
+
+class CurrentEventsStrategy(CategoryStrategy):
+    """News/current events markets."""
+
+    @property
+    def category(self) -> str:
+        return "current_events"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # News-driven markets are event-dependent
+        if features.hours_to_expiry < 4:
+            confidence_boost *= 1.10
+            reason_parts.append("near_deadline_convergence")
+
+        # High volume = public attention = more efficient
+        if features.volume > 500:
+            confidence_boost *= 0.85
+            reason_parts.append("high_attention_efficient")
+
+        return CategoryAdjustment(
+            category="current_events",
+            adjustment=0.0,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Tech Strategy ───────────────────────────────────────────────
+
+
+class TechStrategy(CategoryStrategy):
+    """Tech company/product markets."""
+
+    @property
+    def category(self) -> str:
+        return "tech"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        confidence_boost = 0.90  # tech markets moderately efficient
+        reason_parts = ["tech_market_efficient"]
+
+        # Product launch deadlines are well-known
+        if features.hours_to_expiry < 12:
+            confidence_boost *= 1.10
+            reason_parts.append("near_announcement")
+
+        return CategoryAdjustment(
+            category="tech",
+            adjustment=0.0,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Legal Strategy ──────────────────────────────────────────────
+
+
+class LegalStrategy(CategoryStrategy):
+    """Court/legal ruling markets."""
+
+    @property
+    def category(self) -> str:
+        return "legal"
+
+    def adjust_prediction(
+        self,
+        prediction: Prediction,
+        features: MarketFeatures,
+        market_title: str = "",
+    ) -> CategoryAdjustment:
+        confidence_boost = 1.0
+        reason_parts = []
+
+        # Legal outcomes are binary and hard to predict
+        if features.hours_to_expiry > 168:  # >1 week
+            confidence_boost *= 0.70
+            reason_parts.append("distant_ruling_uncertain")
+
+        # Near-ruling, market converges
+        if features.hours_to_expiry < 24 and features.prob_distance_from_50 > 0.30:
+            confidence_boost *= 1.15
+            reason_parts.append("near_ruling_convergence")
+
+        return CategoryAdjustment(
+            category="legal",
+            adjustment=0.0,
+            confidence_boost=confidence_boost,
+            reason="; ".join(reason_parts),
+        )
+
+
+# ── Category Strategy Registry ───────────────────────────────────────
 
 
 class CategoryStrategyRegistry:
@@ -657,7 +929,9 @@ class CategoryStrategyRegistry:
         # Register built-in strategies
         for cls in [SportsStrategy, EconomicsStrategy, WeatherStrategy,
                      PoliticsStrategy, CryptoStrategy, FinanceStrategy,
-                     ScienceStrategy]:
+                     ScienceStrategy, EntertainmentStrategy, CultureStrategy,
+                     SocialMediaStrategy, CurrentEventsStrategy,
+                     TechStrategy, LegalStrategy]:
             s = cls()
             self._strategies[s.category] = s
         # Track category distribution for analytics

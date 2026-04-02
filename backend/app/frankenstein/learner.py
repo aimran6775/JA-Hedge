@@ -290,8 +290,8 @@ class OnlineLearner:
 
         # Promote if trained on significantly more data (2x)
         if challenger.train_samples >= self._champion.train_samples * 2:
-            # Accept if AUC is at least as good
-            if challenger.val_auc >= self._champion.val_auc - 0.005:
+            # Accept if AUC is at least as good (no regression allowed)
+            if challenger.val_auc >= self._champion.val_auc:
                 return True
 
         return False

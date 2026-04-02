@@ -33,3 +33,29 @@
 - When adding new trading or AI behavior, consider whether the data should update both live in-memory state and DB persistence. `MarketDataPipeline` and `PortfolioTracker` both do in-memory updates first, then attempt async DB writes.
 - Many backend models expose money values as strings/Decimals or `*_cents` integers. Preserve the existing unit conventions instead of normalizing everything to floats.
 - If you touch Frankenstein endpoints, keep the operational controls (`/frankenstein/awaken`, `/sleep`, `/pause`, `/resume`, retraining, memory, chat) consistent with the brain state they expose in `backend/app/routes/frankenstein.py`.
+
+## Copilot workflow rules (how the AI assistant should behave)
+
+### Terminal & scripts
+- **Never run raw multi-line terminal commands.** They get jumbled and break. Always create or edit a `.sh` / `.py` script first, then run that single script.
+- When a task needs more than one terminal command, put them in a script (e.g. `backend/scripts/do_thing.sh`) and execute the script.
+- Prefer existing helper scripts (`start.sh`, `start_bg.sh`, `test_all.sh`) over ad-hoc commands.
+
+### Editing
+- Always read enough context before editing. Never guess at indentation or surrounding code.
+- When multiple independent edits are needed, batch them in one call instead of doing them one at a time.
+- Never create a summary/changelog markdown file unless explicitly asked.
+
+### Deploying
+- After code changes, always verify the import chain locally (`python -c "from app.main import app; print('OK')"`) before pushing.
+- Use `git add -A && git commit -m "<msg>" && git push origin main` as a single script step, not three separate terminal calls.
+- After `railway up`, wait at least 90 seconds before hitting the health endpoint to confirm the deploy.
+
+### Debugging
+- When something isn't working after deploy, check the **deployed** endpoint output first (e.g. `/health`, `/api/frankenstein/status`, `/api/frankenstein/debug/rejections`) before re-reading local code.
+- Include actual API response snippets when reporting status to the user—don't just say "it's deployed."
+
+### Communication
+- Be concise. Lead with what changed and what the result was.
+- If a deploy or test fails, state the exact error and proposed fix, don't just retry blindly.
+- Never say "I'll use tool X"—just do it.

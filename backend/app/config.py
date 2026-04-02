@@ -128,9 +128,9 @@ class Settings(BaseSettings):
     log_format: str = "json"  # "json" or "console"
 
     # ── Risk Defaults ─────────────────────────────────────
-    risk_max_daily_loss: float = 50.0
+    risk_max_daily_loss: float = 150.0
     risk_max_position_size: int = 10
-    risk_max_portfolio_exposure: float = 500.0
+    risk_max_portfolio_exposure: float = 1500.0
     risk_max_spread_cents: int = 40
     kill_switch_enabled: bool = True
     # ── Paper Trading ─────────────────────────────────────────────

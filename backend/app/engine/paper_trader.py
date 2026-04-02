@@ -192,6 +192,7 @@ class PaperTradingSimulator:
         slippage_cents: int = 1,  # realistic slippage per fill
         instant_fill: bool = True,  # fill limit orders immediately (simulates aggressing)
         spread_simulation: bool = True,  # Phase 6: simulate spread impact
+        maker_mode: bool = False,  # Phase 21: realistic maker fill simulation
     ):
         self.starting_balance_cents = starting_balance_cents
         self.balance_cents = starting_balance_cents
@@ -199,12 +200,14 @@ class PaperTradingSimulator:
         self.slippage_cents = slippage_cents
         self.instant_fill = instant_fill
         self.spread_simulation = spread_simulation
+        self.maker_mode = maker_mode
 
         # State
         self._orders: dict[str, SimulatedOrder] = {}
         self._fills: list[SimulatedFill] = []
         self._positions: dict[str, SimulatedPosition] = {}
         self._order_history: list[SimulatedOrder] = []
+        self._resting_orders: dict[str, SimulatedOrder] = {}  # Phase 21: orders waiting for fill
 
         # Stats
         self.total_orders = 0
@@ -217,6 +220,88 @@ class PaperTradingSimulator:
             balance=f"${starting_balance_cents / 100:.2f}",
             fee_rate=f"{fee_rate_cents}¢/contract",
         )
+
+    # ── Settlement ─────────────────────────────────────────────────────
+
+    def settle_market(self, ticker: str, result: str) -> dict[str, Any]:
+        """
+        Settle a market when it resolves (YES wins or NO wins).
+
+        For hold-to-settlement strategy:
+        - If we hold YES and result is 'yes': credit 100¢ per contract
+        - If we hold NO and result is 'no': credit 100¢ per contract
+        - Otherwise: we lose the cost (already deducted on buy)
+
+        Args:
+            ticker: The market ticker
+            result: 'yes', 'no', or 'void'
+
+        Returns:
+            Settlement details including P&L
+        """
+        pos = self._positions.get(ticker)
+        if not pos:
+            return {"ticker": ticker, "status": "no_position"}
+
+        pnl_cents = 0
+        result_lower = result.lower()
+
+        if result_lower == "void":
+            # Void: refund the cost
+            self.balance_cents += pos.total_cost_cents
+            pnl_cents = 0
+        elif result_lower == "yes":
+            # YES wins: credit 100¢ per YES contract held
+            payout = pos.yes_count * 100
+            self.balance_cents += payout
+            pnl_cents = payout - pos.total_cost_cents
+        elif result_lower == "no":
+            # NO wins: credit 100¢ per NO contract held
+            payout = pos.no_count * 100
+            self.balance_cents += payout
+            pnl_cents = payout - pos.total_cost_cents
+        else:
+            pnl_cents = -pos.total_cost_cents
+
+        pos.realized_pnl_cents += pnl_cents
+
+        log.info(
+            "paper_settlement",
+            ticker=ticker,
+            result=result_lower,
+            yes_count=pos.yes_count,
+            no_count=pos.no_count,
+            pnl=f"${pnl_cents / 100:.2f}",
+            balance=f"${self.balance_cents / 100:.2f}",
+        )
+
+        # Remove the position
+        del self._positions[ticker]
+
+        return {
+            "ticker": ticker,
+            "result": result_lower,
+            "pnl_cents": pnl_cents,
+            "balance_cents": self.balance_cents,
+        }
+
+    def cleanup_stale_orders(self, max_age_seconds: float = 3600.0) -> int:
+        """Cancel resting orders older than max_age_seconds.
+
+        Prevents partial fills from sitting forever.
+        """
+        now = datetime.now(timezone.utc)
+        cleaned = 0
+        for order in list(self._orders.values()):
+            if order.status == OrderStatus.RESTING:
+                age = (now - order.created_time).total_seconds()
+                if age > max_age_seconds:
+                    order.status = OrderStatus.CANCELED
+                    order.updated_time = now
+                    cleaned += 1
+        if cleaned:
+            log.info("paper_stale_orders_cleaned", count=cleaned)
+        return cleaned
 
     # ── Reset ─────────────────────────────────────────────────────────
 
@@ -348,7 +433,17 @@ class PaperTradingSimulator:
         )
 
         # ── Instant fill if enabled ──────────────────────
-        if self.instant_fill or req.type == OrderType.MARKET:
+        if req.type == OrderType.MARKET:
+            # Market orders always fill immediately
+            self._fill_order(sim_order)
+        elif self.maker_mode and req.type == OrderType.LIMIT:
+            # MAKER MODE: limit orders rest and fill probabilistically
+            # based on how close price is to midpoint.
+            # This simulates real Kalshi maker order behavior where
+            # fill rate is 20-40%, not the 85% we had before.
+            self._resting_orders[order_id] = sim_order
+            self._attempt_maker_fill(sim_order)
+        elif self.instant_fill:
             self._fill_order(sim_order)
         elif req.time_in_force == TimeInForce.FOK:
             # Fill-or-kill: cancel if can't fill immediately
@@ -400,16 +495,29 @@ class PaperTradingSimulator:
                 fill_count = max(1, int(fill_count * partial_pct))
 
         # ── Proportional slippage ─────────────────────────
-        # Real slippage is proportional to price, not a flat 1¢.
-        # Use ~1% of price + base 0.5¢
-        base_slippage = max(1, int(order.price_cents * 0.01 + 0.5))
-        fill_price = order.price_cents + base_slippage
+        # Maker orders fill at the posted price — no slippage.
+        # Taker orders get ~1% proportional slippage.
+        if order.order_type == OrderType.LIMIT:
+            # Maker/limit: fill at our posted price
+            fill_price = order.price_cents
+        else:
+            base_slippage = max(1, int(order.price_cents * 0.01 + 0.5))
+            fill_price = order.price_cents + base_slippage
         fee_cents = self.fee_rate_cents * fill_count
         cost_cents = fill_price * fill_count
 
         # ── Update balance ────────────────────────────────
         if order.action == OrderAction.BUY:
-            self.balance_cents -= (cost_cents + fee_cents)
+            total_deduction = cost_cents + fee_cents
+            if total_deduction > self.balance_cents:
+                log.warning(
+                    "paper_fill_insufficient_balance",
+                    order_id=order.order_id,
+                    needed=total_deduction,
+                    available=self.balance_cents,
+                )
+                return  # Skip fill — not enough balance
+            self.balance_cents -= total_deduction
         else:
             # SELL: receive proceeds minus fees
             self.balance_cents += (cost_cents - fee_cents)
@@ -484,6 +592,170 @@ class PaperTradingSimulator:
             fee=f"{fee_cents}¢",
             balance=f"${self.balance_cents / 100:.2f}",
         )
+
+    # ── Maker Fill Simulation ─────────────────────────────────────────
+
+    def _attempt_maker_fill(self, order: SimulatedOrder) -> bool:
+        """
+        Simulate realistic maker order fill probability.
+
+        Real Kalshi maker fill rates are 20-40% depending on:
+        - Price proximity to midpoint (closer = higher fill)
+        - Time resting (longer = eventually fills or expires)
+        - Market volume (higher volume = more crossing flow)
+
+        This replaces the old 85% instant fill which was wildly unrealistic.
+        """
+        import random
+
+        if order.remaining_count <= 0 or order.status != OrderStatus.RESTING:
+            return False
+
+        price = order.price_cents
+
+        # Base fill probability: ~30% for typical maker orders
+        # Aggressive prices (near mid) fill more often
+        # Passive prices (far from mid) fill less
+        if price <= 15 or price >= 85:
+            # Extreme prices: very few counterparties
+            fill_prob = 0.15
+        elif price <= 25 or price >= 75:
+            fill_prob = 0.25
+        elif price <= 40 or price >= 60:
+            # Near midpoint: decent fill rate
+            fill_prob = 0.35
+        else:
+            # 40-60 range: most liquid, best fills
+            fill_prob = 0.40
+
+        # Time decay boost: orders resting longer get cumulative fill chance
+        age_seconds = (datetime.now(timezone.utc) - order.created_time).total_seconds()
+        if age_seconds > 60:
+            fill_prob = min(0.60, fill_prob + 0.05)  # +5% after 1 min
+        if age_seconds > 120:
+            fill_prob = min(0.70, fill_prob + 0.10)  # +15% total after 2 min
+
+        if random.random() > fill_prob:
+            # No fill — order stays resting
+            return False
+
+        # Partial fill simulation: larger orders have more partial fills
+        fill_count = order.remaining_count
+        if fill_count > 2:
+            if random.random() < 0.40:  # 40% chance of partial
+                fill_count = max(1, int(fill_count * random.uniform(0.30, 0.70)))
+
+        # Fill at posted price (maker = no slippage)
+        self._execute_maker_fill(order, fill_count)
+        return True
+
+    def _execute_maker_fill(self, order: SimulatedOrder, fill_count: int) -> None:
+        """Execute a maker fill at the posted price with 0 fees."""
+        fill_price = order.price_cents
+        fee_cents = 0  # Maker orders are FREE
+        cost_cents = fill_price * fill_count
+
+        if order.action == OrderAction.BUY:
+            total_deduction = cost_cents + fee_cents
+            if total_deduction > self.balance_cents:
+                return
+            self.balance_cents -= total_deduction
+        else:
+            self.balance_cents += cost_cents
+
+        # Update position
+        pos = self._positions.setdefault(
+            order.ticker, SimulatedPosition(ticker=order.ticker),
+        )
+        if order.action == OrderAction.BUY:
+            if order.side == OrderSide.YES:
+                pos.yes_count += fill_count
+            else:
+                pos.no_count += fill_count
+            pos.total_cost_cents += cost_cents
+        else:
+            if order.side == OrderSide.YES:
+                sold = min(fill_count, pos.yes_count)
+                pos.yes_count -= sold
+                pos.total_cost_cents = max(0, pos.total_cost_cents - cost_cents)
+            else:
+                sold = min(fill_count, pos.no_count)
+                pos.no_count -= sold
+                pos.total_cost_cents = max(0, pos.total_cost_cents - cost_cents)
+
+        # Record fill
+        fill = SimulatedFill(
+            fill_id=f"fill-{uuid.uuid4().hex[:12]}",
+            order_id=order.order_id,
+            client_order_id=order.client_order_id,
+            ticker=order.ticker,
+            side=order.side,
+            action=order.action,
+            count=fill_count,
+            price_cents=fill_price,
+            is_taker=False,  # Maker fill
+            fee_cents=0,
+        )
+        self._fills.append(fill)
+        self.total_fills += 1
+        self.total_volume_cents += cost_cents
+
+        # Update order status
+        order.fill_count += fill_count
+        order.remaining_count -= fill_count
+        order.maker_fill_cost_cents += cost_cents
+        if order.remaining_count <= 0:
+            order.remaining_count = 0
+            order.status = OrderStatus.EXECUTED
+            self._resting_orders.pop(order.order_id, None)
+        order.updated_time = datetime.now(timezone.utc)
+
+        log.info(
+            "paper_maker_fill",
+            order_id=order.order_id,
+            ticker=order.ticker,
+            side=order.side.value,
+            count=fill_count,
+            price=f"{fill_price}¢",
+            balance=f"${self.balance_cents / 100:.2f}",
+        )
+
+    def check_resting_fills(self) -> int:
+        """
+        Check all resting maker orders for potential fills.
+
+        Called periodically (e.g., every scan cycle) to simulate
+        the passage of time giving resting orders a chance to fill.
+
+        Returns the number of orders that got fills.
+        """
+        if not self._resting_orders:
+            return 0
+
+        filled = 0
+        stale_ids = []
+
+        for order_id, order in list(self._resting_orders.items()):
+            if order.status != OrderStatus.RESTING:
+                stale_ids.append(order_id)
+                continue
+
+            # Check age — cancel orders older than 5 minutes (stale)
+            age = (datetime.now(timezone.utc) - order.created_time).total_seconds()
+            if age > 300:
+                order.status = OrderStatus.CANCELED
+                order.updated_time = datetime.now(timezone.utc)
+                stale_ids.append(order_id)
+                log.debug("paper_maker_expired", order_id=order_id, ticker=order.ticker)
+                continue
+
+            if self._attempt_maker_fill(order):
+                filled += 1
+
+        for oid in stale_ids:
+            self._resting_orders.pop(oid, None)
+
+        return filled
 
     # ── Cancel ────────────────────────────────────────────────────────
 

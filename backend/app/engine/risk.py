@@ -33,8 +33,8 @@ class RiskLimits:
     """Active risk parameters — loaded from strategy config + global defaults."""
 
     max_position_size: int = 20
-    max_daily_loss: Decimal = Decimal("300.0")
-    max_portfolio_exposure: Decimal = Decimal("2000.0")
+    max_daily_loss: Decimal = Decimal("150.0")
+    max_portfolio_exposure: Decimal = Decimal("1500.0")
     max_single_order_cost: Decimal = Decimal("300.0")
     stop_loss_pct: Decimal | None = None
     take_profit_pct: Decimal | None = None

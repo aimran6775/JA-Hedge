@@ -35,10 +35,10 @@ class StrategyParams:
     # Position sizing — small and cautious
     kelly_fraction: float = 0.15     # Conservative Kelly
     max_position_size: int = 5       # Slightly larger ok with 0 fees
-    max_simultaneous_positions: int = 30   # More concurrent ok with 0 fees
+    max_simultaneous_positions: int = 50   # Raised from 30 — position wall was blocking all new trades
 
     # Timing
-    scan_interval: float = 45.0  # scan every 45s
+    scan_interval: float = 30.0  # scan every 30s (was 45)
 
     # Risk overrides
     max_daily_loss: float = 150.0    # Higher cap — maker losses are just cost, no fee multiplier
@@ -94,22 +94,37 @@ class AdaptiveStrategy:
 
         # Defaults (never go below/above these) — MAKER-AWARE bounds
         self._MIN_CONFIDENCE = 0.35    # Lower floor — maker risk is lower
-        self._MAX_CONFIDENCE = 0.65    # Can tighten up to 65%
+        self._MAX_CONFIDENCE = 0.58    # Tighter cap — 0.65 chokes trade volume
         self._MIN_EDGE = 0.03          # 3% min edge — maker has no fees
-        self._MAX_EDGE = 0.15          # Reasonable max
-        self._MIN_KELLY = 0.05         # Smaller minimum kelly
-        self._MAX_KELLY = 0.20         # Cap kelly at 20% (was 0.25) — more conservative
-        self._MIN_AGGRESSION = 0.10    # Can go very conservative
-        self._MAX_AGGRESSION = 0.50    # Lower max aggression (was 0.60)
+        self._MAX_EDGE = 0.10          # Cap at 10% — 0.15 was strangling trades
+        self._MIN_KELLY = 0.06         # Floor at 6% — 5% starves sizing
+        self._MAX_KELLY = 0.20         # Cap kelly at 20%
+        self._MIN_AGGRESSION = 0.15    # Don't go too conservative
+        self._MAX_AGGRESSION = 0.55    # Allow more aggression for maker
 
         # History
         self._adaptations: list[AdaptationEvent] = []
         self._last_adaptation: float = 0.0
         self._total_adaptations: int = 0
 
+        # Enforce bounds on initial params (protects against stale persisted values)
+        self._clamp_all_params()
+
         log.info("adaptive_strategy_initialized", params=self.params.to_dict())
 
     # ── Main Adaptation Loop ──────────────────────────────────────────
+
+    def _clamp_all_params(self) -> None:
+        """Enforce hard bounds on all tunable parameters.
+
+        Called at init and after every adaptation cycle to guarantee
+        no parameter ever escapes its declared min/max.
+        """
+        p = self.params
+        p.min_confidence = max(self._MIN_CONFIDENCE, min(p.min_confidence, self._MAX_CONFIDENCE))
+        p.min_edge = max(self._MIN_EDGE, min(p.min_edge, self._MAX_EDGE))
+        p.kelly_fraction = max(self._MIN_KELLY, min(p.kelly_fraction, self._MAX_KELLY))
+        p.aggression = max(self._MIN_AGGRESSION, min(p.aggression, self._MAX_AGGRESSION))
 
     def adapt(self, snapshot: PerformanceSnapshot | None = None) -> list[AdaptationEvent]:
         """
@@ -163,6 +178,9 @@ class AdaptiveStrategy:
         self._last_adaptation = now
         self._total_adaptations += 1
 
+        # Hard-clamp after all adaptations — belt + suspenders
+        self._clamp_all_params()
+
         if events:
             self._adaptations.extend(events)
             log.info(
@@ -183,40 +201,31 @@ class AdaptiveStrategy:
         regime = snap.regime
 
         if regime == "volatile":
-            # High vol: VERY conservative — wide thresholds, tiny sizes,
-            # tighter stops. In volatile markets fees compound losses.
-            events.extend(self._adjust("min_confidence", 0.60, "volatile_regime"))
-            events.extend(self._adjust("min_edge", 0.14, "volatile_regime"))  # Must overcome fees + vol
-            events.extend(self._adjust("kelly_fraction", 0.06, "volatile_regime"))
-            events.extend(self._adjust("max_position_size", 2, "volatile_regime"))
-            events.extend(self._adjust("stop_loss_pct", 0.10, "volatile_regime"))
-            events.extend(self._adjust("take_profit_pct", 0.15, "volatile_regime"))
+            # MAKER MODE: 0 fees, so volatile only needs slightly more edge.
+            # Still reduce sizing — vol means more uncertainty.
+            events.extend(self._adjust("min_confidence", 0.50, "volatile_regime"))
+            events.extend(self._adjust("min_edge", 0.07, "volatile_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.08, "volatile_regime"))
+            events.extend(self._adjust("max_position_size", 3, "volatile_regime"))
 
         elif regime == "quiet":
-            # Low vol: wider stops (less noise-triggered exits), be patient
-            # Still require meaningful edge to cover fees
-            events.extend(self._adjust("min_confidence", 0.45, "quiet_regime"))
-            events.extend(self._adjust("min_edge", 0.08, "quiet_regime"))  # Fees still apply in quiet markets
+            # Quiet: loosen up, lean into volume. Maker = free trades.
+            events.extend(self._adjust("min_confidence", 0.42, "quiet_regime"))
+            events.extend(self._adjust("min_edge", 0.04, "quiet_regime"))
             events.extend(self._adjust("kelly_fraction", 0.15, "quiet_regime"))
-            events.extend(self._adjust("max_position_size", 4, "quiet_regime"))
-            events.extend(self._adjust("stop_loss_pct", 0.18, "quiet_regime"))  # wider — less noise
-            events.extend(self._adjust("take_profit_pct", 0.20, "quiet_regime"))  # let winners run
+            events.extend(self._adjust("max_position_size", 5, "quiet_regime"))
 
         elif regime == "trending":
-            # Trending: wider trailing stop to ride the trend
-            events.extend(self._adjust("min_confidence", 0.50, "trending_regime"))
-            events.extend(self._adjust("min_edge", 0.09, "trending_regime"))  # Cover fees + ride trend
+            # Trending: ride the move. Maker = no fee drag.
+            events.extend(self._adjust("min_confidence", 0.45, "trending_regime"))
+            events.extend(self._adjust("min_edge", 0.05, "trending_regime"))
             events.extend(self._adjust("kelly_fraction", 0.12, "trending_regime"))
-            events.extend(self._adjust("stop_loss_pct", 0.15, "trending_regime"))  # standard
-            events.extend(self._adjust("take_profit_pct", 0.25, "trending_regime"))  # wider — ride trend
 
         elif regime == "mean_reverting":
-            # Mean-revert: tight take-profit (grab the bounce), tight stop
-            events.extend(self._adjust("min_confidence", 0.55, "mean_reverting_regime"))
-            events.extend(self._adjust("min_edge", 0.10, "mean_reverting_regime"))  # Fees make scalping hard
-            events.extend(self._adjust("kelly_fraction", 0.08, "mean_reverting_regime"))
-            events.extend(self._adjust("stop_loss_pct", 0.12, "mean_reverting_regime"))  # tight stop
-            events.extend(self._adjust("take_profit_pct", 0.10, "mean_reverting_regime"))  # quick scalp
+            # Mean-revert: quick grabs. Small edge OK with maker fees=0.
+            events.extend(self._adjust("min_confidence", 0.48, "mean_reverting_regime"))
+            events.extend(self._adjust("min_edge", 0.05, "mean_reverting_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.10, "mean_reverting_regime"))
 
         return [e for e in events if e is not None]
 
@@ -229,16 +238,17 @@ class AdaptiveStrategy:
         if snap.real_trades < 30:
             return events  # Not enough data — learning mode
 
-        if snap.win_rate > 0.65:
-            # Winning streak: slightly loosen entry, increase size (but never below floor)
-            events.extend(self._adjust("min_confidence", max(self.params.min_confidence - 0.01, self._MIN_CONFIDENCE), "high_win_rate"))
+        if snap.win_rate > 0.55:
+            # Winning: loosen entry, grow size
+            events.extend(self._adjust("min_confidence", max(self.params.min_confidence - 0.02, self._MIN_CONFIDENCE), "high_win_rate"))
             events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.02, self._MAX_KELLY), "high_win_rate"))
 
-        elif snap.win_rate < 0.40:
-            # Losing: tighten everything hard
-            events.extend(self._adjust("min_confidence", min(self.params.min_confidence + 0.04, self._MAX_CONFIDENCE), "low_win_rate"))
-            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.02, self._MAX_EDGE), "low_win_rate"))
-            events.extend(self._adjust("kelly_fraction", max(self.params.kelly_fraction - 0.05, self._MIN_KELLY), "low_win_rate"))
+        elif snap.win_rate < 0.25:
+            # Only tighten on truly terrible win rate (<25%), not just below average
+            # Smaller steps: 0.005 confidence, 0.002 edge, 0.005 kelly
+            events.extend(self._adjust("min_confidence", min(self.params.min_confidence + 0.005, self._MAX_CONFIDENCE), "low_win_rate"))
+            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.002, self._MAX_EDGE), "low_win_rate"))
+            events.extend(self._adjust("kelly_fraction", max(self.params.kelly_fraction - 0.005, self._MIN_KELLY), "low_win_rate"))
 
         return [e for e in events if e is not None]
 
@@ -248,18 +258,19 @@ class AdaptiveStrategy:
         """Reduce exposure during drawdowns."""
         events = []
 
-        if snap.current_drawdown < -10:  # Phase 13: trigger earlier at $10 (was $20)
-            severity = min(abs(snap.current_drawdown) / 50.0, 0.7)  # Phase 13: scale harder, max 70% reduction
+        if snap.current_drawdown < -15:  # Only react to meaningful drawdowns (>$15)
+            severity = min(abs(snap.current_drawdown) / 100.0, 0.4)  # Gentler: max 40% reduction, scale over $100
             new_kelly = max(self.params.kelly_fraction * (1.0 - severity), self._MIN_KELLY)
-            new_positions = max(int(self.params.max_simultaneous_positions * (1.0 - severity)), 3)
+            # NEVER reduce max_positions below 40 — otherwise open positions block all new trades
+            new_positions = max(int(self.params.max_simultaneous_positions * (1.0 - severity)), 40)
 
             events.extend(self._adjust("kelly_fraction", new_kelly, f"drawdown_${abs(snap.current_drawdown):.0f}"))
             events.extend(self._adjust("max_simultaneous_positions", new_positions, f"drawdown_${abs(snap.current_drawdown):.0f}"))
 
-        elif snap.current_drawdown > -3:  # Phase 13: tighter recovery threshold (was -5)
-            # Slowly restore defaults — VERY slowly
-            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.01, 0.20), "recovery"))  # Phase 13: cap at 0.20, +0.01 (was +0.02, cap 0.40)
-            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 1, 30), "recovery"))  # Phase 13: cap at 30 (was 75)
+        elif snap.current_drawdown > -5:
+            # Restore defaults
+            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.02, 0.15), "recovery"))
+            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 2, 50), "recovery"))
 
         return [e for e in events if e is not None]
 
@@ -269,23 +280,23 @@ class AdaptiveStrategy:
         """Adjust based on model's prediction accuracy."""
         events = []
 
-        if snap.real_trades < 50:
+        if snap.real_trades < 100:
             return events  # Need substantial data before judging accuracy
 
-        if snap.prediction_accuracy < 0.45:
-            # Model is barely better than coin flip — be extremely careful
-            events.extend(self._adjust("min_confidence", 0.55, "poor_accuracy"))
-            events.extend(self._adjust("min_edge", 0.12, "poor_accuracy"))
-            events.extend(self._adjust("kelly_fraction", 0.08, "poor_accuracy"))
+        if snap.prediction_accuracy < 0.30:
+            # Model is truly bad (<30%) — tighten slightly but not aggressively
+            events.extend(self._adjust("min_confidence", 0.50, "poor_accuracy"))
+            events.extend(self._adjust("min_edge", 0.06, "poor_accuracy"))
+            events.extend(self._adjust("kelly_fraction", 0.10, "poor_accuracy"))
 
-        elif snap.prediction_accuracy > 0.60:
-            # Model is good — trust it, but still require strong signals
-            events.extend(self._adjust("min_confidence", 0.30, "good_accuracy"))
-            events.extend(self._adjust("min_edge", 0.06, "good_accuracy"))
+        elif snap.prediction_accuracy > 0.55:
+            # Model is good — open up
+            events.extend(self._adjust("min_confidence", 0.38, "good_accuracy"))
+            events.extend(self._adjust("min_edge", 0.04, "good_accuracy"))
 
-        # Confidence calibration: if model is overconfident, require more edge
-        if snap.confidence_calibration > 0.15:
-            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.02, self._MAX_EDGE), "poor_calibration"))
+        # Confidence calibration: nudge edge slightly if overconfident
+        if snap.confidence_calibration > 0.20:
+            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.005, self._MAX_EDGE), "poor_calibration"))
 
         return [e for e in events if e is not None]
 
@@ -300,23 +311,21 @@ class AdaptiveStrategy:
         """
         events = []
 
-        if snap.consecutive_losses >= 3:
-            # Scale back kelly proportionally to streak length
-            reduction = 0.03 * snap.consecutive_losses
+        if snap.consecutive_losses >= 5:
+            # Scale back kelly gently — 0.01 per loss in streak
+            reduction = 0.01 * (snap.consecutive_losses - 4)
             new_kelly = max(self.params.kelly_fraction - reduction, self._MIN_KELLY)
             events.extend(self._adjust("kelly_fraction", new_kelly, f"loss_streak_{snap.consecutive_losses}"))
 
-            if snap.consecutive_losses >= 5:
-                # Tighten — but use bounded adjustments, never exceed _MAX_CONFIDENCE
-                new_conf = min(self.params.min_confidence + 0.05, self._MAX_CONFIDENCE)
+            if snap.consecutive_losses >= 8:
+                # Only tighten confidence after a long streak
+                new_conf = min(self.params.min_confidence + 0.02, self._MAX_CONFIDENCE)
                 events.extend(self._adjust("min_confidence", new_conf, "loss_streak_tighten"))
-                new_scan = min(self.params.scan_interval * 1.5, 60.0)  # cap at 60s, not 120
-                events.extend(self._adjust("scan_interval", new_scan, "loss_streak_slow"))
 
-        elif snap.consecutive_losses == 0 and self.params.scan_interval > 20.0:
-            # Streak broken — gradually restore scan_interval
-            new_scan = max(self.params.scan_interval - 5.0, 20.0)
-            events.extend(self._adjust("scan_interval", new_scan, "streak_recovery"))
+        # Always restore scan_interval toward baseline (don't let it bloat)
+        if self.params.scan_interval > 30.0:
+            new_scan = max(self.params.scan_interval - 3.0, 30.0)
+            events.extend(self._adjust("scan_interval", new_scan, "scan_restore"))
 
         return [e for e in events if e is not None]
 

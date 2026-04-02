@@ -80,6 +80,9 @@ class PerformanceTracker:
         self.memory = memory
         self.snapshot_interval = snapshot_interval  # seconds
 
+        # Session start time — adaptation metrics only use trades after this
+        self.session_start_time: float = time.time()
+
         # History
         self._snapshots: deque[PerformanceSnapshot] = deque(maxlen=10_000)
         self._pnl_history: deque[float] = deque(maxlen=50_000)
@@ -110,7 +113,7 @@ class PerformanceTracker:
         """Compute a full performance snapshot from current memory."""
         now = time.time()
         trades = self.memory.get_recent_trades(n=100_000)
-        all_resolved = [t for t in trades if t.outcome not in (TradeOutcome.PENDING, TradeOutcome.CANCELLED)]
+        all_resolved = [t for t in trades if t.outcome not in (TradeOutcome.PENDING, TradeOutcome.CANCELLED, TradeOutcome.EXPIRED)]
 
         # Separate bootstrap/synthetic trades from real ones — bootstrap data
         # is only useful for initial model training, not performance tracking
@@ -126,7 +129,17 @@ class PerformanceTracker:
             self._snapshots.append(snap)
             return snap
 
-        # P&L stats
+        # Session-only trades — adaptation should react to THIS session, not
+        # stale data from previous runs that already shaped the model
+        # Also exclude expired from session — expired = unfilled maker order, NOT a prediction failure
+        session_resolved = [t for t in resolved if t.timestamp >= self.session_start_time]
+
+        # Use session trades for adaptation metrics when available.
+        # If NO session trades have resolved yet (common — trades stay PENDING
+        # until market settles), use NEUTRAL defaults so adaptation does nothing.
+        has_session_data = len(session_resolved) >= 3
+
+        # P&L stats (all-time for reporting)
         pnls = [t.pnl_cents / 100.0 for t in resolved]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p < 0]
@@ -162,22 +175,52 @@ class PerformanceTracker:
         else:
             max_drawdown = current_drawdown = 0.0
 
-        # Consecutive losses
-        consecutive_losses, max_consecutive = self._compute_streaks(resolved)
+        # Consecutive losses — use SESSION trades only so old loss streaks
+        # don't keep triggering adaptation tightening forever
+        if has_session_data:
+            consecutive_losses, max_consecutive = self._compute_streaks(session_resolved)
+        else:
+            # No session data resolved yet — neutral (no streak)
+            consecutive_losses, max_consecutive = 0, 0
 
-        # Prediction accuracy (bootstrap already excluded from resolved)
-        with_outcomes = [t for t in resolved if t.was_correct is not None]
-        accuracy = (
-            sum(1 for t in with_outcomes if t.was_correct) / len(with_outcomes)
-            if with_outcomes else 0.0
-        )
+        # Prediction accuracy — session trades for adaptation, not historical
+        if has_session_data:
+            with_outcomes = [t for t in session_resolved if t.was_correct is not None]
+            accuracy = (
+                sum(1 for t in with_outcomes if t.was_correct) / len(with_outcomes)
+                if with_outcomes else 0.5
+            )
+        else:
+            accuracy = 0.5  # Neutral — don't trigger poor_accuracy adaptation
+
+        # Win rate for adaptation — use session trades
+        if has_session_data:
+            adapt_pnls = [t.pnl_cents / 100.0 for t in session_resolved]
+            adapt_wins = [p for p in adapt_pnls if p > 0]
+            adapt_win_rate = len(adapt_wins) / len(adapt_pnls) if adapt_pnls else 0.5
+        else:
+            adapt_win_rate = 0.5  # Neutral — don't trigger low_win_rate
+
+        # Drawdown for adaptation — session only
+        if has_session_data:
+            adapt_pnls_dd = [t.pnl_cents / 100.0 for t in session_resolved]
+            adapt_equity = np.cumsum(adapt_pnls_dd)
+            adapt_running_max = np.maximum.accumulate(adapt_equity)
+            adapt_drawdowns = adapt_equity - adapt_running_max
+            adapt_current_dd = float(adapt_drawdowns[-1])
+        else:
+            adapt_current_dd = 0.0  # Neutral — don't trigger drawdown adaptation
+
+        # Confidence calibration — session only
+        if has_session_data:
+            cal_outcomes = [t for t in session_resolved if t.was_correct is not None]
+            calibration = self._compute_calibration(cal_outcomes) if cal_outcomes else 0.0
+        else:
+            calibration = 0.0  # Neutral
 
         # Confidence stats
         confs = [t.confidence for t in resolved]
         avg_conf = np.mean(confs) if confs else 0.0
-
-        # Confidence calibration
-        calibration = self._compute_calibration(with_outcomes)
 
         # Edge capture
         edge_capture = self._compute_edge_capture(resolved)
@@ -198,7 +241,7 @@ class PerformanceTracker:
             total_pnl=total_pnl,
             daily_pnl=daily_pnl,
             hourly_pnl=hourly_pnl,
-            win_rate=win_rate,
+            win_rate=adapt_win_rate,        # Session-based for adaptation
             profit_factor=profit_factor,
             avg_win=avg_win,
             avg_loss=avg_loss,
@@ -207,10 +250,10 @@ class PerformanceTracker:
             sharpe_ratio=sharpe,
             sortino_ratio=sortino,
             max_drawdown=max_drawdown,
-            current_drawdown=current_drawdown,
+            current_drawdown=adapt_current_dd,  # Session-based for adaptation
             consecutive_losses=consecutive_losses,
             max_consecutive_losses=max_consecutive,
-            prediction_accuracy=accuracy,
+            prediction_accuracy=accuracy,       # Session-based for adaptation
             avg_confidence=avg_conf,
             confidence_calibration=calibration,
             edge_capture=edge_capture,
@@ -406,9 +449,8 @@ class PerformanceTracker:
         
         This prevents old history from immediately re-pausing the system.
         """
-        self.snapshots.clear()
-        self._trade_outcomes.clear()
-        print("[Performance] Reset for fresh start — old history cleared")
+        self._snapshots.clear()
+        log.info("performance_reset_for_fresh_start", msg="Snapshots cleared for fresh start")
 
     def _compute_streaks(self, trades: list[TradeRecord]) -> tuple[int, int]:
         """Compute current and max consecutive loss streaks."""
@@ -426,13 +468,98 @@ class PerformanceTracker:
 
     # ── Category Breakdown ────────────────────────────────────────────
 
+    # Phase 5+16+20: Category retirement — auto-disable losing categories
+    # Thresholds tuned for 24/7 all-category operation:
+    _RETIREMENT_MIN_TRADES = 20      # Faster detection (was 50) — don't hemorrhage money
+    _RETIREMENT_WR_THRESHOLD = 0.28  # Win rate below 28% → retire (was 15% — too lenient)
+    _RETIREMENT_COOLDOWN_H = 2.0     # Short cooldown — let categories retry after 2h
+    _RETIREMENT_MAX_LOSS_STREAK = 8  # 8 consecutive losses → immediate cooldown
+    _RETIREMENT_MAX_LOSS_DOLLARS = -25.0  # Phase 16: PnL-based retirement — stop bleeding
+
+    def __init_retirement(self) -> None:
+        """Initialize retirement tracking (called lazily)."""
+        if not hasattr(self, "_retired_categories"):
+            self._retired_categories: dict[str, float] = {}  # category → cooldown_until timestamp
+
+    def retired_categories(self) -> dict[str, float]:
+        """Phase 20: Return categories currently in cooldown."""
+        self.__init_retirement()
+        now = time.time()
+        # Purge expired cooldowns
+        self._retired_categories = {
+            c: t for c, t in self._retired_categories.items() if t > now
+        }
+        return dict(self._retired_categories)
+
+    def is_category_retired(self, category: str) -> bool:
+        """Phase 20: Check if a category is currently in retirement cooldown."""
+        self.__init_retirement()
+        cooldown_until = self._retired_categories.get(category, 0)
+        if cooldown_until > time.time():
+            return True
+        # Expired — remove
+        self._retired_categories.pop(category, None)
+        return False
+
+    def evaluate_retirements(self) -> list[str]:
+        """
+        Phase 20: Evaluate category performance and retire underperformers.
+
+        Returns list of newly retired categories.
+        """
+        self.__init_retirement()
+        now = time.time()
+        newly_retired: list[str] = []
+
+        by_cat = self.performance_by_category()
+        for cat, stats in by_cat.items():
+            # Skip if already retired
+            if self.is_category_retired(cat):
+                continue
+
+            trades = stats.get("trades", 0)
+            wr = stats.get("win_rate", 0.0)
+
+            # Need minimum trades to judge
+            if trades < self._RETIREMENT_MIN_TRADES:
+                continue
+
+            total_pnl = stats.get("total_pnl", 0.0)
+            reason = None
+
+            # Check win rate threshold
+            if wr < self._RETIREMENT_WR_THRESHOLD:
+                reason = f"win_rate={wr:.1%} < {self._RETIREMENT_WR_THRESHOLD:.0%}"
+
+            # Phase 16: PnL-based retirement — stop bleeding money
+            if total_pnl < self._RETIREMENT_MAX_LOSS_DOLLARS:
+                reason = f"pnl=${total_pnl:.2f} < ${self._RETIREMENT_MAX_LOSS_DOLLARS:.2f}"
+
+            if reason:
+                cooldown_until = now + self._RETIREMENT_COOLDOWN_H * 3600
+                self._retired_categories[cat] = cooldown_until
+                newly_retired.append(cat)
+                log.warning(
+                    "🧟💀 CATEGORY RETIRED",
+                    category=cat,
+                    reason=reason,
+                    win_rate=f"{wr:.1%}",
+                    total_pnl=f"${total_pnl:.2f}",
+                    trades=trades,
+                    cooldown_hours=self._RETIREMENT_COOLDOWN_H,
+                    resumes_at=time.strftime("%H:%M", time.localtime(cooldown_until)),
+                )
+
+        return newly_retired
+
     def performance_by_category(self) -> dict[str, dict[str, Any]]:
         """Break down performance by market category."""
         trades = self.memory.get_recent_trades(n=100_000)
         categories: dict[str, list[TradeRecord]] = {}
 
         for t in trades:
-            if t.outcome == TradeOutcome.PENDING:
+            # Exclude pending, cancelled, AND expired — expired = unfilled maker order, not a prediction
+            if t.outcome in (TradeOutcome.PENDING, TradeOutcome.CANCELLED, TradeOutcome.EXPIRED):
                 continue
             cat = t.category or "unknown"
             categories.setdefault(cat, []).append(t)
@@ -468,4 +595,5 @@ class PerformanceTracker:
             "calibration_buckets": self._calibration_buckets,
             "by_category": self.performance_by_category(),
             "snapshots_recorded": len(self._snapshots),
+            "retired_categories": self.retired_categories(),
         }
