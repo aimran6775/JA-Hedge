@@ -41,9 +41,11 @@ MIN_PRICE_FLOOR_CENTS = 20             # 20¢ minimum — maker mode has no fees
 MIN_PRICE_FLOOR_LEARNING_CENTS = 15    # 15¢ minimum (learning mode)
 
 # Phase 15: Circuit breaker — pause trading if accuracy drops below threshold
-CIRCUIT_BREAKER_MIN_TRADES = 30
+# Phase 22: Lowered from 30→15 trades so breaker trips faster on bad streaks.
+# Cooldown 4h→2h: resume sooner after retrain to collect fresh learning data.
+CIRCUIT_BREAKER_MIN_TRADES = 15
 CIRCUIT_BREAKER_MIN_ACCURACY = 0.35    # pause if accuracy < 35%
-CIRCUIT_BREAKER_COOLDOWN_HOURS = 4     # stay paused for 4 hours
+CIRCUIT_BREAKER_COOLDOWN_HOURS = 2     # stay paused for 2 hours (was 4)
 
 # ── Dynamic edge caps by market category ────────────────────────────
 # Maximum edge the model is allowed to claim.  Edges above these caps

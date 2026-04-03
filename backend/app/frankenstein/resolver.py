@@ -233,7 +233,11 @@ class OutcomeResolver:
             if isinstance(current_price, int):
                 current_price = current_price / 100
 
-            if current_price >= 0.99:
+            # Phase 22: Widened from 0.99/0.01 to 0.95/0.05.
+            # 45.6% of trades were expiring unresolved because
+            # prices rarely hit exactly 99¢/1¢.  At 95¢/5¢ the
+            # outcome is >95% certain.
+            if current_price >= 0.95:
                 correct = trade.predicted_side == "yes"
                 pnl_cents = self._compute_pnl(trade, correct)
                 outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
@@ -245,7 +249,7 @@ class OutcomeResolver:
                 self._track_category_outcome(trade, correct)
                 return True
 
-            if current_price <= 0.01:
+            if current_price <= 0.05:
                 correct = trade.predicted_side == "no"
                 pnl_cents = self._compute_pnl(trade, correct)
                 outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
@@ -264,7 +268,38 @@ class OutcomeResolver:
     # ── Method 4: Timeout ─────────────────────────────────────────────
 
     def _try_timeout(self, trade: TradeRecord) -> bool:
-        if time.time() - trade.timestamp > 172800:  # 48 hours
+        elapsed = time.time() - trade.timestamp
+        if elapsed > 21600:  # 6 hours (was 48 hours)
+            # Phase 22: Instead of blanket EXPIRED, check current price
+            # to resolve as WIN/LOSS when possible.
+            cached = market_cache.get(trade.ticker)
+            if cached:
+                cp = float(cached.last_price or cached.midpoint or 0)
+                if isinstance(cp, int):
+                    cp = cp / 100
+                if cp >= 0.75:
+                    correct = trade.predicted_side == "yes"
+                    pnl_cents = self._compute_pnl(trade, correct)
+                    outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
+                    self.memory.resolve_trade(
+                        trade.trade_id, outcome,
+                        pnl_cents=pnl_cents, market_result="yes",
+                    )
+                    self._settle_paper_position(trade.ticker, "yes")
+                    self._track_category_outcome(trade, correct)
+                    return True
+                elif cp <= 0.25:
+                    correct = trade.predicted_side == "no"
+                    pnl_cents = self._compute_pnl(trade, correct)
+                    outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
+                    self.memory.resolve_trade(
+                        trade.trade_id, outcome,
+                        pnl_cents=pnl_cents, market_result="no",
+                    )
+                    self._settle_paper_position(trade.ticker, "no")
+                    self._track_category_outcome(trade, correct)
+                    return True
+            # Price inconclusive — expire
             self.memory.resolve_trade(trade.trade_id, TradeOutcome.EXPIRED)
             self._settle_paper_position(trade.ticker, "expired")
             return True

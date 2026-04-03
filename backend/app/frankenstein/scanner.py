@@ -278,7 +278,21 @@ class MarketScanner:
         params = self._strategy.params
         candidates = []
 
-        JUNK_PREFIXES = ("KXMVE", "KXSPOTSTREAMGLOBAL", "KXPARLAY")
+        # Blacklist market prefixes with proven terrible win rates.
+        # Data-driven from 1,192 trades: KXEPLGOAL 2% WR, KXEPLFIRSTGOAL 5%,
+        # KXMVECROSSCATEGORY 5%, KXNCAAMB1HSPREAD 13%, KXQUICKSETTLE 34% (huge losses).
+        # 15-min crypto (KXBTC15M, KXETH15M, etc.) are unpredictable coin flips.
+        JUNK_PREFIXES = (
+            "KXMVE", "KXSPOTSTREAMGLOBAL", "KXPARLAY",
+            # Proven losers (data from 1192 trades):
+            "KXEPLGOAL", "KXEPLFIRSTGOAL",     # EPL goal markets: 2-5% WR
+            "KXMVECROSSCATEGORY",                # Cross-category esports: 5% WR
+            "KXNCAAMB1HSPREAD",                  # NCAA 1H spread: 13% WR
+            "KXQUICKSETTLE",                     # Quick-settle: 34% WR, -$52 PnL
+            # 15-min crypto: pure noise, no model can predict
+            "KXBTC15M", "KXETH15M", "KXSOL15M", "KXDOGE15M", "KXXRP15M",
+            "KXADA15M", "KXAVAX15M", "KXLINK15M", "KXDOT15M", "KXMATIC15M",
+        )
 
         max_spread = params.max_spread_cents
         if self._execution._risk_manager:
@@ -603,7 +617,9 @@ class MarketScanner:
 
             if _is_learning:
                 cost_to_beat = fee_as_fraction + half_spread
-                effective_min_edge = max(0.03 if USE_MAKER_ORDERS else 0.05, cost_to_beat * 1.2)
+                # Phase 22: Raised from 0.03→0.06.  Data: 443 trades with edge≈0
+                # had 22% WR (coin flips), but 62 trades with edge≥0.05 had 95% WR.
+                effective_min_edge = max(0.06 if USE_MAKER_ORDERS else 0.07, cost_to_beat * 1.5)
             else:
                 effective_min_edge = params.min_edge
                 # Phase 5+8: Category-specific min edges for ALL Kalshi categories
@@ -630,6 +646,12 @@ class MarketScanner:
                 effective_min_edge = max(effective_min_edge, cost_to_beat * (1.2 if USE_MAKER_ORDERS else 1.5))
 
             if abs(prediction.edge) < effective_min_edge:
+                continue
+
+            # Phase 22: Absolute edge floor — NEVER trade below this.
+            # Data proof: 443/562 resolved trades at edge≈0 had 22% WR.
+            _ABSOLUTE_MIN_EDGE = 0.04
+            if abs(prediction.edge) < _ABSOLUTE_MIN_EDGE:
                 continue
 
             # Confidence scoring
@@ -1310,6 +1332,18 @@ class MarketScanner:
         if market.status not in (MarketStatus.ACTIVE, MarketStatus.OPEN):
             return None
 
+        # Phase 22: Block toxic market prefixes in reactive path too
+        ticker_upper = (ticker or "").upper()
+        _REACTIVE_JUNK = (
+            "KXMVE", "KXSPOTSTREAMGLOBAL", "KXPARLAY",
+            "KXEPLGOAL", "KXEPLFIRSTGOAL", "KXMVECROSSCATEGORY",
+            "KXNCAAMB1HSPREAD", "KXQUICKSETTLE",
+            "KXBTC15M", "KXETH15M", "KXSOL15M", "KXDOGE15M", "KXXRP15M",
+            "KXADA15M", "KXAVAX15M", "KXLINK15M", "KXDOT15M", "KXMATIC15M",
+        )
+        if ticker_upper.startswith(_REACTIVE_JUNK):
+            return None
+
         mid = float(market.midpoint or market.last_price or 0)
         if mid < 0.08 or mid > 0.92:
             return None
@@ -1403,6 +1437,10 @@ class MarketScanner:
             effective_min_edge = max(self._strategy.params.min_edge, cost_to_beat * 1.5)
 
         if abs(prediction.edge) < effective_min_edge:
+            return None
+
+        # Phase 22: Absolute edge floor (same as full scan)
+        if abs(prediction.edge) < 0.04:
             return None
 
         # Price floor
