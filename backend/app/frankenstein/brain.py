@@ -729,12 +729,20 @@ class Frankenstein:
                 if not getattr(t, "is_bootstrap", False)
                 and getattr(t, "timestamp", 0) > awaken_time
             ]
-            if len(recent) >= CIRCUIT_BREAKER_MIN_TRADES:
-                wins = sum(1 for t in recent if t.outcome == TradeOutcome.WIN)
-                accuracy = wins / len(recent)
+            # Phase 22 FIX: Only count WIN and LOSS for accuracy.
+            # BREAKEVEN trades are sell/exit records — they are NOT
+            # prediction failures and must not drag accuracy to 0%.
+            win_loss_only = [
+                t for t in recent
+                if t.outcome in (TradeOutcome.WIN, TradeOutcome.LOSS)
+            ]
+            if len(win_loss_only) >= CIRCUIT_BREAKER_MIN_TRADES:
+                wins = sum(1 for t in win_loss_only if t.outcome == TradeOutcome.WIN)
+                accuracy = wins / len(win_loss_only)
                 if accuracy < CIRCUIT_BREAKER_MIN_ACCURACY and not self._state.circuit_breaker_triggered:
                     log.warning("🧟🛑 CIRCUIT BREAKER TRIGGERED",
-                                accuracy=f"{accuracy:.1%}", threshold=f"{CIRCUIT_BREAKER_MIN_ACCURACY:.0%}")
+                                accuracy=f"{accuracy:.1%}", threshold=f"{CIRCUIT_BREAKER_MIN_ACCURACY:.0%}",
+                                wins=wins, losses=len(win_loss_only) - wins)
                     self._state.circuit_breaker_triggered = True
                     self._state.circuit_breaker_triggered_at = time.time()
                     self._state.is_paused = True
