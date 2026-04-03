@@ -598,14 +598,35 @@ class TradeMemory:
             self.total_wins = data.get("total_wins", 0)
             self.total_losses = data.get("total_losses", 0)
 
+            # Phase 24: Backfill categories on load — historical trades
+            # were recorded before category detection was wired in,
+            # leaving 700+ trades as "unknown" which poisons retirement.
+            from app.frankenstein.categories import detect_category as _detect_cat
+
+            backfilled = 0
             for td in data.get("trades", []):
                 record = TradeRecord.from_dict(td)
+
+                # Backfill missing/unknown categories from ticker + title
+                if not record.category or record.category in ("unknown", ""):
+                    detected = _detect_cat(
+                        record.market_title,
+                        category_hint="",
+                        ticker=record.ticker,
+                    )
+                    if detected and detected != "general":
+                        record.category = detected
+                        backfilled += 1
+
                 self._trades.append(record)
                 if record.outcome == TradeOutcome.PENDING:
                     self._pending_trades[record.trade_id] = record
                 self._by_ticker.setdefault(record.ticker, []).append(record.trade_id)
                 # Rebuild outcome counters
                 self._by_outcome[record.outcome] = self._by_outcome.get(record.outcome, 0) + 1
+
+            if backfilled:
+                log.info("memory_categories_backfilled", count=backfilled)
 
             for td in data.get("important_trades", []):
                 self._important_trades.append(TradeRecord.from_dict(td))

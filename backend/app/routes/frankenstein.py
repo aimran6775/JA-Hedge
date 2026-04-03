@@ -154,7 +154,7 @@ async def debug_rejections() -> dict:
     from app.frankenstein.confidence import ConfidenceScorer
 
     markets = market_cache.get_active()
-    candidates = frank._filter_candidates(markets)
+    candidates = frank._scanner._filter_candidates(markets)
 
     if not candidates:
         return {"error": "no_candidates", "total_active": len(markets)}
@@ -201,7 +201,7 @@ async def debug_rejections() -> dict:
         min_grade="B" if is_learning else "B+",
         portfolio_heat=frank._adv_risk.portfolio_heat if hasattr(frank._adv_risk, 'portfolio_heat') else 0.0,
         current_drawdown_pct=frank._adv_risk.current_drawdown_pct if hasattr(frank._adv_risk, 'current_drawdown_pct') else 0.0,
-        open_positions=frank._count_open_positions(),
+        open_positions=frank._scanner._count_open_positions(),
         max_positions=params.max_simultaneous_positions,
     )
 
@@ -236,7 +236,7 @@ async def debug_rejections() -> dict:
             gates.append(f"grade {conf.grade} < min {conf.min_grade_to_trade}")
 
         # Kelly
-        kelly = frank._kelly_size(pred, feat, params)
+        kelly = frank._scanner._kelly_size(pred, feat, params)
         if kelly <= 0 and not is_learning:
             gates.append(f"kelly={kelly:.4f} (no +EV)")
         elif kelly <= 0 and is_learning:
@@ -244,7 +244,7 @@ async def debug_rejections() -> dict:
 
         # Net EV
         net_edge = edge - half_spread - fee_frac
-        price_cents = frank._compute_price(pred, feat)
+        price_cents = int(feat.midpoint * 100) if feat.midpoint else 50
 
         results.append({
             "ticker": m.ticker,
@@ -293,7 +293,7 @@ async def debug_test_trade() -> dict:
     from app.kalshi.models import OrderSide, OrderAction, OrderType
 
     markets = market_cache.get_active()
-    candidates = frank._filter_candidates(markets)
+    candidates = frank._scanner._filter_candidates(markets)
 
     if not candidates:
         return {"error": "no_candidates"}
@@ -306,12 +306,12 @@ async def debug_test_trade() -> dict:
         return {"error": "no_prediction"}
 
     params = frank.strategy.params
-    kelly = frank._kelly_size(pred, features, params)
+    kelly = frank._scanner._kelly_size(pred, features, params)
     count = max(1, int(kelly * params.max_position_size))
-    price_cents = frank._compute_price(pred, features)
+    price_cents = int(features.midpoint * 100) if features.midpoint else 50
 
     try:
-        result = await frank._execute_trade(
+        result = await frank._order_mgr._execute_buy(
             market=m,
             prediction=pred,
             features=features,
@@ -513,6 +513,47 @@ async def reset_strategy() -> dict:
     frank = _get_frank()
     frank.strategy.reset_to_defaults()
     return {"status": "reset", "params": frank.strategy.params.to_dict()}
+
+
+# ── Category Retirement Management ───────────────────────────────────────────
+
+@router.post("/categories/unretire")
+async def unretire_categories(body: dict | None = None) -> dict:
+    """
+    Phase 24b: Force-unretire categories so they can trade again.
+    Body: {"category": "sports"} to unretire one, or {} / no body to unretire all.
+    """
+    frank = _get_frank()
+    category = (body or {}).get("category")
+    if category:
+        was_retired = frank.performance.unretire_category(category)
+        return {
+            "status": "unretired" if was_retired else "was_not_retired",
+            "category": category,
+            "retired_categories": list(frank.performance.retired_categories().keys()),
+        }
+    else:
+        previously = frank.performance.unretire_all()
+        return {
+            "status": "all_unretired",
+            "previously_retired": previously,
+            "retired_categories": list(frank.performance.retired_categories().keys()),
+        }
+
+
+@router.get("/categories/retirement-stats")
+async def retirement_stats() -> dict:
+    """Phase 24b: Get rolling-window retirement stats used for decisions."""
+    frank = _get_frank()
+    rolling = frank.performance._rolling_category_stats()
+    retired = frank.performance.retired_categories()
+    return {
+        "rolling_window": frank.performance._RETIREMENT_ROLLING_WINDOW,
+        "wr_threshold": frank.performance._RETIREMENT_WR_THRESHOLD,
+        "min_trades": frank.performance._RETIREMENT_MIN_TRADES,
+        "rolling_stats": rolling,
+        "currently_retired": list(retired.keys()),
+    }
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -938,7 +979,7 @@ async def debug_scan() -> dict:
     # Step 2: Filter
     try:
         frank = _get_frank()
-        candidates = frank._filter_candidates(active)
+        candidates = frank._scanner._filter_candidates(active)
         result["steps"].append({"step": "filter", "candidates": len(candidates)})
     except Exception as e:
         result["steps"].append({"step": "filter", "error": str(e), "tb": tb.format_exc()[-500:]})

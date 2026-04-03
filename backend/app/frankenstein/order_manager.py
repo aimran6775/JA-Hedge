@@ -301,6 +301,12 @@ class OrderManager:
 
             if result and result.success:
                 self.fill_rate_stats["placed"] += 1
+
+                # Phase 24: Paper fills are instant — count them so
+                # fill_rate doesn't show 0% in paper mode.
+                if result.order and getattr(result.order, "remaining_count", -1) == 0:
+                    self.fill_rate_stats["filled"] += 1
+
                 if result.order_id:
                     # Phase 5: store book context for fill prediction
                     _spread = int(features.spread * 100) if features.spread else 1

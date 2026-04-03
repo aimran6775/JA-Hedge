@@ -468,13 +468,14 @@ class PerformanceTracker:
 
     # ── Category Breakdown ────────────────────────────────────────────
 
-    # Phase 5+16+20: Category retirement — auto-disable losing categories
-    # Thresholds tuned for 24/7 all-category operation:
-    _RETIREMENT_MIN_TRADES = 20      # Faster detection (was 50) — don't hemorrhage money
-    _RETIREMENT_WR_THRESHOLD = 0.28  # Win rate below 28% → retire (was 15% — too lenient)
-    _RETIREMENT_COOLDOWN_H = 2.0     # Short cooldown — let categories retry after 2h
-    _RETIREMENT_MAX_LOSS_STREAK = 8  # 8 consecutive losses → immediate cooldown
-    _RETIREMENT_MAX_LOSS_DOLLARS = -25.0  # Phase 16: PnL-based retirement — stop bleeding
+    # Phase 5+16+20+24b: Category retirement — auto-disable losing categories
+    # Phase 24b: Now uses rolling window so categories can recover as model improves
+    _RETIREMENT_MIN_TRADES = 30      # Need 30+ trades to judge (was 20 — too trigger-happy)
+    _RETIREMENT_WR_THRESHOLD = 0.22  # Win rate below 22% → retire (was 28% — too aggressive)
+    _RETIREMENT_COOLDOWN_H = 4.0     # 4h cooldown — give categories time to find new signal
+    _RETIREMENT_MAX_LOSS_STREAK = 10 # 10 consecutive losses → immediate cooldown (was 8)
+    _RETIREMENT_MAX_LOSS_DOLLARS = -40.0  # Phase 24: Loosened from -$25 — intelligence data should help
+    _RETIREMENT_ROLLING_WINDOW = 50  # Phase 24b: Only look at last 50 trades per category for retirement
 
     def __init_retirement(self) -> None:
         """Initialize retirement tracking (called lazily)."""
@@ -501,9 +502,31 @@ class PerformanceTracker:
         self._retired_categories.pop(category, None)
         return False
 
+    def unretire_category(self, category: str) -> bool:
+        """Phase 24b: Force-unretire a specific category. Returns True if it was retired."""
+        self.__init_retirement()
+        was_retired = category in self._retired_categories
+        self._retired_categories.pop(category, None)
+        if was_retired:
+            log.info("🧟✅ CATEGORY UNRETIRED", category=category)
+        return was_retired
+
+    def unretire_all(self) -> list[str]:
+        """Phase 24b: Force-unretire all categories. Returns list of previously retired."""
+        self.__init_retirement()
+        previously = list(self._retired_categories.keys())
+        self._retired_categories.clear()
+        if previously:
+            log.info("🧟✅ ALL CATEGORIES UNRETIRED", categories=previously)
+        return previously
+
     def evaluate_retirements(self) -> list[str]:
         """
-        Phase 20: Evaluate category performance and retire underperformers.
+        Phase 20+24b: Evaluate category performance and retire underperformers.
+
+        Phase 24b: Uses rolling window (last N trades per category) instead of
+        all-time stats. This lets categories recover as the model/intelligence
+        improves, rather than being permanently poisoned by old history.
 
         Returns list of newly retired categories.
         """
@@ -511,8 +534,11 @@ class PerformanceTracker:
         now = time.time()
         newly_retired: list[str] = []
 
-        by_cat = self.performance_by_category()
+        by_cat = self._rolling_category_stats()
         for cat, stats in by_cat.items():
+            # Never retire catch-all buckets — they're not real categories
+            if cat in ("unknown", "general", ""):
+                continue
             # Skip if already retired
             if self.is_category_retired(cat):
                 continue
@@ -548,9 +574,51 @@ class PerformanceTracker:
                     trades=trades,
                     cooldown_hours=self._RETIREMENT_COOLDOWN_H,
                     resumes_at=time.strftime("%H:%M", time.localtime(cooldown_until)),
+                    window=self._RETIREMENT_ROLLING_WINDOW,
                 )
 
         return newly_retired
+
+    def _rolling_category_stats(self) -> dict[str, dict[str, Any]]:
+        """
+        Phase 24b: Category stats using only trades from the current session
+        (since session_start_time), with rolling window cap.
+        This prevents old-model performance from permanently blocking categories
+        that might now be profitable with improved intelligence data.
+        """
+        trades = self.memory.get_recent_trades(n=100_000)
+        categories: dict[str, list[TradeRecord]] = {}
+
+        session_start = self.session_start_time
+
+        for t in trades:
+            if t.outcome in (TradeOutcome.PENDING, TradeOutcome.CANCELLED, TradeOutcome.EXPIRED):
+                continue
+            # Only consider trades from current session
+            if t.timestamp < session_start:
+                continue
+            cat = t.category or "unknown"
+            categories.setdefault(cat, []).append(t)
+
+        result = {}
+        window = self._RETIREMENT_ROLLING_WINDOW
+        for cat, cat_trades in categories.items():
+            # Sort by timestamp descending, take only last N
+            recent = sorted(cat_trades, key=lambda t: t.timestamp, reverse=True)[:window]
+            pnls = [t.pnl_cents / 100.0 for t in recent]
+            wins = sum(1 for t in recent if t.outcome == TradeOutcome.WIN)
+            result[cat] = {
+                "trades": len(recent),
+                "win_rate": wins / len(recent) if recent else 0.0,
+                "total_pnl": sum(pnls),
+                "avg_pnl": float(np.mean(pnls)) if pnls else 0.0,
+                "best_trade": max(pnls) if pnls else 0.0,
+                "worst_trade": min(pnls) if pnls else 0.0,
+                "window_used": len(recent),
+                "session_only": True,
+            }
+
+        return result
 
     def performance_by_category(self) -> dict[str, dict[str, Any]]:
         """Break down performance by market category."""
