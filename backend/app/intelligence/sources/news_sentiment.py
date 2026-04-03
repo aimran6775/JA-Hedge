@@ -66,15 +66,26 @@ CATEGORY_KEYWORDS = {
              "apple", "google", "microsoft", "nvidia", "semiconductor"],
 }
 
-# RSS feeds — free, no API key required
+# RSS feeds — free, no API key required (verified working April 2026)
 RSS_FEEDS = {
-    "ap_politics": "https://rsshub.app/apnews/topics/politics",
-    "reuters_markets": "https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best",
+    # Major news (politics, economics, general)
     "bbc_world": "http://feeds.bbci.co.uk/news/world/rss.xml",
     "bbc_business": "http://feeds.bbci.co.uk/news/business/rss.xml",
     "cnbc_economy": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
-    "espn_top": "https://www.espn.com/espn/rss/news",
     "nyt_politics": "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml",
+    "nyt_home": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+    "cnn_politics": "http://rss.cnn.com/rss/cnn_allpolitics.rss",
+    "wsj_world": "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
+    "guardian_world": "https://www.theguardian.com/world/rss",
+    "guardian_biz": "https://www.theguardian.com/uk/business/rss",
+    "npr_news": "https://feeds.npr.org/1001/rss.xml",
+    # Finance / markets
+    "yahoo_finance": "https://finance.yahoo.com/news/rssindex",
+    "marketwatch": "http://feeds.marketwatch.com/marketwatch/topstories/",
+    # Crypto
+    "coindesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    # Sports
+    "espn_top": "https://www.espn.com/espn/rss/news",
 }
 
 
@@ -135,7 +146,13 @@ class NewsSentimentEngine(DataSource):
     async def start(self) -> None:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(20.0),
-            headers={"User-Agent": "JA-Hedge/1.0 (news aggregator)"},
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            },
             follow_redirects=True,
         )
         log.info("news_sentiment_started", has_newsapi=bool(self._newsapi_key))
@@ -219,11 +236,17 @@ class NewsSentimentEngine(DataSource):
         try:
             root = ET.fromstring(xml_text)
             # Handle both RSS 2.0 and Atom
-            items = root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
+            items = root.findall(".//item")
+            if not items:
+                items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
 
             for item in items[:30]:  # Cap per feed
-                title_el = item.find("title") or item.find("{http://www.w3.org/2005/Atom}title")
-                link_el = item.find("link") or item.find("{http://www.w3.org/2005/Atom}link")
+                title_el = item.find("title")
+                if title_el is None:
+                    title_el = item.find("{http://www.w3.org/2005/Atom}title")
+                link_el = item.find("link")
+                if link_el is None:
+                    link_el = item.find("{http://www.w3.org/2005/Atom}link")
                 title = (title_el.text or "").strip() if title_el is not None else ""
                 url = ""
                 if link_el is not None:
@@ -262,11 +285,11 @@ class NewsSentimentEngine(DataSource):
             # GDELT DOC API — free, no key
             url = "https://api.gdeltproject.org/api/v2/doc/doc"
             params = {
-                "query": "kalshi OR prediction market OR betting odds",
+                "query": "economy OR markets OR election OR crypto OR bitcoin OR weather extreme",
                 "mode": "ArtList",
                 "maxrecords": "50",
                 "format": "json",
-                "timespan": "30min",
+                "timespan": "4h",
             }
             resp = await self._client.get(url, params=params)
             self._stats["gdelt_fetches"] += 1

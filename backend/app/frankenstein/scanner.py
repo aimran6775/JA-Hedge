@@ -445,24 +445,125 @@ class MarketScanner:
         candidates: list[Market],
         features_list: list[MarketFeatures],
     ) -> None:
-        """Enrich features with Intelligence Hub alt-data signals."""
+        """Enrich features with Intelligence Hub alt-data via TickerMapper.
+
+        Phase 23: Uses TickerMapper to bridge Kalshi tickers to intelligence
+        signal keys, then populates 15 alt-data features in MarketFeatures.
+        """
         try:
             from app.state import state as _hub_st
             hub = _hub_st.intelligence_hub
-            if hub and hub._running:
-                for m, feat in zip(candidates, features_list):
-                    alt_features = hub.get_features_for_ticker(m.ticker)
-                    if alt_features:
-                        sig_vals = [v for k, v in alt_features.items() if k.endswith("_signal")]
-                        conf_vals = [v for k, v in alt_features.items() if k.endswith("_confidence")]
-                        if sig_vals:
-                            avg_signal = sum(sig_vals) / len(sig_vals)
-                            feat.implied_prob = feat.implied_prob * 0.85 + avg_signal * 0.15
-                        if conf_vals:
-                            avg_conf = sum(conf_vals) / len(conf_vals)
-                            feat.settlement_confidence = min(
-                                1.0, feat.settlement_confidence + avg_conf * 0.1,
-                            )
+            if not hub or not hub._running:
+                return
+
+            from app.intelligence.ticker_mapper import TickerMapper
+            mapper = getattr(self, "_ticker_mapper", None)
+            if mapper is None:
+                mapper = TickerMapper()
+                self._ticker_mapper = mapper
+
+            for m, feat in zip(candidates, features_list):
+                try:
+                    mapping = mapper.map(
+                        m.ticker,
+                        title=getattr(m, "title", "") or "",
+                        category_hint=getattr(m, "category", "") or "",
+                    )
+
+                    source_count = 0
+
+                    # Collect signals from ALL matching intelligence keys
+                    for key in mapping.intelligence_keys:
+                        signals = hub.get_signals_for_ticker(key)
+                        for sig in signals:
+                            source_count += 1
+                            sf = sig.features
+
+                            # ── Sports: Vegas odds ────────────────
+                            if sig.source_type.value == "sports_odds":
+                                home_prob = sf.get("home_prob", 0)
+                                away_prob = sf.get("away_prob", 0)
+                                if home_prob > 0 or away_prob > 0:
+                                    # Use the stronger probability as the signal
+                                    vegas_prob = max(home_prob, away_prob)
+                                    feat.alt_vegas_prob = vegas_prob
+                                    feat.alt_cross_platform_edge = feat.last_price - vegas_prob
+
+                            # ── Crypto: current price vs strike ───
+                            elif sig.source_type.value == "crypto":
+                                crypto_price = sf.get("crypto_price", 0)
+                                momentum = sf.get("crypto_momentum", 0)
+                                feat.alt_crypto_momentum = momentum
+                                if crypto_price > 0 and mapping.strike_price:
+                                    dist = (crypto_price - mapping.strike_price) / mapping.strike_price
+                                    feat.alt_crypto_strike_dist = max(-2.0, min(2.0, dist))
+                                    # Use crypto price to estimate probability
+                                    # If price is way above strike → YES likely
+                                    # If price is way below → NO likely
+                                    feat.alt_cross_platform_edge = feat.last_price - (1.0 if dist > 0.1 else 0.0 if dist < -0.1 else 0.5)
+
+                            # ── Prediction markets (Polymarket) ───
+                            elif sig.source_type.value == "prediction_market":
+                                poly_prob = sf.get("poly_price", sig.signal_value)
+                                if 0 < poly_prob <= 1.0:
+                                    feat.alt_polymarket_prob = poly_prob
+                                    feat.alt_cross_platform_edge = feat.last_price - poly_prob
+
+                            # ── Economic data ─────────────────────
+                            elif sig.source_type.value == "economic":
+                                vix = sf.get("VIXCLS_value", sf.get("vix_value", 0))
+                                if vix > 0:
+                                    feat.alt_econ_vix = min(1.0, vix / 60.0)  # Normalise VIX: 60 = extreme
+
+                                yield_10y = sf.get("DGS10_value", 0)
+                                yield_2y = sf.get("DGS2_value", 0)
+                                if yield_10y > 0 and yield_2y > 0:
+                                    feat.alt_yield_spread = yield_10y - yield_2y
+
+                                # For bond/rate markets, get the underlying value
+                                series_val = sf.get(f"{mapping.underlying}_value", 0)
+                                if series_val and mapping.underlying:
+                                    feat.alt_econ_value = series_val
+                                    if mapping.strike_price:
+                                        dist = (series_val - mapping.strike_price) / max(0.01, abs(mapping.strike_price))
+                                        feat.alt_econ_strike_dist = max(-2.0, min(2.0, dist))
+
+                            # ── News sentiment ────────────────────
+                            elif sig.source_type.value == "news":
+                                feat.alt_news_sentiment = sig.signal_value
+                                feat.alt_news_volume = min(1.0, sf.get("social_volume", sf.get("article_count", 0)) / 50.0)
+
+                            # ── Social sentiment ──────────────────
+                            elif sig.source_type.value == "social":
+                                feat.alt_social_sentiment = sig.signal_value
+
+                            # ── Weather ───────────────────────────
+                            elif sig.source_type.value == "weather":
+                                temp = sf.get("temp_f", sf.get("forecast_temp_f", 0))
+                                if temp != 0:
+                                    feat.alt_weather_temp = temp / 120.0  # Normalise: 120°F = 1.0
+                                feat.alt_weather_extreme = sf.get("extreme_score", sf.get("alert_severity", 0))
+
+                    # ── Category-level fallback: news + social ────
+                    # If no ticker-level match, try category-level signals
+                    if source_count == 0 and mapping.category != "unknown":
+                        for prefix in ["news:", "social:"]:
+                            cat_key = f"{prefix}{mapping.category}"
+                            cat_signals = hub.get_signals_for_ticker(cat_key)
+                            for sig in cat_signals:
+                                source_count += 1
+                                if prefix == "news:":
+                                    feat.alt_news_sentiment = sig.signal_value
+                                    feat.alt_news_volume = min(1.0, sig.features.get("social_volume", sig.features.get("article_count", 0)) / 50.0)
+                                elif prefix == "social:":
+                                    feat.alt_social_sentiment = sig.signal_value
+
+                    # Normalised source count (0-1, where 1 = 5+ sources agree)
+                    feat.alt_source_count = min(1.0, source_count / 5.0)
+
+                except Exception as e:
+                    log.debug("intelligence_enrich_single_error", ticker=m.ticker, error=str(e))
+
         except Exception as e:
             log.debug("intelligence_enrich_error", error=str(e))
 

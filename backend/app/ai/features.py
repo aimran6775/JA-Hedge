@@ -139,6 +139,24 @@ class MarketFeatures:
     ob_ask_depth: float = 0.0       # total YES-side ask volume (contracts)
     ob_imbalance: float = 0.0       # (bid_depth - ask_depth) / total — directional pressure
 
+    # ── Phase 23: Intelligence Alt-Data Features ──────────
+    # Populated by scanner._intelligence_enrich via TickerMapper
+    alt_vegas_prob: float = 0.0         # DraftKings/FanDuel implied probability (sports)
+    alt_polymarket_prob: float = 0.0    # Polymarket consensus probability
+    alt_cross_platform_edge: float = 0.0  # Kalshi price minus external consensus
+    alt_crypto_strike_dist: float = 0.0 # (current_price - strike) / strike for crypto markets
+    alt_crypto_momentum: float = 0.0    # 24h price change normalised to [-1, 1]
+    alt_econ_value: float = 0.0         # Current underlying value (yield, index, etc.)
+    alt_econ_strike_dist: float = 0.0   # (current_value - strike) / strike for econ markets
+    alt_econ_vix: float = 0.0           # VIX level (fear gauge, normalised 0-1)
+    alt_yield_spread: float = 0.0       # 10Y-2Y spread (recession signal)
+    alt_news_sentiment: float = 0.0     # News sentiment for this category [-1, 1]
+    alt_news_volume: float = 0.0        # Relative news volume (0-1)
+    alt_social_sentiment: float = 0.0   # Reddit/social sentiment [-1, 1]
+    alt_weather_temp: float = 0.0       # Forecast temperature (°F, normalised)
+    alt_weather_extreme: float = 0.0    # Weather extreme score [0, 1]
+    alt_source_count: float = 0.0       # How many intelligence sources had data [0, 1]
+
     def to_array(self) -> np.ndarray:
         """Convert to numpy array for ML model input."""
         return np.array(
@@ -206,6 +224,15 @@ class MarketFeatures:
                 self.edge_decay, self.price_efficiency,
                 # Phase 6: orderbook depth features
                 self.ob_bid_depth, self.ob_ask_depth, self.ob_imbalance,
+                # Phase 23: intelligence alt-data features
+                self.alt_vegas_prob, self.alt_polymarket_prob,
+                self.alt_cross_platform_edge, self.alt_crypto_strike_dist,
+                self.alt_crypto_momentum, self.alt_econ_value,
+                self.alt_econ_strike_dist, self.alt_econ_vix,
+                self.alt_yield_spread, self.alt_news_sentiment,
+                self.alt_news_volume, self.alt_social_sentiment,
+                self.alt_weather_temp, self.alt_weather_extreme,
+                self.alt_source_count,
             ],
             dtype=np.float32,
         )
@@ -246,6 +273,15 @@ class MarketFeatures:
             "edge_decay", "price_efficiency",
             # Phase 6: orderbook depth
             "ob_bid_depth", "ob_ask_depth", "ob_imbalance",
+            # Phase 23: intelligence alt-data
+            "alt_vegas_prob", "alt_polymarket_prob",
+            "alt_cross_platform_edge", "alt_crypto_strike_dist",
+            "alt_crypto_momentum", "alt_econ_value",
+            "alt_econ_strike_dist", "alt_econ_vix",
+            "alt_yield_spread", "alt_news_sentiment",
+            "alt_news_volume", "alt_social_sentiment",
+            "alt_weather_temp", "alt_weather_extreme",
+            "alt_source_count",
         ]
 
 

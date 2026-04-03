@@ -21,6 +21,7 @@ from app.intelligence.alerts import AlertPipeline, Alert, AlertType, AlertSeveri
 from app.intelligence.backfill import HistoricalBackfillEngine
 from app.intelligence.correlation import SourceCorrelationMatrix
 from app.intelligence.quality import DataQualityMonitor
+from app.intelligence.ticker_mapper import TickerMapper, TickerMapping
 
 __all__ = [
     "DataSourceHub",
@@ -38,4 +39,6 @@ __all__ = [
     "HistoricalBackfillEngine",
     "SourceCorrelationMatrix",
     "DataQualityMonitor",
+    "TickerMapper",
+    "TickerMapping",
 ]

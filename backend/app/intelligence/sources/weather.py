@@ -3,7 +3,8 @@ Phase 5 — Weather Data Feed.
 
 Free weather data for Kalshi weather markets (temperature, hurricane,
 precipitation, etc.):
-  • OpenWeatherMap (free tier: 1000 calls/day)
+  • Open-Meteo (completely free, no key, no rate limit — PRIMARY)
+  • OpenWeatherMap (free tier: 1000 calls/day — OPTIONAL)
   • NOAA Climate Data (completely free, no key)
   • National Hurricane Center RSS (free)
 
@@ -39,6 +40,9 @@ WEATHER_CITIES = {
 # NOAA endpoints
 NOAA_ALERTS_URL = "https://api.weather.gov/alerts/active"
 NHC_RSS_URL = "https://www.nhc.noaa.gov/index-at.xml"
+
+# Open-Meteo — completely free, no API key, no rate limit
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
 
 class WeatherDataFeed(DataSource):
@@ -100,9 +104,23 @@ class WeatherDataFeed(DataSource):
 
         signals: list[SourceSignal] = []
 
-        # Fetch OpenWeatherMap current conditions
+        # PRIMARY: Fetch Open-Meteo current conditions (free, no key, unlimited)
+        for city_id, city_info in WEATHER_CITIES.items():
+            try:
+                weather = await self._fetch_open_meteo(city_id, city_info)
+                if weather:
+                    self._weather_cache[city_id] = weather
+                    sig = self._weather_to_signal(city_id, city_info, weather)
+                    if sig:
+                        signals.append(sig)
+            except Exception as e:
+                log.debug("open_meteo_error", city=city_id, error=str(e))
+
+        # FALLBACK: OpenWeatherMap if we have a key and Open-Meteo missed cities
         if self._owm_key:
             for city_id, city_info in WEATHER_CITIES.items():
+                if city_id in self._weather_cache:
+                    continue  # Already got from Open-Meteo
                 try:
                     weather = await self._fetch_owm(city_info["lat"], city_info["lon"])
                     if weather:
@@ -134,6 +152,77 @@ class WeatherDataFeed(DataSource):
 
         self._stats["total_signals"] += len(signals)
         return signals
+
+    async def _fetch_open_meteo(self, city_id: str, city_info: dict) -> dict | None:
+        """Fetch current weather from Open-Meteo (free, no key, unlimited).
+
+        Returns a dict compatible with the OWM format so _weather_to_signal works.
+        """
+        if not self._client:
+            return None
+
+        params = {
+            "latitude": str(city_info["lat"]),
+            "longitude": str(city_info["lon"]),
+            "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation,snowfall,weather_code",
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "precipitation_unit": "inch",
+            "forecast_days": "2",
+            "hourly": "temperature_2m,precipitation_probability",
+        }
+        resp = await self._client.get(OPEN_METEO_URL, params=params)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        current = data.get("current", {})
+        if not current:
+            return None
+
+        temp_f = current.get("temperature_2m", 0)
+        humidity = current.get("relative_humidity_2m", 0)
+        wind = current.get("wind_speed_10m", 0)
+        precip = current.get("precipitation", 0)
+        snow = current.get("snowfall", 0)
+        wmo_code = current.get("weather_code", 0)
+
+        # Extract hourly forecasts for 24h ahead
+        hourly = data.get("hourly", {})
+        hourly_temps = hourly.get("temperature_2m", [])[:24]
+        hourly_precip_prob = hourly.get("precipitation_probability", [])[:24]
+
+        forecast_high = max(hourly_temps) if hourly_temps else temp_f
+        forecast_low = min(hourly_temps) if hourly_temps else temp_f
+        avg_precip_prob = (sum(hourly_precip_prob) / len(hourly_precip_prob)) if hourly_precip_prob else 0
+
+        # WMO weather codes to condition strings
+        condition = "Clear"
+        if wmo_code >= 80:
+            condition = "Rain"
+        elif wmo_code >= 70:
+            condition = "Snow"
+        elif wmo_code >= 60:
+            condition = "Drizzle"
+        elif wmo_code >= 50:
+            condition = "Fog"
+        elif wmo_code >= 40:
+            condition = "Fog"
+        elif wmo_code >= 3:
+            condition = "Clouds"
+
+        # Return in normalized format
+        return {
+            "main": {"temp": temp_f, "humidity": humidity},
+            "wind": {"speed": wind},
+            "rain": {"1h": precip},
+            "snow": {"1h": snow},
+            "weather": [{"main": condition}],
+            "source": "open_meteo",
+            "forecast_high_f": forecast_high,
+            "forecast_low_f": forecast_low,
+            "avg_precip_prob": avg_precip_prob,
+        }
 
     async def _fetch_owm(self, lat: float, lon: float) -> dict | None:
         """Fetch current weather from OpenWeatherMap."""
@@ -181,6 +270,20 @@ class WeatherDataFeed(DataSource):
 
         extreme_score = min(1.0, extreme_score)
 
+        features = {
+            "temp_f": round(temp_f, 1),
+            "humidity": humidity,
+            "wind_mph": round(wind, 1),
+            "rain_1h_in": round(rain_1h, 2),
+            "snow_1h_in": round(snow_1h, 2),
+            "extreme_score": round(extreme_score, 4),
+        }
+        # Include forecast data if available (from Open-Meteo)
+        if "forecast_high_f" in weather:
+            features["forecast_high_f"] = round(weather["forecast_high_f"], 1)
+            features["forecast_low_f"] = round(weather["forecast_low_f"], 1)
+            features["avg_precip_prob"] = round(weather["avg_precip_prob"], 2)
+
         return SourceSignal(
             source_name=self.name,
             source_type=self.source_type,
@@ -189,14 +292,7 @@ class WeatherDataFeed(DataSource):
             confidence=0.85,  # Weather data is highly reliable
             category="weather",
             headline=f"{city_info['name']}: {temp_f:.0f}°F, {condition}",
-            features={
-                "temp_f": round(temp_f, 1),
-                "humidity": humidity,
-                "wind_mph": round(wind, 1),
-                "rain_1h_in": round(rain_1h, 2),
-                "snow_1h_in": round(snow_1h, 2),
-                "extreme_score": round(extreme_score, 4),
-            },
+            features=features,
             raw_data=weather,
         )
 

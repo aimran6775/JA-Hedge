@@ -347,7 +347,15 @@ class XGBoostPredictor(PredictionModel):
         """
         import xgboost as xgb
 
-        dmatrix = xgb.DMatrix(X, feature_names=self._feature_names)
+        # Phase 23: Handle feature schema evolution.
+        # If model was trained with fewer features, trim both X and names.
+        model_n_features = getattr(self._model, "num_features", lambda: X.shape[1])()
+        feat_names = self._feature_names
+        if X.shape[1] > model_n_features:
+            X = X[:, :model_n_features]
+            feat_names = self._feature_names[:model_n_features]
+
+        dmatrix = xgb.DMatrix(X, feature_names=feat_names)
 
         # Get each tree's raw margin output
         n_trees = self._model.num_boosted_rounds()

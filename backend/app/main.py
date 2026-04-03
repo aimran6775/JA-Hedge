@@ -308,7 +308,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Register all data sources
             from app.intelligence.sources.sports_odds import SportsOddsScraper
             from app.intelligence.sources.news_sentiment import NewsSentimentEngine
-            from app.intelligence.sources.social_twitter import SocialSignalSource
+            from app.intelligence.sources.social_reddit import SocialSignalSource
             from app.intelligence.sources.weather import WeatherDataFeed
             from app.intelligence.sources.crypto import CryptoPriceFeed
             from app.intelligence.sources.polymarket import PolymarketSource
