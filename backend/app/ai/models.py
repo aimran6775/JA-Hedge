@@ -347,13 +347,35 @@ class XGBoostPredictor(PredictionModel):
         """
         import xgboost as xgb
 
-        # Phase 23: Handle feature schema evolution.
+        # Phase 23+24b: Handle feature schema evolution robustly.
         # If model was trained with fewer features, trim both X and names.
-        model_n_features = getattr(self._model, "num_features", lambda: X.shape[1])()
+        # Also handle pruned models where num_features < len(feature_names).
+        try:
+            model_n_features = self._model.num_features()
+        except (AttributeError, TypeError):
+            model_n_features = X.shape[1]
+
         feat_names = self._feature_names
         if X.shape[1] > model_n_features:
             X = X[:, :model_n_features]
             feat_names = self._feature_names[:model_n_features]
+        elif X.shape[1] < model_n_features:
+            # Pad with zeros if current features are somehow fewer
+            pad = np.zeros((X.shape[0], model_n_features - X.shape[1]))
+            X = np.hstack([X, pad])
+
+        # Ensure feature name count matches X columns
+        if len(feat_names) != X.shape[1]:
+            feat_names = feat_names[:X.shape[1]] if len(feat_names) > X.shape[1] \
+                else feat_names + [f"f{i}" for i in range(len(feat_names), X.shape[1])]
+
+        # Use model's stored feature names if available, to avoid name conflicts
+        try:
+            model_feat_names = self._model.feature_names
+            if model_feat_names and len(model_feat_names) == X.shape[1]:
+                feat_names = model_feat_names
+        except (AttributeError, TypeError):
+            pass
 
         dmatrix = xgb.DMatrix(X, feature_names=feat_names)
 
@@ -482,6 +504,21 @@ class XGBoostPredictor(PredictionModel):
         n_samples = len(X)
         n_val = max(int(n_samples * eval_split), 2)
 
+        # Phase 24b: Reconcile feature names with actual X dimensions.
+        # Training data may have different feature count than current schema
+        # (e.g., bootstrap data from pre-Phase-23 has 66, current has 83).
+        train_feat_names = self._feature_names
+        if X.shape[1] != len(train_feat_names):
+            if X.shape[1] < len(train_feat_names):
+                train_feat_names = train_feat_names[:X.shape[1]]
+            else:
+                train_feat_names = train_feat_names + [
+                    f"f{i}" for i in range(len(train_feat_names), X.shape[1])
+                ]
+            log.info("feature_names_reconciled",
+                     expected=len(self._feature_names), actual=X.shape[1],
+                     using=len(train_feat_names))
+
         # Class balance weight
         pos_count = max(y.sum(), 1)
         neg_count = max(n_samples - pos_count, 1)
@@ -548,9 +585,9 @@ class XGBoostPredictor(PredictionModel):
                 # Use the real sample weights for this fold's training slice
                 w_tr = _all_weights[:train_end]
                 dtrain = xgb.DMatrix(X_tr, label=y_tr, weight=w_tr,
-                                     feature_names=self._feature_names)
+                                     feature_names=train_feat_names)
                 dval = xgb.DMatrix(X_va, label=y_va,
-                                   feature_names=self._feature_names)
+                                   feature_names=train_feat_names)
 
                 try:
                     evals_result: dict = {}
@@ -587,8 +624,8 @@ class XGBoostPredictor(PredictionModel):
         y_train, y_val = y[:-n_val], y[-n_val:]
 
         dtrain = xgb.DMatrix(X_train, label=y_train, weight=_train_weights,
-                             feature_names=self._feature_names)
-        dval = xgb.DMatrix(X_val, label=y_val, feature_names=self._feature_names)
+                             feature_names=train_feat_names)
+        dval = xgb.DMatrix(X_val, label=y_val, feature_names=train_feat_names)
 
         final_evals: dict = {}
         self._model = xgb.train(
