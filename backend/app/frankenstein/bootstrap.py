@@ -355,58 +355,115 @@ async def _fetch_settled_markets(
     """
     Fetch settled markets with known outcomes from Kalshi.
 
+    Phase 26: Fetches from multiple series for diverse training data.
+    Previously only fetched generic settled markets which were dominated
+    by one category.  Now explicitly targets multiple series:
+      - Crypto (BTC/ETH/SOL 15-min, daily) → high volume, fast settlement
+      - Finance (Nasdaq, S&P 500) → different dynamics
+      - Sports (MLB, NBA, NHL) → high edge, known outcomes
+      - Generic settled → catch-all for other categories
+
     Returns list of (Market, result_string) tuples.
     """
     results: list[tuple[Market, str]] = []
+    seen_tickers: set[str] = set()
 
-    try:
-        # Method 1: Get settled markets directly via API
-        cursor = None
-        fetched = 0
-        while fetched < max_markets:
-            batch_size = min(200, max_markets - fetched)
-            markets, cursor = await api.markets.list_markets(
-                status=MarketStatus.SETTLED,
-                limit=batch_size,
-                cursor=cursor,
-            )
-            if not markets:
-                break
+    def _extract_result(m: Market) -> str | None:
+        """Extract yes/no result from a settled market."""
+        result_str = ""
+        # Try explicit result field first
+        result_attr = getattr(m, 'result', None)
+        if result_attr:
+            if hasattr(result_attr, 'value'):
+                result_str = result_attr.value.lower()
+            else:
+                result_str = str(result_attr).lower()
+        # Fallback: infer from last_price
+        if result_str not in ("yes", "no") and m.last_price is not None:
+            lp = float(m.last_price)
+            if lp >= 0.95:
+                result_str = "yes"
+            elif lp <= 0.05:
+                result_str = "no"
+        return result_str if result_str in ("yes", "no") else None
 
-            for m in markets:
-                # Kalshi returns 'result' field on settled markets
-                result_str = (m.result or "").lower()
+    # Strategy 1: Fetch from high-volume series for diverse data
+    series_targets = [
+        ("KXBTC15M", 200),   # Bitcoin 15-min: ~9800 settled, fast turnover
+        ("KXETH15M", 200),   # Ethereum 15-min
+        ("KXBTCD", 100),     # Bitcoin daily
+        ("KXETHD", 100),     # Ethereum daily
+        ("KXNAS100", 100),   # Nasdaq 100
+        ("KXSP500", 100),    # S&P 500
+    ]
+    for series_ticker, target in series_targets:
+        if len(results) >= max_markets:
+            break
+        try:
+            cursor = None
+            fetched = 0
+            while fetched < target and len(results) < max_markets:
+                markets, cursor = await api.markets.list_markets(
+                    series_ticker=series_ticker,
+                    status=MarketStatus.SETTLED,
+                    limit=200,
+                    cursor=cursor,
+                )
+                if not markets:
+                    break
+                for m in markets:
+                    if m.ticker in seen_tickers:
+                        continue
+                    result_str = _extract_result(m)
+                    if result_str:
+                        results.append((m, result_str))
+                        seen_tickers.add(m.ticker)
+                fetched += len(markets)
+                if not cursor:
+                    break
+            log.debug("series_fetched", series=series_ticker,
+                      fetched=fetched, results_so_far=len(results))
+        except Exception as e:
+            log.debug("series_fetch_error", series=series_ticker, error=str(e))
 
-                # If no explicit result, infer from last_price:
-                #   Settled at $1.00 → YES won, Settled at $0.00 → NO won
-                if not result_str and m.last_price is not None:
-                    lp = float(m.last_price)
-                    if lp >= 0.95:
-                        result_str = "yes"
-                    elif lp <= 0.05:
-                        result_str = "no"
+    # Strategy 2: Generic settled markets (catches sports, politics, etc.)
+    if len(results) < max_markets:
+        try:
+            cursor = None
+            fetched = 0
+            while fetched < max_markets and len(results) < max_markets:
+                markets, cursor = await api.markets.list_markets(
+                    status=MarketStatus.SETTLED,
+                    limit=200,
+                    cursor=cursor,
+                )
+                if not markets:
+                    break
+                for m in markets:
+                    if m.ticker in seen_tickers:
+                        continue
+                    result_str = _extract_result(m)
+                    if result_str:
+                        results.append((m, result_str))
+                        seen_tickers.add(m.ticker)
+                fetched += len(markets)
+                if not cursor:
+                    break
+        except Exception as e:
+            log.warning("generic_settled_fetch_failed", error=str(e))
 
-                if result_str in ("yes", "no"):
-                    results.append((m, result_str))
-
-            fetched += len(markets)
-            if not cursor:
-                break
-
-    except Exception as e:
-        log.warning("settled_fetch_via_api_failed", error=str(e))
-
-    # Method 2: If API didn't give enough, try settlements endpoint
+    # Strategy 3: Personal settlements (if authenticated)
     if len(results) < 50:
         try:
             settlements, _ = await api.portfolio.list_settlements(limit=200)
             for s in settlements:
                 if s.market_result is not None:
                     result_str = s.market_result.value.lower()
-                    if result_str in ("yes", "no"):
+                    if result_str in ("yes", "no") and s.ticker not in seen_tickers:
                         try:
                             mkt = await api.markets.get_market(s.ticker)
                             results.append((mkt, result_str))
+                            seen_tickers.add(s.ticker)
                         except Exception:
                             pass
         except Exception as e:

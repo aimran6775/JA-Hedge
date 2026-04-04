@@ -444,11 +444,24 @@ class Frankenstein:
                 except Exception as e:
                     log.error("pretrained_load_failed", error=str(e))
 
-        # Auto-bootstrap if still untrained
+        # ── Phase 26: Synchronous startup bootstrap ─────────────────
+        # The model MUST be trained before trading starts.  Previous approach
+        # (fire-and-forget asyncio.create_task) often failed silently, leaving
+        # the system trading with heuristic-only forever.
+        #
+        # New approach:
+        # 1. Clean stale memory (old churn trades with no usable labels)
+        # 2. Bootstrap from 500+ settled Kalshi markets (known outcomes)
+        # 3. Train XGBoost synchronously → model is ready from first scan
+        # 4. Fall back to heuristic ONLY if bootstrap fails (network error etc.)
         if not self._model.is_trained:
-            asyncio.create_task(self._auto_bootstrap(), name="frankenstein_bootstrap")
+            try:
+                await self._startup_bootstrap()
+            except Exception as e:
+                log.error("startup_bootstrap_failed", error=str(e),
+                          hint="System will trade with heuristic predictions")
 
-        # Load pretrained data for fine-tuning
+        # Load pretrained data for fine-tuning (if pretrained model loaded)
         if self._state.pretrained_loaded:
             try:
                 self.learner.load_pretrained_data()
@@ -847,22 +860,124 @@ class Frankenstein:
         except Exception as e:
             log.error("checkpoint_load_failed", error=str(e))
 
-    async def _auto_bootstrap(self) -> None:
-        for _ in range(30):
-            if market_cache.get_active():
-                break
-            await asyncio.sleep(2)
-        if self.memory.total_resolved >= self.learner.min_samples:
-            try:
-                await self.force_retrain()
-            except Exception:
-                pass
-            return
-        log.info("🧟🧪 AUTO-BOOTSTRAP: Model untrained, bootstrapping...")
+    async def _startup_bootstrap(self) -> None:
+        """Phase 26: Synchronous startup bootstrap — model ready from first scan.
+
+        Pipeline:
+        1. Clean stale memory (old churn/breakeven trades without labels)
+        2. Check if memory already has enough usable labels → retrain
+        3. Fetch 500+ settled markets from Kalshi → inject as training data
+        4. Train XGBoost with walk-forward CV
+        5. Mark model as ready
+
+        This runs BEFORE the scan loop starts, so the model is always
+        trained before the first trade opportunity is evaluated.
+        """
+        import time as _time
+        _start = _time.monotonic()
+
+        # Step 1: Clean stale memory — old churn trades are noise.
+        # Keep only trades with usable labels (market_result = yes/no + features).
+        usable_before = sum(
+            1 for t in self.memory._trades
+            if t.market_result in ("yes", "no") and t.features
+        )
+        stale_count = len(self.memory._trades) - usable_before
+        if stale_count > 0 and usable_before < self.learner.min_samples:
+            log.info(
+                "🧟🧹 CLEANING STALE MEMORY",
+                total=len(self.memory._trades),
+                usable=usable_before,
+                stale=stale_count,
+                reason="Old trades without usable labels waste memory",
+            )
+            # Keep ONLY trades with usable labels + any genuine pending
+            from collections import deque
+            kept = deque(maxlen=self.memory.max_trades)
+            for t in self.memory._trades:
+                has_label = t.market_result in ("yes", "no") and t.features
+                is_fresh_pending = (
+                    t.outcome.value == "pending"
+                    and t.source == "live"
+                    and (_time.time() - t.timestamp) < 86400  # < 24h old
+                )
+                if has_label or is_fresh_pending:
+                    kept.append(t)
+            self.memory._trades = kept
+            self.memory._important_trades = [
+                t for t in self.memory._important_trades
+                if t.market_result in ("yes", "no") and t.features
+            ]
+            self.memory._rebuild_indexes()
+            log.info("🧟🧹 MEMORY CLEANED", kept=len(self.memory._trades))
+
+        # Step 2: Check if we already have enough labels
+        usable = sum(
+            1 for t in self.memory._trades
+            if t.market_result in ("yes", "no") and t.features
+        )
+        if usable >= self.learner.min_samples:
+            log.info("🧟🎓 ENOUGH LABELS — retraining from memory", usable=usable)
+            result = await self.force_retrain()
+            if result.get("success"):
+                log.info("🧟✅ MODEL TRAINED FROM EXISTING DATA",
+                         version=result["version"], auc=result.get("auc"))
+                return
+
+        # Step 3: Bootstrap from settled Kalshi markets
+        log.info("🧟🧪 BOOTSTRAP: Fetching settled markets from Kalshi...")
         try:
-            await self.bootstrap_training_data()
+            from app.state import state as _st
+            if _st.kalshi_api:
+                from app.frankenstein.bootstrap import bootstrap_from_settled_markets
+                stats = await bootstrap_from_settled_markets(
+                    _st.kalshi_api,
+                    self.memory,
+                    max_markets=2000,  # fetch up to 2000
+                    min_target=500,    # inject at least 500 labeled records
+                )
+                log.info("🧟🧪 BOOTSTRAP COMPLETE", **stats)
+            else:
+                log.warning("bootstrap_skip_no_api")
+                return
         except Exception as e:
-            log.error("auto_bootstrap_failed", error=str(e))
+            log.error("bootstrap_fetch_failed", error=str(e))
+            return
+
+        # Step 4: Verify we have enough data and train
+        usable_after = sum(
+            1 for t in self.memory._trades
+            if t.market_result in ("yes", "no") and t.features
+        )
+        log.info("🧟📊 BOOTSTRAP DATA CHECK", usable=usable_after,
+                 required=self.learner.min_samples)
+
+        if usable_after >= self.learner.min_samples:
+            result = await self.force_retrain()
+            elapsed = _time.monotonic() - _start
+            if result.get("success"):
+                log.info(
+                    "🧟✅ MODEL TRAINED FROM BOOTSTRAP",
+                    version=result["version"],
+                    auc=result.get("auc"),
+                    generation=result.get("generation"),
+                    bootstrap_samples=usable_after,
+                    elapsed=f"{elapsed:.1f}s",
+                )
+                self.memory.save()
+            else:
+                log.warning(
+                    "🧟⚠️ BOOTSTRAP RETRAIN FAILED",
+                    reason=result.get("reason"),
+                    usable=usable_after,
+                    elapsed=f"{elapsed:.1f}s",
+                )
+        else:
+            log.warning(
+                "🧟⚠️ INSUFFICIENT BOOTSTRAP DATA",
+                usable=usable_after,
+                required=self.learner.min_samples,
+            )
 
     # ── Manual Controls ───────────────────────────────────────────────
 
@@ -898,7 +1013,7 @@ class Frankenstein:
             from app.state import state as _st
             if _st.kalshi_api:
                 result["settled_stats"] = await bootstrap_from_settled_markets(
-                    _st.kalshi_api, self.memory, max_markets=1000, min_target=300)
+                    _st.kalshi_api, self.memory, max_markets=2000, min_target=500)
         except Exception as e:
             result["settled_stats"] = {"error": str(e)}
 
