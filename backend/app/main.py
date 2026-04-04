@@ -33,9 +33,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info(
         "starting_jahedge",
         mode=settings.jahedge_mode.value,
+        effective_mode=settings.effective_mode.value,
         rest_url=settings.kalshi_rest_url,
         has_api_keys=settings.has_api_keys,
     )
+
+    if settings.effective_mode != settings.jahedge_mode:
+        log.warning(
+            "mode_auto_upgraded",
+            configured=settings.jahedge_mode.value,
+            effective=settings.effective_mode.value,
+            reason="API keys detected — auto-upgrading to production API for real market data",
+        )
 
     # ── Startup ───────────────────────────────────────────
     try:
@@ -544,7 +553,9 @@ async def health_check() -> dict:
     return {
         "status": "ok" if app_state.ready else "starting",
         "mode": settings.jahedge_mode.value,
+        "effective_mode": settings.effective_mode.value,
         "has_api_keys": settings.has_api_keys,
+        "rest_url": settings.kalshi_rest_url,
         "version": "0.2.0",
         "paper_trading": paper_info or {"enabled": False},
         "components": {

@@ -64,17 +64,28 @@ class Settings(BaseSettings):
     kalshi_ws_base_url: str | None = None
     kalshi_timeout: float = Field(default=10.0, description="HTTP request timeout in seconds")
 
+    @property
+    def effective_mode(self) -> AppMode:
+        """Effective mode — auto-upgrade to production when API keys are present.
+
+        Demo mode + production API keys is almost always a misconfiguration.
+        Paper trading (separate flag) is the real safety net, not demo mode.
+        """
+        if self.jahedge_mode == AppMode.DEMO and self.has_api_keys:
+            return AppMode.PRODUCTION
+        return self.jahedge_mode
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def kalshi_rest_url(self) -> str:
-        """Resolved REST URL — override or auto from mode."""
-        return self.kalshi_rest_base_url or _KALSHI_URLS[self.jahedge_mode]["rest"]
+        """Resolved REST URL — override or auto from effective mode."""
+        return self.kalshi_rest_base_url or _KALSHI_URLS[self.effective_mode]["rest"]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def kalshi_ws_url(self) -> str:
-        """Resolved WebSocket URL — override or auto from mode."""
-        return self.kalshi_ws_base_url or _KALSHI_URLS[self.jahedge_mode]["ws"]
+        """Resolved WebSocket URL — override or auto from effective mode."""
+        return self.kalshi_ws_base_url or _KALSHI_URLS[self.effective_mode]["ws"]
 
     @property
     def has_api_keys(self) -> bool:

@@ -46,8 +46,8 @@ class StrategyParams:
     take_profit_pct: float = 0.20    # Not used in maker mode (hold to settlement)
 
     # Model thresholds
-    max_spread_cents: int = 15   # Tight spreads only
-    min_volume: float = 15.0    # Need liquidity for maker fills
+    max_spread_cents: int = 40   # Widened — maker mode doesn't cross the spread
+    min_volume: float = 0.0     # Maker creates liquidity — no volume requirement
     min_hours_to_expiry: float = 1.0  # 1h minimum (maker orders need time to fill)
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)

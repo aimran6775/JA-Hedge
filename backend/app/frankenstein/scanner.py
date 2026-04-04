@@ -274,7 +274,13 @@ class MarketScanner:
     # ── Candidate Filtering ───────────────────────────────────────────
 
     def _filter_candidates(self, markets: list[Market]) -> list[Market]:
-        """Filter markets to tradeable candidates."""
+        """Filter markets to tradeable candidates.
+
+        MAKER MODE AWARE: When USE_MAKER_ORDERS is True, we don't need
+        existing liquidity (bid/ask/volume).  We only need a price reference
+        to compute features and evaluate edge.  We CREATE liquidity by
+        posting limit orders — that's the whole maker strategy.
+        """
         params = self._strategy.params
         candidates = []
 
@@ -305,27 +311,66 @@ class MarketScanner:
             ticker_upper = (m.ticker or "").upper()
             if ticker_upper.startswith(JUNK_PREFIXES):
                 continue
-            if m.yes_bid is None and m.yes_ask is None and m.last_price is None:
-                continue
-            if m.spread is None:
-                continue
-            spread_cents = int(float(m.spread) * 100)
-            if spread_cents > max_spread:
-                continue
+
+            # ── Price reference: need at least SOME price to evaluate ──
+            # Try dollar-based fields first, then cents-based fallback
             bid = float(m.yes_bid or 0)
             ask = float(m.yes_ask or 0)
-            if bid <= 0 and ask <= 0:
-                continue
-            mid = float(m.midpoint or m.last_price or 0)
+            last = float(m.last_price or 0)
+
+            # Cents-based fallback (some API responses only include cents)
+            if bid == 0 and m.yes_bid_cents and m.yes_bid_cents > 0:
+                bid = m.yes_bid_cents / 100.0
+            if ask == 0 and m.yes_ask_cents and m.yes_ask_cents > 0:
+                ask = m.yes_ask_cents / 100.0
+            if last == 0 and m.last_price_cents and m.last_price_cents > 0:
+                last = m.last_price_cents / 100.0
+
+            # Compute midpoint from best available data
+            if bid > 0 and ask > 0:
+                mid = (bid + ask) / 2.0
+            elif last > 0:
+                mid = last
+            elif bid > 0:
+                mid = bid
+            elif ask > 0:
+                mid = ask
+            else:
+                continue  # No price reference at all — can't evaluate
+
+            # Price range — avoid extreme probabilities
             if mid < 0.02 or mid > 0.98:
                 continue
-            vol = float(m.volume if m.volume is not None else (m.volume_int or 0))
-            if vol < 2:  # Phase 3: lowered from 5 — many valid markets are thinly traded
-                continue
-            if mid > 0:
-                spread_pct = float(spread_cents) / (mid * 100)
-                if spread_pct > 0.40:  # Phase 3: widened from 0.30 — allow wider spreads in low supply
+
+            if USE_MAKER_ORDERS:
+                # ── MAKER MODE ──────────────────────────────────────
+                # We create liquidity — don't need existing bid/ask/volume.
+                # Only skip if the spread is truly insane (>60¢ = book is garbage).
+                if bid > 0 and ask > 0:
+                    spread_cents = int((ask - bid) * 100)
+                    if spread_cents > 60:
+                        continue
+                # Volume: NOT checked. Maker orders don't need existing volume.
+                # Spread: NOT checked (for empty books). We set our own price.
+            else:
+                # ── TAKER MODE ──────────────────────────────────────
+                # Need existing liquidity to cross the spread
+                if m.yes_bid is None and m.yes_ask is None and m.last_price is None:
                     continue
+                if m.spread is None:
+                    continue
+                spread_cents = int(float(m.spread) * 100)
+                if spread_cents > max_spread:
+                    continue
+                if bid <= 0 and ask <= 0:
+                    continue
+                vol = float(m.volume if m.volume is not None else (m.volume_int or 0))
+                if vol < 2:
+                    continue
+                if mid > 0:
+                    spread_pct = float(spread_cents) / (mid * 100)
+                    if spread_pct > 0.40:
+                        continue
 
             from app.pipeline.portfolio_tracker import portfolio_state
             pos = portfolio_state.positions.get(m.ticker)
