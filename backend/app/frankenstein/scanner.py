@@ -935,8 +935,16 @@ class MarketScanner:
 
             # Net EV check
             cost_frac = price_cents / 100.0
-            spread_cost = features.spread / 2.0
             fee_cost = 0.0 if USE_MAKER_ORDERS else ROUND_TRIP_FEE_CENTS / 100.0
+            # Phase 25b: In maker mode + hold-to-settlement, there is NO spread
+            # cost.  Entry = maker order (our price), exit = settlement (0¢ or $1).
+            # We never cross the spread.  In learning mode, be even more relaxed.
+            if USE_MAKER_ORDERS and _is_learning:
+                spread_cost = 0.0  # Hold to settlement — no spread crossing
+            elif USE_MAKER_ORDERS:
+                spread_cost = features.spread / 4.0  # Half credit for maker entry
+            else:
+                spread_cost = features.spread / 2.0  # Full half-spread for taker
             net_edge = abs(prediction.edge) - spread_cost - fee_cost
             if net_edge <= 0:
                 continue
