@@ -27,8 +27,8 @@ check("sports.detector", lambda: (
     f"Sports: {list(__import__('app.sports.detector', fromlist=['SPORT_REGISTRY']).SPORT_REGISTRY.keys())}"
 )[1])
 
-check("sports.odds_client", lambda: (
-    __import__("app.sports.odds_client", fromlist=["OddsClient", "OddsCache"]),
+check("sports.realtime_feed", lambda: (
+    __import__("app.sports.realtime_feed", fromlist=["RealtimeFeedClient"]),
     None
 )[1])
 

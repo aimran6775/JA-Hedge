@@ -153,7 +153,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 🏀 SPORTS MODULE — The profit engine
     from app.sports.detector import sports_detector as _sports_detector
-    from app.sports.odds_client import OddsClient
+    from app.sports.realtime_feed import RealtimeFeedClient
     from app.sports.game_tracker import game_tracker as _game_tracker
     from app.sports.model import sports_predictor as _sports_predictor
     from app.sports.features import sports_feature_engine as _sports_feat
@@ -171,9 +171,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.sports_collector = _sports_collector
     state.sports_monitor = _sports_monitor
 
-    # Initialize The Odds API client
-    odds_client = OddsClient(
-        api_key=settings.the_odds_api_key,
+    # Initialize realtime feed client (replaces The Odds API)
+    odds_client = RealtimeFeedClient(
         cache_ttl=settings.sports_odds_cache_ttl,
     )
     await odds_client.start()
@@ -214,7 +213,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     log.info(
         "🏀 sports_module_initialized",
-        odds_available=odds_client.is_available,
+        realtime_feed=odds_client.is_available,
+        source="free_multi_source",
         sports_only=settings.sports_only_mode,
     )
 
@@ -309,6 +309,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             from app.intelligence.sources.sports_odds import SportsOddsScraper
             from app.intelligence.sources.news_sentiment import NewsSentimentEngine
             from app.intelligence.sources.social_reddit import SocialSignalSource
+            from app.intelligence.sources.social_twitter import TwitterLiveSource
+            from app.intelligence.sources.sports_rss import SportsRSSSource
             from app.intelligence.sources.weather import WeatherDataFeed
             from app.intelligence.sources.crypto import CryptoPriceFeed
             from app.intelligence.sources.polymarket import PolymarketSource
@@ -321,6 +323,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 newsapi_key=settings.newsapi_key,
             ))
             intel_hub.register(SocialSignalSource())
+            intel_hub.register(TwitterLiveSource())  # Bluesky + Google News + RSSHub
+            intel_hub.register(SportsRSSSource())     # 15+ sports RSS feeds
             intel_hub.register(WeatherDataFeed(
                 openweathermap_key=settings.openweathermap_key,
             ))
@@ -367,6 +371,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 sources=len(intel_hub._sources),
                 subsystems=["fusion", "alerts", "backfill", "correlation", "quality", "confidence"],
             )
+
+            # Connect intelligence hub → RealtimeFeedClient
+            # This lets the feed client read ESPN/Twitter/RSS signals
+            odds_client.set_hub(intel_hub)
+            log.info("🔗 realtime_feed_connected_to_hub")
     except Exception as e:
         log.warning("intelligence_system_failed", error=str(e), hint="Intelligence system not available — continuing without it")
 
@@ -547,7 +556,7 @@ async def health_check() -> dict:
             "strategy_engine": "ready" if app_state.strategy_engine else "not_initialized",
             "frankenstein": "alive" if (app_state.frankenstein and app_state.frankenstein._state.is_alive) else "sleeping",
             "sports_detector": "ready" if app_state.sports_detector else "not_initialized",
-            "odds_client": "ready" if (app_state.odds_client and app_state.odds_client.is_available) else "no_key",
+            "odds_client": "ready" if (app_state.odds_client and app_state.odds_client.is_available) else "not_connected",
             "sports_predictor": "ready" if app_state.sports_predictor else "not_initialized",
             "intelligence_hub": "active" if (app_state.intelligence_hub and app_state.intelligence_hub._running) else "not_initialized",
         },

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from app.strategies import StrategyEngine
     from app.frankenstein.brain import Frankenstein
     from app.sports.detector import SportsDetector
-    from app.sports.odds_client import OddsClient
+    from app.sports.realtime_feed import RealtimeFeedClient
     from app.sports.game_tracker import GameTracker
     from app.sports.model import SportsPredictor
     from app.sports.features import SportsFeatureEngine
@@ -74,7 +74,7 @@ class AppState:
 
     # 🏀 Sports Module
     sports_detector: SportsDetector | None = None
-    odds_client: OddsClient | None = None
+    odds_client: RealtimeFeedClient | None = None
     game_tracker: GameTracker | None = None
     sports_predictor: SportsPredictor | None = None
     sports_feature_engine: SportsFeatureEngine | None = None

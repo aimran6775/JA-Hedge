@@ -228,13 +228,17 @@ class EnsemblePredictor(PredictionModel):
         if not self._xgb.is_trained:
             return self._xgb._heuristic_predict(features)
 
-        X = features.to_array().reshape(1, -1)
-        raw_probs, cal_probs = self._ensemble_predict(X)
-        return self._build_ensemble_prediction(
-            raw_prob=float(raw_probs[0]),
-            calibrated_prob=float(cal_probs[0]),
-            features=features,
-        )
+        try:
+            X = features.to_array().reshape(1, -1)
+            raw_probs, cal_probs = self._ensemble_predict(X)
+            return self._build_ensemble_prediction(
+                raw_prob=float(raw_probs[0]),
+                calibrated_prob=float(cal_probs[0]),
+                features=features,
+            )
+        except Exception as e:
+            log.error("ensemble_predict_failed", error=str(e))
+            return self._xgb._heuristic_predict(features)
 
     def predict_batch(self, features_list: list[MarketFeatures]) -> list[Prediction]:
         """Batch calibrated ensemble prediction."""
@@ -244,14 +248,18 @@ class EnsemblePredictor(PredictionModel):
         if not self._xgb.is_trained:
             return [self._xgb._heuristic_predict(f) for f in features_list]
 
-        X = np.array([f.to_array() for f in features_list])
-        raw_probs, cal_probs = self._ensemble_predict(X)
-        return [
-            self._build_ensemble_prediction(
-                raw_prob=float(rp), calibrated_prob=float(cp), features=f,
-            )
-            for rp, cp, f in zip(raw_probs, cal_probs, features_list)
-        ]
+        try:
+            X = np.array([f.to_array() for f in features_list])
+            raw_probs, cal_probs = self._ensemble_predict(X)
+            return [
+                self._build_ensemble_prediction(
+                    raw_prob=float(rp), calibrated_prob=float(cp), features=f,
+                )
+                for rp, cp, f in zip(raw_probs, cal_probs, features_list)
+            ]
+        except Exception as e:
+            log.error("ensemble_batch_predict_failed", error=str(e))
+            return [self._xgb._heuristic_predict(f) for f in features_list]
 
     def _ensemble_predict(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Compute weighted ensemble probability and calibrate.
@@ -262,8 +270,34 @@ class EnsemblePredictor(PredictionModel):
         """
         import xgboost as xgb
 
+        # Phase 24b: Handle feature schema evolution.
+        # If XGBoost model was trained with fewer features, trim X and names.
+        feat_names = self._feature_names
+        try:
+            model_n_features = self._xgb._model.num_features()
+        except (AttributeError, TypeError):
+            model_n_features = X.shape[1]
+
+        if X.shape[1] > model_n_features:
+            X_xgb = X[:, :model_n_features]
+            feat_names = self._feature_names[:model_n_features]
+        else:
+            X_xgb = X
+
+        # Ensure feature name count matches
+        if len(feat_names) != X_xgb.shape[1]:
+            feat_names = feat_names[:X_xgb.shape[1]]
+
+        # Use model's stored feature names if available to avoid name conflicts
+        try:
+            model_feat_names = self._xgb._model.feature_names
+            if model_feat_names and len(model_feat_names) == X_xgb.shape[1]:
+                feat_names = model_feat_names
+        except (AttributeError, TypeError):
+            pass
+
         # XGBoost prediction
-        dmatrix = xgb.DMatrix(X, feature_names=self._feature_names)
+        dmatrix = xgb.DMatrix(X_xgb, feature_names=feat_names)
         xgb_probs = self._xgb._model.predict(dmatrix)
 
         # Logistic regression prediction (or just use XGBoost if LR not trained)
@@ -327,18 +361,35 @@ class EnsemblePredictor(PredictionModel):
 
         # 3. Calibrate on calibration set
         if len(X_cal) > 10:
-            import xgboost as xgb_lib
-            dmatrix_cal = xgb_lib.DMatrix(X_cal, feature_names=self._feature_names)
-            raw_probs_cal = self._xgb._model.predict(dmatrix_cal)
+            try:
+                import xgboost as xgb_lib
+                # Phase 24b: feature schema reconciliation for calibration
+                cal_feat_names = self._feature_names
+                try:
+                    cal_n_feat = self._xgb._model.num_features()
+                except (AttributeError, TypeError):
+                    cal_n_feat = X_cal.shape[1]
+                X_cal_xgb = X_cal[:, :cal_n_feat] if X_cal.shape[1] > cal_n_feat else X_cal
+                cal_feat_names = cal_feat_names[:X_cal_xgb.shape[1]]
+                try:
+                    model_feat_names = self._xgb._model.feature_names
+                    if model_feat_names and len(model_feat_names) == X_cal_xgb.shape[1]:
+                        cal_feat_names = model_feat_names
+                except (AttributeError, TypeError):
+                    pass
+                dmatrix_cal = xgb_lib.DMatrix(X_cal_xgb, feature_names=cal_feat_names)
+                raw_probs_cal = self._xgb._model.predict(dmatrix_cal)
 
-            if self._lr.is_trained:
-                lr_probs_cal = self._lr.predict_proba(X_cal)
-                ensemble_cal = self._xgb_weight * raw_probs_cal + self._lr_weight * lr_probs_cal
-            else:
-                ensemble_cal = raw_probs_cal
+                if self._lr.is_trained:
+                    lr_probs_cal = self._lr.predict_proba(X_cal)
+                    ensemble_cal = self._xgb_weight * raw_probs_cal + self._lr_weight * lr_probs_cal
+                else:
+                    ensemble_cal = raw_probs_cal
 
-            cal_metrics = self._calibrator.fit(ensemble_cal, y_cal)
-            metrics.update(cal_metrics)
+                cal_metrics = self._calibrator.fit(ensemble_cal, y_cal)
+                metrics.update(cal_metrics)
+            except Exception as e:
+                log.warning("calibration_failed", error=str(e))
 
         # 4. Evaluate on held-out validation
         if len(X_val) > 5:

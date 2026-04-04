@@ -116,61 +116,48 @@ class SportsDataCollector:
         except asyncio.CancelledError:
             return
     
-    # Sports with active seasons (skip off-season to save API calls)
+    # Active sport keys for fetching
     _ACTIVE_SPORTS_KEYS = {
-        "basketball_nba", "basketball_ncaab", "icehockey_nhl",
-        "soccer_epl", "soccer_uefa_champs_league", "soccer_usa_mls",
+        "basketball_nba", "basketball_ncaab", "hockey_nhl",
+        "football_nfl", "baseball_mlb",
     }
-    
+
     async def _fetch_all_odds(self) -> None:
-        """Fetch odds for all active sports."""
+        """Trigger odds refresh from intelligence hub cache.
+
+        The RealtimeFeedClient reads from the intelligence hub
+        which polls ESPN/Twitter/RSS independently.  This just
+        ensures the local cache stays warm.
+        """
         if not self._odds_client or not self._odds_client.is_available:
             return
-        
-        # FIX #8: Skip if rate budget is low
-        if not self._odds_client.rate_budget_ok:
-            log.info("odds_fetch_skipped_rate_limit",
-                     remaining=self._odds_client._requests_remaining)
-            return
-        
+
         from app.sports.detector import SPORT_REGISTRY
-        
+
         for sport_id, config in SPORT_REGISTRY.items():
             for odds_key in config.odds_api_keys:
-                # FIX #8: Only fetch for active/in-season sports
                 if odds_key not in self._ACTIVE_SPORTS_KEYS:
                     continue
                 try:
                     await self._odds_client.fetch_odds(odds_key)
                 except Exception as e:
                     log.debug("odds_fetch_error", sport=odds_key, error=str(e))
-                
-                # Small delay between fetches to avoid rate limits
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
     
     async def _fetch_all_scores(self) -> None:
-        """Fetch scores for sports with active games."""
+        """Fetch scores for sports with active games (via ESPN, free)."""
         if not self._odds_client or not self._game_tracker:
             return
-        
-        # FIX #8: Skip if rate budget is low
-        if not self._odds_client.rate_budget_ok:
-            return
-        
-        # FIX #8: Only fetch for sports that have cached odds (active seasons)
-        tracked_sports = set(self._odds_client._last_fetch.keys())
-        
+
         from app.sports.detector import SPORT_REGISTRY
-        
+
         for sport_id, config in SPORT_REGISTRY.items():
             for odds_key in config.odds_api_keys:
-                # Skip sport keys we haven't fetched odds for
-                if tracked_sports and odds_key not in tracked_sports:
+                if odds_key not in self._ACTIVE_SPORTS_KEYS:
                     continue
                 try:
                     scores = await self._odds_client.fetch_scores(odds_key)
-                    
-                    # Update game tracker (FIX #6: pass commence_time)
+
                     for score in scores:
                         self._game_tracker.update_score(
                             game_id=score.game_id,
@@ -184,7 +171,7 @@ class SportsDataCollector:
                         )
                 except Exception as e:
                     log.debug("scores_fetch_error", sport=odds_key, error=str(e))
-                
+
                 await asyncio.sleep(0.5)
     
     async def _take_snapshots(self) -> None:
@@ -218,15 +205,15 @@ class SportsDataCollector:
                 "open_interest": float(m.open_interest or 0),
             }
             
-            # Add Vegas data if available
+            # Add consensus data if available
             if self._odds_client:
                 game_odds = self._odds_client.find_game_odds(
                     info.home_team, info.away_team
                 )
                 if game_odds:
-                    snapshot["vegas_home_prob"] = game_odds.consensus_home_prob
-                    snapshot["vegas_away_prob"] = game_odds.consensus_away_prob
-                    snapshot["num_bookmakers"] = len(game_odds.bookmakers)
+                    snapshot["consensus_home_prob"] = game_odds.consensus_home_prob
+                    snapshot["consensus_away_prob"] = game_odds.consensus_away_prob
+                    snapshot["num_sources"] = len(game_odds.bookmakers)
             
             snapshots.append(snapshot)
         

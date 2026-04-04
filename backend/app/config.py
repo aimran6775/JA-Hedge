@@ -146,11 +146,10 @@ class Settings(BaseSettings):
     persist_dir: str = "data"                  # Directory for DB/memory files; set to volume mount on Railway
 
     # ── Sports Trading ────────────────────────────────────
-    the_odds_api_key: str = ""                # The Odds API v4 key
     sports_only_mode: bool = False             # Trade ALL markets, not just sports
     sports_scan_interval_live: float = 15.0    # Faster scan during live games
-    sports_odds_cache_ttl: float = 300.0       # 5 min cache for odds
-    sports_min_vegas_discrepancy: float = 0.05 # 5% minimum edge to trade
+    sports_odds_cache_ttl: float = 300.0       # Cache TTL for realtime feed
+    sports_min_consensus_discrepancy: float = 0.05  # 5% minimum edge to trade
 
     # ── Intelligence System API Keys (all optional) ───────
     newsapi_key: str = ""                     # NewsAPI.org API key

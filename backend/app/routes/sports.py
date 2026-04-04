@@ -38,22 +38,13 @@ async def sports_status() -> dict[str, Any]:
     else:
         result["components"]["detector"] = "not_initialized"
     
-    # Odds client
+    # Realtime feed (replaces The Odds API)
     if state.odds_client:
-        odds_stats = state.odds_client.stats()
-        result["odds"] = odds_stats
-        quota_remaining = odds_stats.get("requests_remaining", 1)
-        if quota_remaining == 0:
-            result["components"]["odds_client"] = "quota_exhausted"
-            result["odds_warning"] = (
-                "Free tier Odds API quota exhausted (500/month). "
-                "Vegas odds unavailable until next billing cycle. "
-                "Predictions use Kalshi-only signals with reduced accuracy."
-            )
-        else:
-            result["components"]["odds_client"] = "ready" if state.odds_client.is_available else "no_api_key"
+        feed_stats = state.odds_client.stats()
+        result["realtime_feed"] = feed_stats
+        result["components"]["realtime_feed"] = "ready" if state.odds_client.is_available else "starting"
     else:
-        result["components"]["odds_client"] = "not_initialized"
+        result["components"]["realtime_feed"] = "not_initialized"
     
     # Game tracker
     if state.game_tracker:
@@ -134,20 +125,20 @@ async def sports_markets() -> dict[str, Any]:
             "open_interest": float(m.open_interest or 0),
         }
         
-        # Add Vegas comparison if available
+        # Add consensus comparison if available
         if state.odds_client:
             game_odds = state.odds_client.find_game_odds(
                 info.home_team, info.away_team
             )
             if game_odds:
-                market_data["vegas_home_prob"] = round(game_odds.consensus_home_prob, 3)
-                market_data["vegas_away_prob"] = round(game_odds.consensus_away_prob, 3)
-                market_data["num_bookmakers"] = len(game_odds.bookmakers)
-                
+                market_data["consensus_home_prob"] = round(game_odds.consensus_home_prob, 3)
+                market_data["consensus_away_prob"] = round(game_odds.consensus_away_prob, 3)
+                market_data["num_sources"] = len(game_odds.bookmakers)
+
                 # Discrepancy
                 kalshi_mid = float(m.midpoint or 0)
                 if kalshi_mid > 0 and game_odds.consensus_home_prob > 0:
-                    market_data["kalshi_vs_vegas"] = round(
+                    market_data["kalshi_vs_consensus"] = round(
                         kalshi_mid - game_odds.consensus_home_prob, 3
                     )
         
@@ -163,12 +154,12 @@ async def sports_markets() -> dict[str, Any]:
 
 @router.get("/odds")
 async def sports_odds() -> dict[str, Any]:
-    """Get current Vegas odds from cache."""
+    """Get current consensus odds from all free sources."""
     if not state.odds_client:
-        raise HTTPException(status_code=503, detail="Odds client not initialized")
-    
+        raise HTTPException(status_code=503, detail="Realtime feed not initialized")
+
     all_odds = state.odds_client.cache.get_all_odds()
-    
+
     games = []
     for odds in all_odds:
         games.append({
@@ -181,21 +172,16 @@ async def sports_odds() -> dict[str, Any]:
             "consensus_away_prob": round(odds.consensus_away_prob, 3),
             "consensus_spread": odds.consensus_spread,
             "consensus_total": odds.consensus_total,
-            "num_bookmakers": len(odds.bookmakers),
+            "num_sources": len(odds.bookmakers),
+            "social_sentiment": round(odds.social_sentiment, 3),
+            "news_sentiment": round(odds.news_sentiment, 3),
         })
-    
+
     return {
         "total_games": len(games),
         "games": games,
-        "api_stats": state.odds_client.stats(),
-        "api_quota_exhausted": state.odds_client.stats().get("requests_remaining", 1) == 0,
-        "quota_warning": (
-            "Free tier Odds API quota exhausted (500/month). "
-            "Vegas odds comparisons unavailable until quota resets. "
-            "Sports predictions will use Kalshi-only signals with reduced edge detection."
-            if state.odds_client.stats().get("requests_remaining", 1) == 0
-            else None
-        ),
+        "feed_stats": state.odds_client.stats(),
+        "source": "free_multi_source (ESPN + Twitter + RSS + Reddit)",
     }
 
 

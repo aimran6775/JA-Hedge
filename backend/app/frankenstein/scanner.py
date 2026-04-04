@@ -389,9 +389,10 @@ class MarketScanner:
         """Skip markets where too many features are defaults (0.0).
 
         Cold-start relaxation: during the first few scans, price history
-        buffers are empty so many features will be zero.  Use a relaxed
-        threshold (60%) until we have accumulated enough history, then
-        tighten to the normal 30%.
+        buffers are empty so most of the ~80 features will be zero.
+        Use a very relaxed threshold until we accumulate enough history,
+        then tighten gradually.  When the model is untrained, we need
+        ANY candidates to flow through so the system can start learning.
         """
         filtered_c = []
         filtered_f = []
@@ -408,13 +409,13 @@ class MarketScanner:
             arr = feat.to_array()
             zero_pct = (arr == 0.0).sum() / max(len(arr), 1)
             if _cold_start:
-                _thr = 0.70  # Very relaxed during cold start
-            elif len(candidates) < 50:
-                _thr = 0.65  # Phase 14: Relax when few candidates (low supply)
+                _thr = 0.85  # Very relaxed — let most markets through
             elif not self._model.is_trained:
-                _thr = 0.50
+                _thr = 0.75  # Still relaxed until model trains
+            elif len(candidates) < 50:
+                _thr = 0.65  # Relax when few candidates
             else:
-                _thr = 0.40  # Relaxed from 0.30 — price features are often sparse
+                _thr = 0.50  # Normal operation
             if zero_pct > _thr:
                 continue
             filtered_c.append(m)
