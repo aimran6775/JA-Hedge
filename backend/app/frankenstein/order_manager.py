@@ -154,7 +154,8 @@ class OrderManager:
             return 0  # No existing position — no skew
 
         qty = pos.position or 0
-        pos_side = pos.side or ""
+        # MarketPosition doesn't have a 'side' field — infer from position sign
+        pos_side = "yes" if qty > 0 else ("no" if qty < 0 else "")
 
         # Same side as existing position → discourage piling on
         same_side = (
