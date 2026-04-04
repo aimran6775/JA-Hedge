@@ -677,7 +677,10 @@ class MarketScanner:
     ) -> list[dict[str, Any]]:
         """Evaluate each signal through all quality gates."""
         _is_learning = self._is_in_learning_mode()
-        min_grade = "C+" if _is_learning else "B+"
+        # Phase 25b: In learning mode, bypass the grade gate entirely.
+        # We need trades to flow for training data.  Maker mode = 0¢ fees,
+        # fixed 1-2 contract sizing, hold-to-settlement — risk is managed.
+        min_grade = "F" if _is_learning else "B+"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, "portfolio_heat") else 0.0,
@@ -796,13 +799,13 @@ class MarketScanner:
 
             if _is_learning:
                 cost_to_beat = fee_as_fraction + half_spread
-                # MAKER LEARNING: lower threshold to break cold-start trap.
-                # We need SOME trades to collect training data.  0¢ maker fees
-                # mean the only cost is position risk — manageable at 1-2 contracts.
-                # Phase 22 data (22% WR at edge≈0) was on TAKER trades w/ 14¢ fees.
-                # Maker mode is fundamentally different — the fee advantage IS our edge.
-                _base_edge = 0.03 if USE_MAKER_ORDERS else 0.07
-                effective_min_edge = max(_base_edge, cost_to_beat * 1.2)
+                # Phase 25b: MAKER LEARNING — very low threshold.
+                # Heuristic produces edges of 0.005-0.02.  Maker mode = 0¢ fees,
+                # hold-to-settlement, 1-2 contracts — so the cost-to-beat is
+                # essentially 0 for makers.  We just need edge > 0 to collect
+                # training data.  Taker still needs to beat the fee.
+                _base_edge = 0.005 if USE_MAKER_ORDERS else 0.07
+                effective_min_edge = max(_base_edge, cost_to_beat * 1.0)
             else:
                 effective_min_edge = params.min_edge
                 # Phase 5+8: Category-specific min edges for ALL Kalshi categories
@@ -832,8 +835,11 @@ class MarketScanner:
                 continue
 
             # Absolute edge floor — never trade below this.
-            # Learning mode gets a lower floor to break cold-start cycle.
-            _ABSOLUTE_MIN_EDGE = 0.02 if _is_learning else 0.04
+            # Learning mode gets a much lower floor to break cold-start.
+            # Phase 25b: Heuristic produces edges of 0.005-0.02 — we need
+            # these to flow through for training data.  Maker 0¢ fees means
+            # any positive edge is worth taking at 1-2 contracts.
+            _ABSOLUTE_MIN_EDGE = 0.003 if _is_learning else 0.04
             if abs(prediction.edge) < _ABSOLUTE_MIN_EDGE:
                 continue
 

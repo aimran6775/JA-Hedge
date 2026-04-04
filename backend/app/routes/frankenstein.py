@@ -211,9 +211,9 @@ async def debug_rejections() -> dict:
     )
     is_learning = _usable < MIN_TRAINING_SAMPLES
 
-    # Confidence scorer
+    # Confidence scorer — Phase 25b: learning mode bypasses grade gate
     conf_scorer = ConfidenceScorer(
-        min_grade="B" if is_learning else "B+",
+        min_grade="F" if is_learning else "B+",
         portfolio_heat=frank._adv_risk.portfolio_heat if hasattr(frank._adv_risk, 'portfolio_heat') else 0.0,
         current_drawdown_pct=frank._adv_risk.current_drawdown_pct if hasattr(frank._adv_risk, 'current_drawdown_pct') else 0.0,
         open_positions=frank._scanner._count_open_positions(),
