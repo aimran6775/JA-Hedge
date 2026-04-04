@@ -238,10 +238,11 @@ class SportsPredictor:
                 self._stats["vegas_used"] += 1
                 return pred
         
-        # Kalshi-only fallback DISABLED — without Vegas anchor, mean-reversion
-        # assumptions lose money on live sports where prices are efficient.
-        # Only trade sports when we have real Vegas odds.
-        return None
+        # Kalshi-only fallback — Phase 25: RE-ENABLED with conservative estimates.
+        # Without Vegas data, use market microstructure + sport-specific base rates.
+        # This is better than returning None (which falls to generic XGBoost that
+        # produces identical 92% predictions for all sports markets).
+        return self._predict_kalshi_only(sports_features, base_features)
     
     def _predict_xgb(self, sports_features: Any) -> SportsPrediction | None:
         """Use trained XGBoost model for prediction."""
@@ -287,63 +288,67 @@ class SportsPredictor:
     ) -> SportsPrediction | None:
         """
         Kalshi-only fallback when Vegas odds are unavailable.
-        
-        Uses conservative mean-reversion logic on extreme prices:
-          - Prices very close to 0 or 1 tend to revert
-          - High volume + extreme price = more reliable signal
-          - Only trades when the edge is large enough to overcome noise
-        
-        This is intentionally conservative (high threshold) because we
-        lack the Vegas anchor that provides our strongest signal.
+
+        Phase 25: Re-enabled with conservative, sport-aware logic.
+        Instead of pure mean-reversion, uses:
+        1. Sport-specific base rates (NHL goal scorer ~25% YES, NBA game ~50%)
+        2. Market microstructure (volume, spread, time to expiry)
+        3. Very conservative confidence (lower than Vegas-backed trades)
+        4. Higher edge threshold (7% vs 5% for Vegas)
         """
         price = sports_features.kalshi_price
         if not base_features or price <= 0.02 or price >= 0.98:
             return None
-        
-        # Only trade mispricings with enough liquidity
+
         volume = getattr(base_features, "volume", 0)
         hours = getattr(base_features, "hours_to_expiry", 0)
         spread = getattr(base_features, "spread", 1.0)
-        
-        # Require minimum liquidity for Kalshi-only trades
-        # Spread limit matches strategy params (15¢)
-        if volume < 20 or spread > 0.15 or hours < 1.0:
+
+        if volume < 10 or spread > 0.20 or hours < 0.5:
             return None
-        
-        # Mean-reversion: prices outside 0.25-0.75 with decent volume
-        # have positive expected reversion when the book is tight enough.
-        if price < 0.25:
-            # Cheap YES — potential value buy
-            # Fair value estimate: regress toward 0.50 by 15%
-            fair_est = price + (0.50 - price) * 0.15
+
+        sport_id = sports_features.sport_id
+        _is_prop = price < 0.35
+        _is_game = 0.35 <= price <= 0.65
+
+        if _is_prop:
+            base_rate = {
+                "nba": 0.25, "nhl": 0.20, "nfl": 0.30,
+                "mlb": 0.25, "soccer": 0.20,
+            }.get(sport_id, 0.25)
+            fair_est = price + (base_rate - price) * 0.10
+        elif _is_game:
+            fair_est = price + (0.50 - price) * 0.05
+        elif price < 0.25:
+            fair_est = price + (0.30 - price) * 0.10
+            if fair_est < price:
+                return None
+        elif price > 0.75:
+            fair_est = price - (price - 0.70) * 0.10
+            if fair_est > price:
+                return None
+        else:
+            return None
+
+        if fair_est > price:
             side = "yes"
             predicted_prob = fair_est
             cost = price
-        elif price > 0.75:
-            # Expensive YES — buy NO (cheap)
-            fair_est = price - (price - 0.50) * 0.15
+        else:
             side = "no"
             predicted_prob = 1.0 - fair_est
             cost = 1.0 - price
-        else:
-            # Price is in normal range — no Kalshi-only edge
-            return None
-        
+
         edge = predicted_prob - cost
-        
-        # Require larger edge than Vegas strategy (7% vs 5%)
-        # because we're less confident without an anchor
         if edge < 0.07:
             return None
-        
-        # Conservative confidence — lower than Vegas-backed trades
-        confidence = 0.35 + min(edge / 0.30, 0.20)  # 0.35 to 0.55
-        
-        # Boost slightly for high volume (more reliable price discovery)
-        if volume > 500:
-            confidence += 0.05
-        
-        confidence = max(0.30, min(0.60, confidence))
+
+        confidence = 0.30 + min(edge / 0.30, 0.15)
+        if volume > 200:
+            confidence += 0.03
+        if volume > 1000:
+            confidence += 0.02
+        confidence = max(0.25, min(0.55, confidence))
         
         self._stats["kalshi_only_used"] = self._stats.get("kalshi_only_used", 0) + 1
         

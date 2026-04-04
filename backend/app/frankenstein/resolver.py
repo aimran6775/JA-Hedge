@@ -233,11 +233,14 @@ class OutcomeResolver:
             if isinstance(current_price, int):
                 current_price = current_price / 100
 
-            # Phase 22: Widened from 0.99/0.01 to 0.95/0.05.
-            # 45.6% of trades were expiring unresolved because
-            # prices rarely hit exactly 99¢/1¢.  At 95¢/5¢ the
-            # outcome is >95% certain.
-            if current_price >= 0.95:
+            # Phase 25: Tightened from 0.95/0.05 to 0.98/0.02.
+            # At 95% there's still a 5% chance we assign the wrong label,
+            # which pollutes training data.  At 98% the outcome is near-certain.
+            from app.frankenstein.constants import (
+                EXTREME_PRICE_THRESHOLD_YES,
+                EXTREME_PRICE_THRESHOLD_NO,
+            )
+            if current_price >= EXTREME_PRICE_THRESHOLD_YES:
                 correct = trade.predicted_side == "yes"
                 pnl_cents = self._compute_pnl(trade, correct)
                 outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
@@ -249,7 +252,7 @@ class OutcomeResolver:
                 self._track_category_outcome(trade, correct)
                 return True
 
-            if current_price <= 0.05:
+            if current_price <= EXTREME_PRICE_THRESHOLD_NO:
                 correct = trade.predicted_side == "no"
                 pnl_cents = self._compute_pnl(trade, correct)
                 outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
@@ -268,16 +271,24 @@ class OutcomeResolver:
     # ── Method 4: Timeout ─────────────────────────────────────────────
 
     def _try_timeout(self, trade: TradeRecord) -> bool:
+        from app.frankenstein.constants import (
+            TIMEOUT_HOURS,
+            TIMEOUT_PRICE_YES,
+            TIMEOUT_PRICE_NO,
+        )
         elapsed = time.time() - trade.timestamp
-        if elapsed > 21600:  # 6 hours (was 48 hours)
-            # Phase 22: Instead of blanket EXPIRED, check current price
-            # to resolve as WIN/LOSS when possible.
+        timeout_seconds = TIMEOUT_HOURS * 3600
+        if elapsed > timeout_seconds:
+            # Phase 25: Tightened from 6h/0.75 to 24h/0.90.
+            # Old: 75% threshold = 25% chance of wrong label = massive noise.
+            # New: 90% threshold = only resolve when near-certain.
+            # Price inconclusive → EXPIRED (don't inject noisy labels).
             cached = market_cache.get(trade.ticker)
             if cached:
                 cp = float(cached.last_price or cached.midpoint or 0)
                 if isinstance(cp, int):
                     cp = cp / 100
-                if cp >= 0.75:
+                if cp >= TIMEOUT_PRICE_YES:
                     correct = trade.predicted_side == "yes"
                     pnl_cents = self._compute_pnl(trade, correct)
                     outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
@@ -288,7 +299,7 @@ class OutcomeResolver:
                     self._settle_paper_position(trade.ticker, "yes")
                     self._track_category_outcome(trade, correct)
                     return True
-                elif cp <= 0.25:
+                elif cp <= TIMEOUT_PRICE_NO:
                     correct = trade.predicted_side == "no"
                     pnl_cents = self._compute_pnl(trade, correct)
                     outcome = TradeOutcome.WIN if correct else TradeOutcome.LOSS
@@ -299,7 +310,8 @@ class OutcomeResolver:
                     self._settle_paper_position(trade.ticker, "no")
                     self._track_category_outcome(trade, correct)
                     return True
-            # Price inconclusive — expire
+            # Price inconclusive — expire without injecting a label.
+            # This is BETTER than assigning a wrong label.
             self.memory.resolve_trade(trade.trade_id, TradeOutcome.EXPIRED)
             self._settle_paper_position(trade.ticker, "expired")
             return True

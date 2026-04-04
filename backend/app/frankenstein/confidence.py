@@ -31,10 +31,15 @@ log = get_logger("frankenstein.confidence")
 
 # ── Factor Weights (must sum to 1.0) ─────────────────────────────────────
 
+# Phase 25: Rebalanced weights.
+# Old: fee_impact=0.15 meant maker mode always got ~14 free points (always scores 90+).
+# New: fee_impact=0.07 (halved) + prediction_quality=0.08 (new factor measuring
+# feature completeness and training data quantity).
 FACTOR_WEIGHTS = {
     "model_strength": 0.25,    # Model quality is critical
     "edge_quality": 0.25,      # Edge must be real
-    "fee_impact": 0.15,        # NEW: Fees are the #1 profitability killer
+    "fee_impact": 0.07,        # Phase 25: halved from 0.15 — maker mode was inflating
+    "prediction_quality": 0.08, # Phase 25: NEW — feature completeness + data quantity
     "liquidity": 0.15,         # Can't profit in illiquid markets
     "timing": 0.10,            # Less important
     "volume_signal": 0.05,     # Weak signal
@@ -109,7 +114,7 @@ class ConfidenceScorer:
 
     def __init__(
         self,
-        min_grade: str = "A",
+        min_grade: str = "B+",   # Phase 25: lowered from A to B+ for more trade flow
         portfolio_heat: float = 0.0,
         current_drawdown_pct: float = 0.0,
         open_positions: int = 0,
@@ -145,6 +150,9 @@ class ConfidenceScorer:
 
         # 2b. Fee Impact (NEW)
         factors.append(self._score_fee_impact(prediction, features))
+
+        # 2c. Prediction Quality (Phase 25)
+        factors.append(self._score_prediction_quality(prediction, features, model_trained))
 
         # 3. Liquidity
         factors.append(self._score_liquidity(features))
@@ -433,6 +441,88 @@ class ConfidenceScorer:
         w = FACTOR_WEIGHTS["fee_impact"]
         return ConfidenceFactor(
             name="Fee Impact",
+            score=score,
+            weight=w,
+            weighted=score * w,
+            reason=" · ".join(reasons),
+        )
+
+    # ── Factor 2c: Prediction Quality (Phase 25) ────────────────────
+
+    def _score_prediction_quality(
+        self, prediction: Prediction, features: MarketFeatures,
+        model_trained: bool,
+    ) -> ConfidenceFactor:
+        """Score quality of the prediction inputs — feature completeness + data quantity.
+
+        Phase 25: New factor to replace over-weighted fee_impact.
+        This measures whether the model actually has good data to work with:
+        - Feature completeness (how many features are non-zero?)
+        - Training data quantity (more data = more reliable model)
+        - Alt-data availability (intelligence sources provide real signal)
+        """
+        reasons = []
+        score = 30  # neutral-low start
+
+        # Feature completeness: what fraction of features are non-zero?
+        arr = features.to_array()
+        nonzero_pct = (arr != 0.0).sum() / max(len(arr), 1)
+        if nonzero_pct >= 0.60:
+            score += 30
+            reasons.append(f"Rich features ({nonzero_pct:.0%} non-zero)")
+        elif nonzero_pct >= 0.35:
+            score += 15
+            reasons.append(f"Moderate features ({nonzero_pct:.0%} non-zero)")
+        elif nonzero_pct >= 0.15:
+            score += 5
+            reasons.append(f"Sparse features ({nonzero_pct:.0%} non-zero)")
+        else:
+            score -= 10
+            reasons.append(f"Very sparse features ({nonzero_pct:.0%} non-zero)")
+
+        # Alt-data availability
+        has_poly = getattr(features, 'alt_polymarket_prob', 0) > 0
+        has_vegas = getattr(features, 'alt_vegas_prob', 0) > 0
+        has_crypto = getattr(features, 'alt_crypto_strike_dist', 0) != 0
+        has_news = getattr(features, 'alt_news_sentiment', 0) != 0
+        alt_count = sum([has_poly, has_vegas, has_crypto, has_news])
+        if alt_count >= 2:
+            score += 20
+            reasons.append(f"Multiple alt-data sources ({alt_count})")
+        elif alt_count == 1:
+            score += 10
+            reasons.append("One alt-data source")
+        else:
+            score += 0
+            reasons.append("No alt-data available")
+
+        # Model training maturity
+        if model_trained:
+            _n = getattr(prediction, '_train_samples', 0) or 0
+            # Try to get from model
+            try:
+                from app.state import state as _st
+                if _st.model:
+                    _n = getattr(_st.model, '_train_samples', 0) or _n
+            except Exception:
+                pass
+            if _n >= 200:
+                score += 15
+                reasons.append(f"Mature model ({_n} samples)")
+            elif _n >= 50:
+                score += 8
+                reasons.append(f"Young model ({_n} samples)")
+            else:
+                score += 0
+                reasons.append(f"Very young model ({_n} samples)")
+        else:
+            score -= 5
+            reasons.append("No trained model")
+
+        score = max(0, min(100, score))
+        w = FACTOR_WEIGHTS["prediction_quality"]
+        return ConfidenceFactor(
+            name="Prediction Quality",
             score=score,
             weight=w,
             weighted=score * w,

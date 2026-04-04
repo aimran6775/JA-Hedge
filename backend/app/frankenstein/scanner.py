@@ -112,8 +112,8 @@ class MarketScanner:
         # Cooldowns
         self._recently_traded: dict[str, float] = {}
         self._recently_traded_events: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 120.0  # 2 min ticker cooldown (was 3 min)
-        self._event_cooldown_seconds: float = 60.0    # 60s event cooldown (was 90s)
+        self._trade_cooldown_seconds: float = 60.0   # Phase 25: 1 min ticker cooldown (was 2 min)
+        self._event_cooldown_seconds: float = 30.0    # Phase 25: 30s event cooldown (was 60s)
 
     # ── Main Scan ─────────────────────────────────────────────────────
 
@@ -751,7 +751,12 @@ class MarketScanner:
 
             # Market-anchor sanity (edge cap)
             cat = detect_category(market.title or "", market.category or "", ticker=market.ticker)
-            MAX_ALLOWED_EDGE = CATEGORY_EDGE_CAPS.get(cat, 0.10)
+            MAX_ALLOWED_EDGE = CATEGORY_EDGE_CAPS.get(cat, 0.12)
+            # Phase 25: During learning mode, raise edge caps by 50% to let
+            # more trades through for data collection.
+            from app.frankenstein.constants import LEARNING_MODE_EDGE_CAP_MULT
+            if _is_learning:
+                MAX_ALLOWED_EDGE *= LEARNING_MODE_EDGE_CAP_MULT
             if abs(prediction.edge) > MAX_ALLOWED_EDGE:
                 continue
 
@@ -838,7 +843,14 @@ class MarketScanner:
             state.total_signals += 1
 
             # Kelly sizing
-            kelly = self._kelly_size(prediction, features, params, market=market)
+            # Phase 25: In learning mode, use fixed 1-2 contracts instead of
+            # Kelly.  Kelly with no training data is meaningless — it just
+            # amplifies heuristic noise.  Fixed small bets = controlled risk
+            # while collecting training data.
+            if _is_learning:
+                kelly = 0.01  # minimal — will map to 1-2 contracts via min_count
+            else:
+                kelly = self._kelly_size(prediction, features, params, market=market)
             if kelly <= 0:
                 if _is_learning:
                     kelly = 0.01

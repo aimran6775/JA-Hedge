@@ -100,6 +100,53 @@ class PositionManager:
             if position_count == 0:
                 continue
 
+            # Phase 25: MINIMUM HOLD TIME — prevent churn loop.
+            # Old behavior: enter → XGBoost retrains on cold-start → contradicts
+            # → exit in 5-35 seconds → repeat.  Now: must hold for MIN_HOLD_MINUTES
+            # before any exit evaluation.  In learning mode, hold to settlement.
+            from app.frankenstein.constants import (
+                MIN_HOLD_MINUTES_MAKER,
+                MIN_HOLD_MINUTES_TAKER,
+                LEARNING_MODE_CATASTROPHIC_STOP,
+                USE_MAKER_ORDERS,
+                MIN_TRAINING_SAMPLES,
+            )
+            entry_time = self._order_mgr.estimate_entry_time(ticker)
+            if entry_time > 0:
+                minutes_held = (time.time() - entry_time) / 60.0
+                min_hold = MIN_HOLD_MINUTES_MAKER if USE_MAKER_ORDERS else MIN_HOLD_MINUTES_TAKER
+
+                # Learning mode: hold everything to settlement for clean labels.
+                # Only allow catastrophic stop-loss (-50%) as emergency exit.
+                _is_learning = not self._model.is_trained
+                if _is_learning and USE_MAKER_ORDERS:
+                    our_side_check = "yes" if (pos.position or 0) > 0 else "no"
+                    features_check = self._features.compute(market)
+                    mid_check = features_check.midpoint
+                    entry_price_check = self._order_mgr.estimate_entry_price(ticker)
+                    if entry_price_check > 0 and mid_check > 0:
+                        half_spread = features_check.spread / 2.0
+                        fee_per_side = 0.07  # TAKER_FEE_CENTS / 100
+                        exit_cost = half_spread + fee_per_side
+                        if our_side_check == "yes":
+                            cv = max(mid_check - exit_cost, 0.01)
+                            pnl_pct = (cv - entry_price_check) / entry_price_check
+                        else:
+                            cv = max((1.0 - mid_check) - exit_cost, 0.01)
+                            pnl_pct = (cv - entry_price_check) / entry_price_check
+                        if pnl_pct < LEARNING_MODE_CATASTROPHIC_STOP:
+                            log.warning("learning_mode_catastrophic_exit",
+                                        ticker=ticker, pnl_pct=f"{pnl_pct:.1%}")
+                            # Fall through to exit logic
+                        else:
+                            continue  # Hold to settlement — clean training data
+                    else:
+                        continue  # Can't compute PnL — hold
+
+                # Normal mode: enforce minimum hold time
+                elif minutes_held < min_hold:
+                    continue  # Too early to evaluate exit
+
             our_side = "yes" if (pos.position or 0) > 0 else "no"
             features = self._features.compute(market)
             prediction = self._model.predict(features)
@@ -184,19 +231,22 @@ class PositionManager:
         if unrealized_pnl_pct < -0.30:
             return True, f"maker_stop_loss ({unrealized_pnl_pct:.1%} < -30%)"
 
-        # ── Edge reversal with HIGH confidence ────────────
-        # If the model has FLIPPED with very high confidence,
-        # our original thesis is dead. Pay 7¢ to exit.
-        if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.80:
-            # Expected loss from holding = mid probability the YES side loses
-            expected_loss = 1.0 - mid  # probability we lose entire cost
-            if expected_loss > 0.60:  # >60% chance of total loss
-                return True, f"maker_edge_reversal (model says NO @ {prediction.confidence:.2f}, loss_prob={expected_loss:.0%})"
+        # ── Edge reversal with VERY HIGH confidence ─────────
+        # Phase 25: Raised from 0.80→0.90 confidence threshold.
+        # The old 0.80 threshold caused churn: untrained model would
+        # reach 0.80 confidence on garbage predictions and trigger exit.
+        # Now requires 0.90 + model must actually be trained.
+        if self._model.is_trained:
+            if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.90:
+                # Expected loss from holding = mid probability the YES side loses
+                expected_loss = 1.0 - mid  # probability we lose entire cost
+                if expected_loss > 0.65:  # >65% chance of total loss (was 60%)
+                    return True, f"maker_edge_reversal (model says NO @ {prediction.confidence:.2f}, loss_prob={expected_loss:.0%})"
 
-        if our_side == "no" and prediction.side == "yes" and prediction.confidence > 0.80:
-            expected_loss = mid
-            if expected_loss > 0.60:
-                return True, f"maker_edge_reversal (model says YES @ {prediction.confidence:.2f}, loss_prob={expected_loss:.0%})"
+            if our_side == "no" and prediction.side == "yes" and prediction.confidence > 0.90:
+                expected_loss = mid
+                if expected_loss > 0.65:
+                    return True, f"maker_edge_reversal (model says YES @ {prediction.confidence:.2f}, loss_prob={expected_loss:.0%})"
 
         # ── Near-expiry uncertain ─────────────────────────
         # Market expires in <20 min, price is stuck in uncertain zone.

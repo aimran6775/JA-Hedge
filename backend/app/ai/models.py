@@ -429,14 +429,14 @@ class XGBoostPredictor(PredictionModel):
             std = float(std_devs[0])
             agreement = float(tree_agr[0])
 
-            # Phase 14+: Ensemble blending with heuristic
-            # ML weight grows with training data — but starts higher (0.70)
-            # so the model has actual predictive power instead of just
-            # echoing the market price back.  The old 0.50 start meant
-            # half the prediction was the market price — zero edge.
-            # At 200+ samples, ML weight reaches 0.90 (max).
+            # Phase 25: Ensemble blending — ML weight curve fix.
+            # OLD: started at 0.70 with 0 training samples → model had
+            # 70% weight immediately → garbage predictions dominated.
+            # NEW: starts at 0.30 (market price dominates) and ramps to
+            # 0.92 at 500+ samples.  The market price IS the best
+            # estimator until we have enough data to beat it.
             n_trained = getattr(self, '_train_samples', 0)
-            ml_weight = min(0.92, 0.70 + n_trained / 1000.0)
+            ml_weight = min(0.92, 0.30 + n_trained / 500.0)
             heuristic_prob = features.midpoint  # market price is the heuristic baseline
 
             blended_prob = ml_weight * prob_yes + (1.0 - ml_weight) * heuristic_prob
@@ -535,27 +535,45 @@ class XGBoostPredictor(PredictionModel):
         _train_weights = _all_weights[:n_samples - n_val]
 
         # Hyperparameter search space (prediction-market-optimized)
-        # Key insight: with small datasets (<500 samples), heavy
-        # regularization prevents overfitting.  Shallow trees (3-5)
-        # generalize better.  Lower learning rates need more rounds
-        # but produce smoother probability surfaces.
+        # Phase 25: Stronger regularization for small datasets (<200 samples).
+        # With few samples, overfitting is the #1 risk.  We use:
+        #   - Very shallow trees (2-4 depth)
+        #   - Aggressive regularization (high gamma, lambda, alpha)
+        #   - Low learning rate with more boosting rounds
+        #   - High min_child_weight to prevent rare splits
+        _is_small_data = n_samples < 200
         def _random_params() -> dict:
+            if _is_small_data:
+                return {
+                    "objective": "binary:logistic",
+                    "eval_metric": ["logloss", "auc"],
+                    "max_depth": rng.choice([2, 3, 4]),
+                    "learning_rate": rng.choice([0.005, 0.01, 0.02, 0.03]),
+                    "subsample": rng.uniform(0.5, 0.75),
+                    "colsample_bytree": rng.uniform(0.4, 0.7),
+                    "colsample_bylevel": rng.uniform(0.5, 0.8),
+                    "min_child_weight": rng.choice([10, 15, 20, 30]),
+                    "gamma": rng.choice([0.5, 1.0, 2.0, 3.0]),
+                    "reg_alpha": rng.choice([0.5, 1.0, 2.0, 5.0]),
+                    "reg_lambda": rng.choice([5.0, 10.0, 20.0, 50.0]),
+                    "scale_pos_weight": scale_pos_weight,
+                    "max_delta_step": rng.choice([1, 3, 5]),
+                    "seed": 42,
+                }
             return {
                 "objective": "binary:logistic",
-                # Track both AUC (ranking) and logloss (calibration).
-                # XGBoost uses the LAST metric for early stopping.
                 "eval_metric": ["logloss", "auc"],
-                "max_depth": rng.choice([3, 4, 5, 6]),  # shallower — less overfit
-                "learning_rate": rng.choice([0.01, 0.02, 0.03, 0.05]),  # slower — smoother
+                "max_depth": rng.choice([3, 4, 5, 6]),
+                "learning_rate": rng.choice([0.01, 0.02, 0.03, 0.05]),
                 "subsample": rng.uniform(0.6, 0.85),
                 "colsample_bytree": rng.uniform(0.5, 0.85),
                 "colsample_bylevel": rng.uniform(0.6, 0.95),
-                "min_child_weight": rng.choice([3, 5, 7, 10, 15]),  # higher — prevent rare splits
-                "gamma": rng.choice([0.1, 0.2, 0.5, 1.0]),  # higher — prune weak splits
-                "reg_alpha": rng.choice([0.01, 0.1, 0.5, 1.0, 2.0]),  # L1 — feature selection
-                "reg_lambda": rng.choice([1.0, 2.0, 5.0, 10.0]),  # L2 — weight decay
+                "min_child_weight": rng.choice([3, 5, 7, 10, 15]),
+                "gamma": rng.choice([0.1, 0.2, 0.5, 1.0]),
+                "reg_alpha": rng.choice([0.01, 0.1, 0.5, 1.0, 2.0]),
+                "reg_lambda": rng.choice([1.0, 2.0, 5.0, 10.0]),
                 "scale_pos_weight": scale_pos_weight,
-                "max_delta_step": rng.choice([1, 3, 5]),  # >0 helps imbalanced sets
+                "max_delta_step": rng.choice([1, 3, 5]),
                 "seed": 42,
             }
 
@@ -795,17 +813,18 @@ class XGBoostPredictor(PredictionModel):
 
     def _heuristic_predict(self, features: MarketFeatures) -> Prediction:
         """
-        Market-efficient heuristic for when no trained model is available.
+        Heuristic prediction for when no trained model is available.
 
-        KEY PRINCIPLE: The market price IS the best estimator. Prediction
-        markets are near-efficient -- our heuristic should produce TINY
-        adjustments (1-5%), not big swings. A heuristic claiming 20%
-        edge over the market is wrong, not smart.
+        Phase 25: Major overhaul — the heuristic now uses intelligence
+        alt-data (Polymarket, Vegas, crypto) as first-class signals.
+        These are REAL external information, not just market price echo.
 
-        Phase 18: Adjusted max adjustment to ±10% to allow the heuristic
-        to express genuine signals from momentum, RSI, volume, and convergence.
-        The confidence scorer and Kelly criterion will still gate bad trades,
-        but the heuristic needs room to generate tradeable edges.
+        KEY PRINCIPLES:
+        1. Market price is the baseline, but alt-data CAN diverge 10-15%
+        2. Cross-platform edges (Kalshi vs Polymarket/Vegas) are genuine
+        3. During learning mode, we want SMALL adjustments — let positions
+           hold to settlement for clean training labels
+        4. Momentum, RSI, MACD are secondary signals at best
         """
         mid = features.midpoint
         if mid <= 0 or mid >= 1:
@@ -814,14 +833,27 @@ class XGBoostPredictor(PredictionModel):
         # -- Base: start from market price (the best estimator) --
         base_prob = mid
 
-        # -- Signal 1: Time-weighted market trust --
+        # -- Signal 1: Cross-platform edge (STRONGEST SIGNAL) --
+        # If Polymarket or Vegas has a different price, that's real information.
+        cross_platform_adj = 0.0
+        if hasattr(features, 'alt_polymarket_prob') and features.alt_polymarket_prob > 0:
+            # Polymarket is a deep prediction market — trust its price
+            poly_diff = features.alt_polymarket_prob - mid
+            cross_platform_adj = poly_diff * 0.40  # use 40% of the difference
+            cross_platform_adj = max(-0.08, min(0.08, cross_platform_adj))
+        elif hasattr(features, 'alt_vegas_prob') and features.alt_vegas_prob > 0:
+            # Vegas odds are calibrated by sharp bettors
+            vegas_diff = features.alt_vegas_prob - mid
+            cross_platform_adj = vegas_diff * 0.35
+            cross_platform_adj = max(-0.07, min(0.07, cross_platform_adj))
+
+        # -- Signal 2: Time-weighted market trust --
         if features.hours_to_expiry > 0:
             time_trust = 1.0 / (1.0 + 0.1 * features.hours_to_expiry)
         else:
             time_trust = 0.95
 
-        # -- Signal 2: Momentum adjustments --
-        # Allow bigger contributions so strong moves generate real edge
+        # -- Signal 3: Momentum adjustments --
         momentum_adj = 0.0
         if features.price_change_5m > 0.01:
             momentum_adj = min(features.price_change_5m * 0.6, 0.03)
@@ -832,8 +864,7 @@ class XGBoostPredictor(PredictionModel):
         elif features.price_change_1m < -0.005:
             momentum_adj = max(features.price_change_1m * 0.5, -0.015)
 
-        # -- Signal 3: Convergence boost near expiry --
-        # Near-expiry convergence is a genuine signal
+        # -- Signal 4: Convergence boost near expiry --
         convergence_adj = 0.0
         if features.hours_to_expiry < 12:
             dist = abs(mid - 0.5)
@@ -841,13 +872,13 @@ class XGBoostPredictor(PredictionModel):
                 direction = 1.0 if mid > 0.5 else -1.0
                 convergence_adj = direction * dist * time_trust * 0.06
 
-        # -- Signal 4: Volume confirmation --
+        # -- Signal 5: Volume confirmation --
         volume_adj = 0.0
         if features.volume_ratio > 1.3 and abs(features.price_change_5m) > 0.008:
             volume_adj = features.price_change_5m * 0.2 * min(features.volume_ratio / 2.5, 1.0)
             volume_adj = max(-0.015, min(0.015, volume_adj))
 
-        # -- Signal 5: RSI-based adjustment --
+        # -- Signal 6: RSI-based adjustment --
         rsi_adj = 0.0
         if features.rsi_14 > 0:
             if features.rsi_14 > 70 and features.hours_to_expiry < 48:
@@ -859,7 +890,7 @@ class XGBoostPredictor(PredictionModel):
             elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
                 rsi_adj = 0.01
 
-        # -- Signal 6: MACD crossover --
+        # -- Signal 7: MACD crossover --
         macd_adj = 0.0
         if features.macd != 0:
             if features.macd > 0.015:
@@ -867,16 +898,37 @@ class XGBoostPredictor(PredictionModel):
             elif features.macd < -0.015:
                 macd_adj = max(features.macd * 0.3, -0.015)
 
+        # -- Signal 8: Crypto distance to strike --
+        crypto_adj = 0.0
+        if hasattr(features, 'alt_crypto_strike_dist') and features.alt_crypto_strike_dist != 0:
+            # If crypto price is well above/below strike, that's a strong signal
+            dist = features.alt_crypto_strike_dist
+            if abs(dist) > 0.05:  # >5% from strike
+                crypto_adj = max(-0.06, min(0.06, dist * 0.15))
+
+        # -- Signal 9: News/social sentiment --
+        sentiment_adj = 0.0
+        if hasattr(features, 'alt_news_sentiment') and features.alt_news_sentiment != 0:
+            sentiment_adj += features.alt_news_sentiment * 0.02
+        if hasattr(features, 'alt_social_sentiment') and features.alt_social_sentiment != 0:
+            sentiment_adj += features.alt_social_sentiment * 0.015
+        sentiment_adj = max(-0.03, min(0.03, sentiment_adj))
+
         # -- Combine signals --
+        # Cross-platform edge is the strongest signal — gets full weight
+        # Other signals are secondary — weighted by time trust
         signal_weight = max(0.30, 1.0 - time_trust * 0.5)
         total_adjustment = (
-            signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
+            cross_platform_adj  # full weight — this is real external info
+            + signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
             + convergence_adj
+            + crypto_adj
+            + sentiment_adj
         )
 
-        # Hard cap total heuristic adjustment at +-10%
-        # This allows genuine signals to create tradeable edges.
-        total_adjustment = max(-0.10, min(0.10, total_adjustment))
+        # Hard cap total heuristic adjustment at +-12%
+        # Phase 25: raised from +-10% to allow cross-platform edges through
+        total_adjustment = max(-0.12, min(0.12, total_adjustment))
 
         prob_yes = base_prob + total_adjustment
 
@@ -886,10 +938,21 @@ class XGBoostPredictor(PredictionModel):
             prob_yes = prob_yes * (1.0 - spread_penalty) + 0.5 * spread_penalty
 
         prob_yes = max(0.05, min(0.95, prob_yes))
+
+        # Phase 25: Heuristic uncertainty reflects whether we have alt-data.
+        # With cross-platform signals, we're more confident; without, less.
+        has_alt_data = (
+            cross_platform_adj != 0
+            or crypto_adj != 0
+            or sentiment_adj != 0
+        )
+        _std = 0.08 if has_alt_data else 0.15
+        _agreement = 0.55 if has_alt_data else 0.30
+
         pred = self._build_prediction(
             prob_yes, features,
-            prediction_std=0.12,  # moderate uncertainty for heuristic
-            tree_agreement=0.40,  # heuristic has some signal, not zero
+            prediction_std=_std,
+            tree_agreement=_agreement,
         )
         pred.raw_prob = prob_yes
         return pred

@@ -18,6 +18,33 @@ TAKER_FEE_CENTS = 7        # per contract, per side
 ROUND_TRIP_FEE_CENTS = 14  # buy fee + sell fee (taker path)
 MAKER_FEE_CENTS = 0        # maker orders are FREE on Kalshi
 
+# ── MINIMUM HOLD TIME ────────────────────────────────────────────────
+# Phase 25: Prevent churn loop — positions must be held this long before
+# any exit evaluation.  The old behavior was: enter → XGBoost retrains on
+# cold-start data → model contradicts entry → exit in 5-35 seconds → repeat.
+# Maker mode: hold 30 minutes minimum (entire strategy is hold-to-settlement).
+# Learning mode: hold to settlement (no exits except catastrophic stop-loss).
+MIN_HOLD_MINUTES_MAKER = 30   # 30 min minimum hold before ANY exit evaluation
+MIN_HOLD_MINUTES_TAKER = 5    # 5 min for taker mode (active management)
+LEARNING_MODE_CATASTROPHIC_STOP = -0.50  # only exit in learning mode at -50%
+
+# ── TRAINING PIPELINE THRESHOLDS ─────────────────────────────────────
+# Phase 25: Prevent training on garbage data.  Old: 20 samples min, retrain
+# every 10.  Result: XGBoost trained on 10-20 cold-start trades with identical
+# features (all zeros) → random predictions → contradicts heuristic → churn.
+MIN_TRAINING_SAMPLES = 50      # Minimum resolved trades before first training (was 20)
+RETRAIN_INTERVAL = 25          # Retrain every 25 new resolved trades (was 10)
+MIN_CLASS_BALANCE = 0.15       # Minimum 15% minority class — skip if all same label
+
+# ── RESOLUTION QUALITY ───────────────────────────────────────────────
+# Phase 25: Fix label noise.  Method 3 at 0.95/0.05 is only 95% certain;
+# Method 4 at 6h/0.75 is only 75% certain → 25% wrong labels pollute training.
+EXTREME_PRICE_THRESHOLD_YES = 0.98  # resolve YES when price ≥ 0.98 (was 0.95)
+EXTREME_PRICE_THRESHOLD_NO = 0.02   # resolve NO when price ≤ 0.02 (was 0.05)
+TIMEOUT_HOURS = 24                   # timeout after 24h (was 6h)
+TIMEOUT_PRICE_YES = 0.90             # timeout resolve YES when ≥ 0.90 (was 0.75)
+TIMEOUT_PRICE_NO = 0.10              # timeout resolve NO when ≤ 0.10 (was 0.25)
+
 # ── MAKER MODE ───────────────────────────────────────────────────────
 # When True, Frankenstein places limit orders at the bid (maker) instead
 # of crossing the spread (taker).  With 0¢ maker fees:
@@ -29,10 +56,10 @@ MAKER_FEE_CENTS = 0        # maker orders are FREE on Kalshi
 # Strategy: hold to settlement — no early exit (avoids sell-side fees).
 USE_MAKER_ORDERS = True
 
-# Phase 6: Hard daily trade cap — prevents churning
-# Raised for 24/7 maker mode: 0¢ fees means more trades = more profit.
-# 150 trades/day = ~6/hour sustained throughput for all Kalshi categories.
-MAX_DAILY_TRADES = 150
+# Phase 6+25: Hard daily trade cap.
+# Raised from 150→300 for learning mode: more trades = faster model training.
+# With 0¢ maker fees, the cost of exploration is near-zero.
+MAX_DAILY_TRADES = 300
 
 # Phase 7: Price floor — minimum contract cost to avoid fee traps
 # With maker mode the fee-trap concern is gone, but extreme-probability
@@ -51,26 +78,35 @@ CIRCUIT_BREAKER_COOLDOWN_HOURS = 2     # stay paused for 2 hours (was 4)
 # Maximum edge the model is allowed to claim.  Edges above these caps
 # are almost certainly model errors — markets are too efficient.
 # MAKER MODE: caps unchanged (these limit MODEL claims, not fee math).
+# Phase 25: Raised edge caps — intelligence data (Polymarket, news, crypto,
+# social, weather) provides genuine signals that justify higher model claims.
+# During learning mode, these caps are further raised by 50% to let more
+# trades through for data collection.
 CATEGORY_EDGE_CAPS: dict[str, float] = {
-    "sports":        0.08,   # Very efficient — Vegas lines
-    "finance":       0.08,   # Very efficient — tracked indices
-    "economics":     0.10,   # Somewhat efficient — consensus estimates
-    "crypto":        0.12,   # Volatile but tracked
-    "politics":      0.10,   # Polling-based, moderate efficiency
-    "weather":       0.10,   # NWS forecasts are decent
-    "entertainment": 0.12,   # Less efficient, fewer analysts
-    "science":       0.12,   # Less efficient
-    "culture":       0.12,   # Pop culture, social trends
-    "social_media":  0.14,   # Twitter/X followers, influencer bets — least efficient
-    "current_events":0.10,   # News-driven, moderate efficiency
-    "tech":          0.10,   # Tech companies, product launches
-    "legal":         0.10,   # Court cases, rulings
-    "general":       0.10,   # Default
+    "sports":        0.12,   # Raised from 0.08 — intelligence data helps
+    "finance":       0.10,   # Raised from 0.08
+    "economics":     0.12,   # Raised from 0.10
+    "crypto":        0.15,   # Raised from 0.12 — volatile, more edge available
+    "politics":      0.12,   # Raised from 0.10
+    "weather":       0.12,   # Raised from 0.10
+    "entertainment": 0.14,   # Raised from 0.12
+    "science":       0.14,   # Raised from 0.12
+    "culture":       0.14,   # Raised from 0.12
+    "social_media":  0.16,   # Raised from 0.14 — least efficient market
+    "current_events":0.12,   # Raised from 0.10
+    "tech":          0.12,   # Raised from 0.10
+    "legal":         0.12,   # Raised from 0.10
+    "general":       0.12,   # Raised from 0.10
 }
 
+# Phase 25: Learning mode edge cap multiplier — allow bigger edges during
+# data collection phase so more trades flow through for model training.
+LEARNING_MODE_EDGE_CAP_MULT = 1.5  # 50% higher caps during learning
+
 # ── Diversification limits ──────────────────────────────────────────
-MAX_PER_EVENT = 2       # max 2 trades on same event per scan (tightened from 3 — correlated bets are risky)
-MAX_PER_CATEGORY = 6    # max 6 trades in same category per scan (tightened from 8)
+# Phase 25: Relaxed to let more trades through for data collection.
+MAX_PER_EVENT = 3       # was 2 — allow 3 per event for correlated signal capture
+MAX_PER_CATEGORY = 10   # was 6 — allow 10 per category for faster learning
 
 # ── Order lifecycle ─────────────────────────────────────────────────
 ORDER_STALE_SECONDS = 240.0  # cancel unfilled orders after 4 min (was 5 — free capital faster)

@@ -29,16 +29,16 @@ class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
     # Signal filters — MAKER-AWARE: edge only needs to beat spread (no fees)
-    min_confidence: float = 0.45     # Slightly lower for maker (more volume)
-    min_edge: float = 0.05           # 5% min edge — just beat spread (no 14¢ fee overhead)
+    min_confidence: float = 0.40     # Phase 25: lowered from 0.45 for more trade flow
+    min_edge: float = 0.04           # Phase 25: lowered from 0.05 — 4% min edge for maker mode
 
     # Position sizing — small and cautious
     kelly_fraction: float = 0.15     # Conservative Kelly
     max_position_size: int = 5       # Slightly larger ok with 0 fees
-    max_simultaneous_positions: int = 50   # Raised from 30 — position wall was blocking all new trades
+    max_simultaneous_positions: int = 80   # Phase 25: raised from 50 — more concurrent learning trades
 
     # Timing
-    scan_interval: float = 30.0  # scan every 30s (was 45)
+    scan_interval: float = 20.0  # Phase 25: scan every 20s (was 30) — faster data collection
 
     # Risk overrides
     max_daily_loss: float = 150.0    # Higher cap — maker losses are just cost, no fee multiplier

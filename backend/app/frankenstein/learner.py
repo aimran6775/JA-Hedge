@@ -65,10 +65,10 @@ class OnlineLearner:
         model: XGBoostPredictor,
         memory: TradeMemory,
         *,
-        min_samples: int = 20,                # Phase 14: train with less data (was 30)
-        retrain_threshold: int = 10,           # Phase 14: retrain every 10 trades (was 15)
+        min_samples: int = 50,                 # Phase 25: raised from 20 — need quality data
+        retrain_threshold: int = 25,           # Phase 25: raised from 10 — less frequent retrains
         challenger_must_beat_by: float = 0.002, # Phase 14: easier promotion (was 0.005)
-        min_auc_to_deploy: float = 0.535,      # Refuse models barely above coin flip — need real edge
+        min_auc_to_deploy: float = 0.540,      # Phase 25: raised from 0.535 — need real signal
         checkpoint_dir: str = "data/models",
         max_checkpoints: int = 10,
     ):
@@ -151,6 +151,23 @@ class OnlineLearner:
             X, y = data
             sample_weights = None
 
+        # Phase 25: Class balance check — skip if all same label.
+        # Training on 100% YES or 100% NO teaches the model nothing.
+        # Need at least 15% minority class for meaningful gradients.
+        from app.frankenstein.constants import MIN_CLASS_BALANCE
+        if len(y) > 0:
+            pos_rate = float(y.mean())
+            minority_rate = min(pos_rate, 1.0 - pos_rate)
+            if minority_rate < MIN_CLASS_BALANCE:
+                log.info(
+                    "retrain_skipped_class_imbalance",
+                    pos_rate=f"{pos_rate:.3f}",
+                    minority_rate=f"{minority_rate:.3f}",
+                    min_required=f"{MIN_CLASS_BALANCE:.3f}",
+                    samples=len(y),
+                )
+                return None
+
         # Phase 5: Blend pretrained historical data with live data
         # After enough real trades, mix in historical data to prevent
         # catastrophic forgetting of base patterns.
@@ -200,11 +217,13 @@ class OnlineLearner:
             log.error("retrain_failed", error=str(e))
             return None
 
-        # Phase 13: Feature importance pruning
+        # Phase 13+25: Feature importance pruning
         # After initial training, identify features with <1% importance
         # and retrain without them. This reduces noise and overfitting.
+        # Phase 25: Only prune after 200+ samples (was 100) — need enough
+        # data to reliably measure importance.
         importance = self._extract_importance(challenger)
-        if importance and len(X) >= 100:
+        if importance and len(X) >= 200:
             # Find features above 1% importance threshold
             keep_indices = []
             feature_names = MarketFeatures.feature_names()

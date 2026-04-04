@@ -364,27 +364,47 @@ class PerformanceTracker:
         return False
 
     def should_pause_trading(self) -> tuple[bool, str]:
-        """Check trading health — NEVER pauses.
+        """Check trading health — Phase 25: now actually pauses on catastrophic conditions.
 
-        Frankenstein trades 24/7.  We log warnings for visibility
-        but never return True.  The system learns from every trade,
-        including losses — pausing destroys that feedback loop.
+        Previously NEVER paused. Now pauses on:
+        1. Extreme daily loss (>$50 in paper trading)
+        2. Extreme consecutive losses (>20 in a row)
+        3. Extreme max drawdown (>$200)
+
+        These are CATASTROPHIC thresholds — normal bad streaks don't trigger.
+        The system still learns from losses, but catastrophic bleeding
+        indicates a systematic problem that needs human review.
         """
         if not self._snapshots:
             return False, "ok"
 
         latest = self._snapshots[-1]
 
-        # Log warnings for monitoring — but NEVER pause
-        if latest.consecutive_losses >= 50:
+        # Catastrophic consecutive losses — 20+ in a row
+        if latest.consecutive_losses >= 20:
+            log.warning("CATASTROPHIC_HEALTH", kind="consecutive_losses",
+                        value=latest.consecutive_losses)
+            return True, f"catastrophic_consecutive_losses ({latest.consecutive_losses})"
+
+        # Catastrophic daily loss — >$50 lost today
+        if latest.daily_pnl < -50:
+            log.warning("CATASTROPHIC_HEALTH", kind="daily_loss",
+                        value=f"${abs(latest.daily_pnl):.0f}")
+            return True, f"catastrophic_daily_loss (${abs(latest.daily_pnl):.0f})"
+
+        # Catastrophic drawdown — >$200
+        if latest.max_drawdown < -200:
+            log.warning("CATASTROPHIC_HEALTH", kind="max_drawdown",
+                        value=f"${abs(latest.max_drawdown):.0f}")
+            return True, f"catastrophic_drawdown (${abs(latest.max_drawdown):.0f})"
+
+        # Log warnings for monitoring — but don't pause for moderate issues
+        if latest.consecutive_losses >= 10:
             log.warning("health_warning", kind="consecutive_losses",
                         value=latest.consecutive_losses)
-        if latest.daily_pnl < -150:
+        if latest.daily_pnl < -25:
             log.warning("health_warning", kind="daily_loss",
                         value=f"${abs(latest.daily_pnl):.0f}")
-        if latest.max_drawdown < -1500:
-            log.warning("health_warning", kind="max_drawdown",
-                        value=f"${abs(latest.max_drawdown):.0f}")
 
         return False, "ok"
 
