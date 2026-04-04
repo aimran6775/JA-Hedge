@@ -112,8 +112,8 @@ class MarketScanner:
         # Cooldowns
         self._recently_traded: dict[str, float] = {}
         self._recently_traded_events: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 60.0   # Phase 25: 1 min ticker cooldown (was 2 min)
-        self._event_cooldown_seconds: float = 30.0    # Phase 25: 30s event cooldown (was 60s)
+        self._trade_cooldown_seconds: float = 30.0    # Phase 27: 30s ticker cooldown (was 60)
+        self._event_cooldown_seconds: float = 15.0    # Phase 27: 15s event cooldown (was 30)
 
     # ── Learning-Mode Detection ───────────────────────────────────────
 
@@ -266,7 +266,7 @@ class MarketScanner:
         _position_room = max(0, params.max_simultaneous_positions - _open)
         max_trades_per_scan = max(
             1,  # ALWAYS allow at least 1 trade per scan
-            min(_position_room, 7, _daily_remaining),
+            min(_position_room, 12, _daily_remaining),  # Phase 27: up to 12 per scan (was 7)
         )
 
         # Execute top trades
@@ -309,9 +309,8 @@ class MarketScanner:
         candidates = []
 
         # Blacklist market prefixes with proven terrible win rates.
-        # Data-driven from 1,192 trades: KXEPLGOAL 2% WR, KXEPLFIRSTGOAL 5%,
-        # KXMVECROSSCATEGORY 5%, KXNCAAMB1HSPREAD 13%, KXQUICKSETTLE 34% (huge losses).
-        # 15-min crypto (KXBTC15M, KXETH15M, etc.) are unpredictable coin flips.
+        # Phase 27: Removed KXBTC15M/KXETH15M from junk — bootstrap data trained on these.
+        # Keep only truly junk prefixes.
         JUNK_PREFIXES = (
             "KXMVE", "KXSPOTSTREAMGLOBAL", "KXPARLAY",
             # Proven losers (data from 1192 trades):
@@ -319,9 +318,6 @@ class MarketScanner:
             "KXMVECROSSCATEGORY",                # Cross-category esports: 5% WR
             "KXNCAAMB1HSPREAD",                  # NCAA 1H spread: 13% WR
             "KXQUICKSETTLE",                     # Quick-settle: 34% WR, -$52 PnL
-            # 15-min crypto: pure noise, no model can predict
-            "KXBTC15M", "KXETH15M", "KXSOL15M", "KXDOGE15M", "KXXRP15M",
-            "KXADA15M", "KXAVAX15M", "KXLINK15M", "KXDOT15M", "KXMATIC15M",
         )
 
         max_spread = params.max_spread_cents
@@ -678,9 +674,9 @@ class MarketScanner:
         """Evaluate each signal through all quality gates."""
         _is_learning = self._is_in_learning_mode()
         # Phase 25b: In learning mode, bypass the grade gate entirely.
-        # We need trades to flow for training data.  Maker mode = 0¢ fees,
-        # fixed 1-2 contract sizing, hold-to-settlement — risk is managed.
-        min_grade = "F" if _is_learning else "B+"
+        # Phase 27: In graduated mode, lower from B+ to B for more trade flow.
+        # Model has 0.77 AUC + maker 0¢ fees = can profit on marginal signals.
+        min_grade = "F" if _is_learning else "B"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
             portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, "portfolio_heat") else 0.0,
@@ -812,14 +808,15 @@ class MarketScanner:
                 effective_min_edge = max(_base_edge, cost_to_beat * 1.0)
             else:
                 effective_min_edge = params.min_edge
-                # Phase 5+8: Category-specific min edges for ALL Kalshi categories
+                # Phase 27: Lower category min edges for aggressive trading.
+                # Model has 0.77 AUC + maker 0¢ fees = can profit on smaller edges.
                 _CATEGORY_MIN_EDGES_MAKER = {
-                    "sports": 0.06, "crypto": 0.08, "finance": 0.07,
-                    "weather": 0.06, "politics": 0.07, "economics": 0.07,
-                    "entertainment": 0.06, "science": 0.06,
-                    "culture": 0.06, "social_media": 0.05,
-                    "current_events": 0.06, "tech": 0.07, "legal": 0.06,
-                    "general": 0.06,
+                    "sports": 0.04, "crypto": 0.05, "finance": 0.04,
+                    "weather": 0.04, "politics": 0.04, "economics": 0.04,
+                    "entertainment": 0.04, "science": 0.04,
+                    "culture": 0.04, "social_media": 0.03,
+                    "current_events": 0.04, "tech": 0.04, "legal": 0.04,
+                    "general": 0.04,
                 }
                 _CATEGORY_MIN_EDGES_TAKER = {
                     "sports": 0.06, "crypto": 0.10, "finance": 0.08,
@@ -843,7 +840,7 @@ class MarketScanner:
             # Phase 25b: Heuristic produces edges of 0.005-0.02 — we need
             # these to flow through for training data.  Maker 0¢ fees means
             # any positive edge is worth taking at 1-2 contracts.
-            _ABSOLUTE_MIN_EDGE = 0.003 if _is_learning else 0.04
+            _ABSOLUTE_MIN_EDGE = 0.003 if _is_learning else 0.025
             if abs(prediction.edge) < _ABSOLUTE_MIN_EDGE:
                 continue
 
@@ -891,28 +888,27 @@ class MarketScanner:
                 else:
                     continue
 
-            # Confidence-based scaling
+            # Confidence-based scaling — Phase 27: more generous for aggressive trading
             confidence_scale = {
-                "A+": 1.0, "A": 0.85, "B+": 0.65, "B": 0.45, "C+": 0.25, "C": 0.15,
-            }.get(conf_breakdown.grade, 0.10)
+                "A+": 1.0, "A": 0.90, "B+": 0.75, "B": 0.55, "C+": 0.35, "C": 0.20,
+            }.get(conf_breakdown.grade, 0.15)
 
-            # Phase 12: Category-specific Kelly multiplier
-            # More aggressive for proven categories, conservative for new/risky ones
+            # Phase 27: More aggressive category Kelly — every category can profit
             _cat_kelly_mult = {
-                "crypto": 1.1,       # Historically profitable
-                "politics": 0.9,
-                "economics": 0.9,
-                "weather": 0.85,
-                "sports": 0.7,       # Historically losing — smaller bets
-                "entertainment": 0.8,
-                "culture": 0.75,     # New — conservative
-                "social_media": 0.75,
-                "current_events": 0.8,
-                "tech": 0.8,
-                "legal": 0.75,
-                "science": 0.85,
-                "finance": 0.9,
-            }.get(_pre_cat, 0.8)
+                "crypto": 1.2,       # High volume, model trained on this
+                "politics": 1.0,
+                "economics": 1.0,
+                "weather": 0.9,
+                "sports": 0.9,       # Still slightly cautious
+                "entertainment": 0.9,
+                "culture": 0.85,
+                "social_media": 0.85,
+                "current_events": 0.9,
+                "tech": 0.9,
+                "legal": 0.85,
+                "science": 0.9,
+                "finance": 1.1,
+            }.get(_pre_cat, 0.9)
             kelly *= confidence_scale * _cat_kelly_mult
             kelly = self._adv_risk.adjusted_kelly(kelly)
             kelly *= liquidity
@@ -920,13 +916,15 @@ class MarketScanner:
             raw_count = int(kelly * params.max_position_size)
             price_cents = self._order_mgr.compute_price(prediction, features, market=market)
 
-            # Grade-based sizing
+            # Grade-based sizing — Phase 27: bigger positions for high grades
             if _is_learning:
                 min_count = 1
             elif conf_breakdown.grade in ("A+",):
-                min_count = 3
+                min_count = 5   # Phase 27: 5 contracts minimum for A+
             elif conf_breakdown.grade in ("A",):
-                min_count = 2
+                min_count = 3   # Phase 27: 3 contracts for A
+            elif conf_breakdown.grade in ("B+",):
+                min_count = 2   # Phase 27: 2 contracts for B+
             else:
                 min_count = 1
 
@@ -1102,17 +1100,17 @@ class MarketScanner:
             count = candidate["count"]
             price_cents = candidate["price_cents"]
 
-            # Phase 18: Liquidity-aware count scaling
-            # Low volume markets → cap contracts to avoid being the only order
+            # Phase 27: Relaxed liquidity-aware count scaling
+            # Maker mode = we ARE the liquidity. Less aggressive capping.
             vol = features.volume
-            if vol < 50:
-                count = min(count, 2)   # Very thin → max 2 contracts
-            elif vol < 200:
-                count = min(count, 5)   # Thin → max 5 contracts
+            if vol < 20:
+                count = min(count, 5)    # Phase 27: very thin → max 5 (was 2)
+            elif vol < 100:
+                count = min(count, 10)   # Phase 27: thin → max 10 (was 5)
             # High volume → no cap beyond position limits
 
             # Pre-exec spread recheck
-            risk_spread_limit = 40
+            risk_spread_limit = 55  # Phase 27: synced with strategy max_spread_cents
             if self._execution._risk_manager:
                 risk_spread_limit = self._execution._risk_manager.limits.max_spread_cents
             fresh = market_cache.get(market.ticker)

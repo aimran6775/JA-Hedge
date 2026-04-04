@@ -330,14 +330,17 @@ class ExchangeSchedule:
 
     @classmethod
     def liquidity_factor(cls) -> float:
+        # Phase 27: Less aggressive liquidity scaling — trade aggressively 24/7.
+        # Kalshi markets are binary (0 or 1 settlement) so the actual liquidity
+        # at time of entry matters less for hold-to-settlement strategy.
         session = cls.current_session()
         return {
             "peak": 1.0,
-            "evening": 0.7,
-            "pre_market": 0.5,
-            "overnight": 0.4,
-            "weekend": 0.5,
-        }.get(session, 0.5)
+            "evening": 0.85,     # Phase 27: was 0.7
+            "pre_market": 0.75,  # Phase 27: was 0.5
+            "overnight": 0.65,   # Phase 27: was 0.4
+            "weekend": 0.70,     # Phase 27: was 0.5
+        }.get(session, 0.7)
 
     @classmethod
     def should_trade(cls) -> tuple[bool, str]:

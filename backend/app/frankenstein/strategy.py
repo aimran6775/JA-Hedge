@@ -29,29 +29,29 @@ class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
     # Signal filters — MAKER-AWARE: edge only needs to beat spread (no fees)
-    min_confidence: float = 0.40     # Phase 25: lowered from 0.45 for more trade flow
-    min_edge: float = 0.04           # Phase 25: lowered from 0.05 — 4% min edge for maker mode
+    min_confidence: float = 0.35     # Phase 27: lowered from 0.40 — take more trades
+    min_edge: float = 0.03           # Phase 27: lowered from 0.04 — 3% min edge for maker mode
 
-    # Position sizing — small and cautious
-    kelly_fraction: float = 0.15     # Conservative Kelly
-    max_position_size: int = 5       # Slightly larger ok with 0 fees
-    max_simultaneous_positions: int = 80   # Phase 25: raised from 50 — more concurrent learning trades
+    # Position sizing — AGGRESSIVE: deploy capital to make money
+    kelly_fraction: float = 0.30     # Phase 27: doubled from 0.15 — bet bigger on edges
+    max_position_size: int = 20      # Phase 27: 4x from 5 — 20 contracts max per trade
+    max_simultaneous_positions: int = 150   # Phase 27: 150 concurrent positions
 
     # Timing
-    scan_interval: float = 20.0  # Phase 25: scan every 20s (was 30) — faster data collection
+    scan_interval: float = 15.0  # Phase 27: scan every 15s — catch more opportunities
 
     # Risk overrides
-    max_daily_loss: float = 150.0    # Higher cap — maker losses are just cost, no fee multiplier
+    max_daily_loss: float = 500.0    # Phase 27: $500 daily loss limit (was $150)
     stop_loss_pct: float = 0.15      # Not used in maker mode (hold to settlement)
     take_profit_pct: float = 0.20    # Not used in maker mode (hold to settlement)
 
     # Model thresholds
-    max_spread_cents: int = 40   # Widened — maker mode doesn't cross the spread
+    max_spread_cents: int = 55   # Phase 27: wider spreads ok — maker creates liquidity
     min_volume: float = 0.0     # Maker creates liquidity — no volume requirement
-    min_hours_to_expiry: float = 1.0  # 1h minimum (maker orders need time to fill)
+    min_hours_to_expiry: float = 0.5  # Phase 27: 30 min minimum (was 1h) — trade closer to expiry
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)
-    aggression: float = 0.35         # Moderate (maker risk is lower)
+    aggression: float = 0.55         # Phase 27: high aggression (was 0.35)
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -92,15 +92,15 @@ class AdaptiveStrategy:
         self.params = base_params or StrategyParams()
         self.adaptation_interval = adaptation_interval
 
-        # Defaults (never go below/above these) — MAKER-AWARE bounds
-        self._MIN_CONFIDENCE = 0.35    # Lower floor — maker risk is lower
-        self._MAX_CONFIDENCE = 0.58    # Tighter cap — 0.65 chokes trade volume
-        self._MIN_EDGE = 0.03          # 3% min edge — maker has no fees
-        self._MAX_EDGE = 0.10          # Cap at 10% — 0.15 was strangling trades
-        self._MIN_KELLY = 0.06         # Floor at 6% — 5% starves sizing
-        self._MAX_KELLY = 0.20         # Cap kelly at 20%
-        self._MIN_AGGRESSION = 0.15    # Don't go too conservative
-        self._MAX_AGGRESSION = 0.55    # Allow more aggression for maker
+        # Defaults (never go below/above these) — AGGRESSIVE bounds (Phase 27)
+        self._MIN_CONFIDENCE = 0.30    # Phase 27: lower floor
+        self._MAX_CONFIDENCE = 0.55    # Tighter cap — 0.65 chokes trade volume
+        self._MIN_EDGE = 0.02          # Phase 27: 2% min edge — maker has no fees
+        self._MAX_EDGE = 0.12          # Cap at 12%
+        self._MIN_KELLY = 0.10         # Phase 27: floor at 10% — bet meaningful
+        self._MAX_KELLY = 0.40         # Phase 27: up to 40% Kelly
+        self._MIN_AGGRESSION = 0.25    # Phase 27: stay aggressive
+        self._MAX_AGGRESSION = 0.80    # Phase 27: allow high aggression
 
         # History
         self._adaptations: list[AdaptationEvent] = []
@@ -269,8 +269,8 @@ class AdaptiveStrategy:
 
         elif snap.current_drawdown > -5:
             # Restore defaults
-            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.02, 0.15), "recovery"))
-            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 2, 50), "recovery"))
+            events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.02, 0.30), "recovery"))
+            events.extend(self._adjust("max_simultaneous_positions", min(self.params.max_simultaneous_positions + 5, 150), "recovery"))
 
         return [e for e in events if e is not None]
 

@@ -32,29 +32,29 @@ log = get_logger("engine.advanced_risk")
 class PortfolioRiskLimits:
     """Enhanced risk limits for the whole portfolio."""
 
-    # Position limits — Phase 19: MUCH tighter
-    max_positions: int = 50                    # Synced with strategy.py max_simultaneous_positions (was 30)
-    max_per_event: int = 2                     # Phase 21: max 2 per event — correlated bets are risky
-    max_per_category: int = 10                 # Phase 19: was 20 — diversify
-    max_portfolio_cost_cents: int = 1500_00    # Phase 19: $1500 max deployed (was $3000) — 15% of $10k
+    # Position limits — Phase 27: AGGRESSIVE capital deployment
+    max_positions: int = 150                   # Phase 27: deploy across many markets
+    max_per_event: int = 5                     # Phase 27: 5 per event
+    max_per_category: int = 25                 # Phase 27: 25 per category
+    max_portfolio_cost_cents: int = 5000_00    # Phase 27: $5,000 max deployed (50% of $10k)
 
-    # Loss limits — Phase 19: tighter triggers
-    max_daily_loss_cents: int = 150_00         # Phase 19: $150 daily loss (was $300)
-    max_weekly_loss_cents: int = 400_00        # Phase 19: $400 weekly loss (was $800)
-    max_drawdown_pct: float = 0.15             # Phase 19: 15% max drawdown (was 30%)
+    # Loss limits — Phase 27: accept higher drawdowns for higher returns
+    max_daily_loss_cents: int = 500_00         # Phase 27: $500 daily loss
+    max_weekly_loss_cents: int = 1000_00       # Phase 27: $1,000 weekly loss
+    max_drawdown_pct: float = 0.25             # Phase 27: 25% max drawdown
 
     # Dynamic sizing
     scale_down_on_loss: bool = True
-    scale_factor_per_loss_pct: float = 3.0     # Phase 19: 3x reduction per % drawdown (was 2x)
+    scale_factor_per_loss_pct: float = 2.0     # Phase 27: 2x reduction per % (gentler)
 
-    # Concentration — Phase 19: tighter
-    max_single_position_pct: float = 0.10      # Phase 19: max 10% in one position (was 35%)
-    max_correlated_exposure_pct: float = 0.30  # Phase 18: max 30% in correlated positions
+    # Concentration — Phase 27: allow larger single positions
+    max_single_position_pct: float = 0.15      # Phase 27: 15% in one position
+    max_correlated_exposure_pct: float = 0.40  # Phase 27: 40% in correlated
 
-    # Phase 18: Correlation thresholds
-    correlation_high_threshold: float = 0.70   # Positions sharing event/category above this → correlated
-    max_same_event_cost_pct: float = 0.20      # Max 20% of balance in same event
-    max_same_category_cost_pct: float = 0.35   # Max 35% of balance in same category
+    # Phase 18+27: Correlation thresholds
+    correlation_high_threshold: float = 0.70
+    max_same_event_cost_pct: float = 0.30      # Phase 27: 30% of balance in same event
+    max_same_category_cost_pct: float = 0.50   # Phase 27: 50% of balance in same category
 
 
 @dataclass

@@ -139,10 +139,10 @@ class Settings(BaseSettings):
     log_format: str = "json"  # "json" or "console"
 
     # ── Risk Defaults ─────────────────────────────────────
-    risk_max_daily_loss: float = 150.0
-    risk_max_position_size: int = 10
-    risk_max_portfolio_exposure: float = 1500.0
-    risk_max_spread_cents: int = 40
+    risk_max_daily_loss: float = 500.0         # Phase 27: $500 daily loss limit
+    risk_max_position_size: int = 20           # Phase 27: 20 contracts per position
+    risk_max_portfolio_exposure: float = 5000.0  # Phase 27: $5K deployed at once
+    risk_max_spread_cents: int = 55            # Phase 27: wider spreads for maker
     kill_switch_enabled: bool = True
     # ── Paper Trading ─────────────────────────────────────────────
     paper_trading: bool = True  # Use simulated balance (fake money)

@@ -56,16 +56,16 @@ TIMEOUT_PRICE_NO = 0.10              # timeout resolve NO when ≤ 0.10 (was 0.2
 # Strategy: hold to settlement — no early exit (avoids sell-side fees).
 USE_MAKER_ORDERS = True
 
-# Phase 6+25: Hard daily trade cap.
-# Raised from 150→300 for learning mode: more trades = faster model training.
+# Phase 6+25+27: Hard daily trade cap.
+# Phase 27: Raised from 300→500 for aggressive capital deployment.
 # With 0¢ maker fees, the cost of exploration is near-zero.
-MAX_DAILY_TRADES = 300
+MAX_DAILY_TRADES = 500
 
-# Phase 7: Price floor — minimum contract cost to avoid fee traps
-# With maker mode the fee-trap concern is gone, but extreme-probability
-# contracts still have poor risk/reward, so keep a floor.
-MIN_PRICE_FLOOR_CENTS = 20             # 20¢ minimum — maker mode has no fees
-MIN_PRICE_FLOOR_LEARNING_CENTS = 15    # 15¢ minimum (learning mode)
+# Phase 7+27: Price floor — minimum contract cost to avoid fee traps
+# Phase 27: Lowered to 10¢ — maker has 0 fees, cheap contracts offer
+# asymmetric payoff (risk 10¢ to win 90¢ = 9:1 reward/risk).
+MIN_PRICE_FLOOR_CENTS = 10             # 10¢ minimum — maker mode has no fees
+MIN_PRICE_FLOOR_LEARNING_CENTS = 8     # 8¢ minimum (learning mode)
 
 # Phase 15: Circuit breaker — pause trading if accuracy drops below threshold
 # Phase 22: Lowered from 30→15 trades so breaker trips faster on bad streaks.
@@ -83,33 +83,33 @@ CIRCUIT_BREAKER_COOLDOWN_HOURS = 2     # stay paused for 2 hours (was 4)
 # During learning mode, these caps are further raised by 50% to let more
 # trades through for data collection.
 CATEGORY_EDGE_CAPS: dict[str, float] = {
-    "sports":        0.12,   # Raised from 0.08 — intelligence data helps
-    "finance":       0.10,   # Raised from 0.08
-    "economics":     0.12,   # Raised from 0.10
-    "crypto":        0.15,   # Raised from 0.12 — volatile, more edge available
-    "politics":      0.12,   # Raised from 0.10
-    "weather":       0.12,   # Raised from 0.10
-    "entertainment": 0.14,   # Raised from 0.12
-    "science":       0.14,   # Raised from 0.12
-    "culture":       0.14,   # Raised from 0.12
-    "social_media":  0.16,   # Raised from 0.14 — least efficient market
-    "current_events":0.12,   # Raised from 0.10
-    "tech":          0.12,   # Raised from 0.10
-    "legal":         0.12,   # Raised from 0.10
-    "general":       0.12,   # Raised from 0.10
+    "sports":        0.15,   # Phase 27: +3% — aggressive
+    "finance":       0.14,   # Phase 27: +4%
+    "economics":     0.15,   # Phase 27: +3%
+    "crypto":        0.20,   # Phase 27: +5% — volatile = more edge
+    "politics":      0.15,   # Phase 27: +3%
+    "weather":       0.15,   # Phase 27: +3%
+    "entertainment": 0.18,   # Phase 27: +4%
+    "science":       0.18,   # Phase 27: +4%
+    "culture":       0.18,   # Phase 27: +4%
+    "social_media":  0.20,   # Phase 27: +4% — least efficient market
+    "current_events":0.15,   # Phase 27: +3%
+    "tech":          0.15,   # Phase 27: +3%
+    "legal":         0.15,   # Phase 27: +3%
+    "general":       0.15,   # Phase 27: +3%
 }
 
 # Phase 25: Learning mode edge cap multiplier — allow bigger edges during
 # data collection phase so more trades flow through for model training.
-LEARNING_MODE_EDGE_CAP_MULT = 1.5  # 50% higher caps during learning
+LEARNING_MODE_EDGE_CAP_MULT = 2.0  # 100% higher caps during learning
 
 # ── Diversification limits ──────────────────────────────────────────
-# Phase 25: Relaxed to let more trades through for data collection.
-MAX_PER_EVENT = 3       # was 2 — allow 3 per event for correlated signal capture
-MAX_PER_CATEGORY = 10   # was 6 — allow 10 per category for faster learning
+# Phase 27: Aggressive diversification — deploy capital broadly.
+MAX_PER_EVENT = 5       # Phase 27: 5 per event (correlated but high-volume events)
+MAX_PER_CATEGORY = 25   # Phase 27: 25 per category — spread across many markets
 
 # ── Order lifecycle ─────────────────────────────────────────────────
-ORDER_STALE_SECONDS = 240.0  # cancel unfilled orders after 4 min (was 5 — free capital faster)
+ORDER_STALE_SECONDS = 150.0  # Phase 27: cancel unfilled after 2.5 min — faster capital recycling
 
 # ── Phase 3: Smart Requoting ────────────────────────────────────────
 # If the model's predicted edge drops below this AFTER a book change,
@@ -130,16 +130,16 @@ REQUOTE_AGGRESSION_BY_SPREAD: dict[int, int] = {
 
 # Fill probability decay: orders aging without fill get cancelled earlier.
 # After this many seconds, an unfilled order's stale timeout is halved.
-FILL_PROB_DECAY_SECONDS = 120.0  # 2 min: start accelerating stale cleanup (before 4 min hard timeout)
-FILL_PROB_MIN_STALE_SECONDS = 90.0   # floor: never stale-cancel before 90s — free capital faster
+FILL_PROB_DECAY_SECONDS = 90.0   # Phase 27: 1.5 min — start accelerating cleanup
+FILL_PROB_MIN_STALE_SECONDS = 60.0   # Phase 27: 1 min floor — recycle capital faster
 
 # ── Phase 4: Capital Recycling ──────────────────────────────────────
 # Minimum available balance (after reservations) before we stop opening
 # new positions. Prevents over-commitment.
-CAPITAL_RECYCLE_MIN_BALANCE_CENTS = 300  # Phase 19: $3.00 minimum — deploy capital faster
+CAPITAL_RECYCLE_MIN_BALANCE_CENTS = 100  # Phase 27: $1.00 minimum — deploy almost everything
 
 # Maximum fraction of total balance that can be reserved in pending orders
-MAX_RESERVED_CAPITAL_PCT = 0.70  # never reserve more than 70% of balance
+MAX_RESERVED_CAPITAL_PCT = 0.85  # Phase 27: up to 85% of balance in orders
 
 # How often to reconcile fills with the exchange (catch missed WS fills)
 FILL_RECONCILE_INTERVAL_S = 120.0  # every 2 min

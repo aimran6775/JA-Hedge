@@ -117,19 +117,24 @@ class OrderManager:
         # Available maker room: spread - 1 (must stay strictly below ask)
         max_skew = max(spread_cents - 1, 0)
 
-        # Confidence tiers → aggressiveness (Phase 4: +1¢ across all tiers)
+        # Phase 27: AGGRESSIVE pricing — get close to ask for better fills.
+        # With 0¢ maker fees, being 2-3¢ more aggressive is essentially free.
+        # The fill rate improvement from better queue position far outweighs
+        # the tiny price concession.
         if confidence >= 0.80:
-            raw = 4  # Very high → bid+4¢ (was 3)
+            raw = 6  # Phase 27: bid+6¢ (was 4) — near-ask for best signals
         elif confidence >= 0.70:
-            raw = 3  # High → bid+3¢ (was 2)
+            raw = 5  # Phase 27: bid+5¢ (was 3)
         elif confidence >= 0.55:
-            raw = 2  # Medium → bid+2¢ (was 1)
+            raw = 4  # Phase 27: bid+4¢ (was 2)
         else:
-            raw = 1  # Low → bid+1¢ (was 0 — sitting at bid = lowest fill rate)
+            raw = 2  # Phase 27: bid+2¢ (was 1) — never sit at raw bid
 
-        # Phase 6: Spread-adaptive bonus — wider spreads have more room
-        if spread_cents >= 8:
-            raw += 1  # Extra 1¢ aggression in wide-spread markets
+        # Phase 27: Spread-adaptive bonus — wider spreads get more aggressive
+        if spread_cents >= 10:
+            raw += 2  # Extra 2¢ in wide-spread markets
+        elif spread_cents >= 6:
+            raw += 1  # Extra 1¢ in medium-spread markets
 
         return min(raw, max_skew)
 
