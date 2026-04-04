@@ -231,7 +231,9 @@ async def debug_rejections() -> dict:
 
         # Determine what blocks this trade
         gates = []
-        effective_min_edge = 0.02 if is_learning else params.min_edge
+        # Phase 25b: In learning mode with maker, edge floor is 0.005 (not 0.02)
+        from app.frankenstein.constants import USE_MAKER_ORDERS as _UMO
+        effective_min_edge = (0.005 if _UMO else 0.02) if is_learning else params.min_edge
         if edge < effective_min_edge:
             gates.append(f"edge {edge:.4f} < min {effective_min_edge}")
 

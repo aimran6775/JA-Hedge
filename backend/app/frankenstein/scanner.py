@@ -798,13 +798,17 @@ class MarketScanner:
                 fee_as_fraction = ROUND_TRIP_FEE_CENTS / 100.0
 
             if _is_learning:
-                cost_to_beat = fee_as_fraction + half_spread
-                # Phase 25b: MAKER LEARNING — very low threshold.
-                # Heuristic produces edges of 0.005-0.02.  Maker mode = 0¢ fees,
-                # hold-to-settlement, 1-2 contracts — so the cost-to-beat is
-                # essentially 0 for makers.  We just need edge > 0 to collect
-                # training data.  Taker still needs to beat the fee.
-                _base_edge = 0.005 if USE_MAKER_ORDERS else 0.07
+                # Phase 25b: MAKER LEARNING — hold-to-settlement strategy.
+                # Entry: maker order at our price (0¢ fee).
+                # Exit: settlement (0¢ fee).
+                # We never cross the spread, so half_spread is NOT a cost.
+                # Taker mode still needs to beat the actual fee + spread.
+                if USE_MAKER_ORDERS:
+                    cost_to_beat = 0.0  # Maker + hold-to-settlement = no spread cost
+                    _base_edge = 0.005  # Just above zero — any signal is worth testing
+                else:
+                    cost_to_beat = fee_as_fraction + half_spread
+                    _base_edge = 0.07
                 effective_min_edge = max(_base_edge, cost_to_beat * 1.0)
             else:
                 effective_min_edge = params.min_edge
