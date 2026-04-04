@@ -48,6 +48,7 @@ class PositionManager:
         adv_risk: AdvancedRiskManager,
         event_bus: EventBus | None = None,
         *,
+        memory: Any | None = None,
         sports_detector: Any | None = None,
         sports_risk: Any | None = None,
     ) -> None:
@@ -57,6 +58,7 @@ class PositionManager:
         self._order_mgr = order_manager
         self._adv_risk = adv_risk
         self._bus = event_bus
+        self._memory = memory
 
         # Sports (injected later by brain)
         self._sports_detector = sports_detector
@@ -64,6 +66,21 @@ class PositionManager:
 
         # Trailing stop peaks: {_peak_pnl_TICKER: float}
         self._trailing_peaks: dict[str, float] = {}
+
+    # ── Learning-Mode Detection ───────────────────────────────────────
+
+    def _is_in_learning_mode(self) -> bool:
+        """Check if we should be in learning mode based on actual training data."""
+        if self._memory is None:
+            return not self._model.is_trained  # fallback
+        from app.frankenstein.constants import MIN_TRAINING_SAMPLES
+        usable = 0
+        for t in self._memory._trades:
+            if t.market_result in ("yes", "no") and t.features:
+                usable += 1
+                if usable >= MIN_TRAINING_SAMPLES:
+                    return False
+        return True
 
     # ── Main Entry ────────────────────────────────────────────────────
 
@@ -118,7 +135,7 @@ class PositionManager:
 
                 # Learning mode: hold everything to settlement for clean labels.
                 # Only allow catastrophic stop-loss (-50%) as emergency exit.
-                _is_learning = not self._model.is_trained
+                _is_learning = self._is_in_learning_mode()
                 if _is_learning and USE_MAKER_ORDERS:
                     our_side_check = "yes" if (pos.position or 0) > 0 else "no"
                     features_check = self._features.compute(market)
@@ -235,8 +252,8 @@ class PositionManager:
         # Phase 25: Raised from 0.80→0.90 confidence threshold.
         # The old 0.80 threshold caused churn: untrained model would
         # reach 0.80 confidence on garbage predictions and trigger exit.
-        # Now requires 0.90 + model must actually be trained.
-        if self._model.is_trained:
+        # Now requires 0.90 + model must actually be trained on real data.
+        if not self._is_in_learning_mode():
             if our_side == "yes" and prediction.side == "no" and prediction.confidence > 0.90:
                 # Expected loss from holding = mid probability the YES side loses
                 expected_loss = 1.0 - mid  # probability we lose entire cost

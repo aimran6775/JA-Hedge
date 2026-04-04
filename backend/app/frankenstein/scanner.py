@@ -115,6 +115,30 @@ class MarketScanner:
         self._trade_cooldown_seconds: float = 60.0   # Phase 25: 1 min ticker cooldown (was 2 min)
         self._event_cooldown_seconds: float = 30.0    # Phase 25: 30s event cooldown (was 60s)
 
+    # ── Learning-Mode Detection ───────────────────────────────────────
+
+    def _is_in_learning_mode(self) -> bool:
+        """
+        Determine if we should be in learning mode.
+
+        Phase 25b FIX: Previously used `not model.is_trained`, which was
+        wrong because a stale checkpoint loaded from disk makes is_trained=True
+        even though we have ZERO usable training data.
+
+        Now checks the actual training data availability: how many resolved
+        trades have definitive market_result (yes/no)?  If we have fewer than
+        MIN_TRAINING_SAMPLES trades with real outcomes, we're still learning.
+        """
+        from app.frankenstein.constants import MIN_TRAINING_SAMPLES
+
+        usable = 0
+        for t in self.memory._trades:
+            if t.market_result in ("yes", "no") and t.features:
+                usable += 1
+                if usable >= MIN_TRAINING_SAMPLES:
+                    return False  # Have enough real data
+        return True  # Still learning
+
     # ── Main Scan ─────────────────────────────────────────────────────
 
     async def scan(self, state: Any) -> dict[str, Any]:
@@ -411,7 +435,7 @@ class MarketScanner:
             mid_cents = int(mid * 100)
             effective_cost_cents = min(mid_cents, 100 - mid_cents)
             fee_pct = round_trip_fee_pct(effective_cost_cents)
-            _fee_cap = 0.56 if not self._model.is_trained else 0.45
+            _fee_cap = 0.56 if self._is_in_learning_mode() else 0.45
             if fee_pct > _fee_cap:
                 continue
 
@@ -419,7 +443,7 @@ class MarketScanner:
                 from datetime import datetime, timezone as _tz
                 _delta = (m.expiration_time - datetime.now(_tz.utc)).total_seconds() / 3600
                 # Sports/props often expire within an hour — allow shorter
-                _min_hours = 0.5 if not self._model.is_trained else 0.75
+                _min_hours = 0.5 if self._is_in_learning_mode() else 0.75
                 if _delta < _min_hours:
                     continue
 
@@ -458,8 +482,8 @@ class MarketScanner:
                 # Model is untrained → learning mode → every trade is a learning trade.
                 # Maker mode = 0 fees so imprecise signals are cheap.
                 _thr = 0.98
-            elif not self._model.is_trained:
-                _thr = 0.85  # Still relaxed until model trains
+            elif self._is_in_learning_mode():
+                _thr = 0.85  # Still relaxed until enough real data
             elif len(candidates) < 50:
                 _thr = 0.65  # Relax when few candidates
             else:
@@ -652,7 +676,7 @@ class MarketScanner:
         liquidity: float,
     ) -> list[dict[str, Any]]:
         """Evaluate each signal through all quality gates."""
-        _is_learning = not self._model.is_trained
+        _is_learning = self._is_in_learning_mode()
         min_grade = "C+" if _is_learning else "B+"
         conf_scorer = ConfidenceScorer(
             min_grade=min_grade,
@@ -887,7 +911,7 @@ class MarketScanner:
             price_cents = self._order_mgr.compute_price(prediction, features, market=market)
 
             # Grade-based sizing
-            if not self._model.is_trained:
+            if _is_learning:
                 min_count = 1
             elif conf_breakdown.grade in ("A+",):
                 min_count = 3
@@ -1548,7 +1572,7 @@ class MarketScanner:
         # Feature completeness
         arr = features.to_array()
         zero_pct = (arr == 0.0).sum() / max(len(arr), 1)
-        _thr = 0.50 if not self._model.is_trained else 0.30
+        _thr = 0.50 if self._is_in_learning_mode() else 0.30
         if zero_pct > _thr:
             return None
 
@@ -1610,7 +1634,7 @@ class MarketScanner:
             return None
 
         # Price floor
-        _floor_cents = MIN_PRICE_FLOOR_LEARNING_CENTS if not self._model.is_trained else MIN_PRICE_FLOOR_CENTS
+        _floor_cents = MIN_PRICE_FLOOR_LEARNING_CENTS if self._is_in_learning_mode() else MIN_PRICE_FLOOR_CENTS
         _floor = _floor_cents / 100.0
         if features.midpoint < _floor or features.midpoint > 1.0 - _floor:
             return None

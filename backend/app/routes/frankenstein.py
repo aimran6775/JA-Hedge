@@ -161,6 +161,13 @@ async def debug_rejections() -> dict:
 
     # Pre-filter like the scan loop does
     from datetime import datetime, timezone as _tz
+    from app.frankenstein.constants import MIN_TRAINING_SAMPLES as _MTS
+    _usable_pre = sum(
+        1 for t in frank.memory._trades
+        if t.market_result in ("yes", "no") and t.features
+    )
+    _is_learning_pre = _usable_pre < _MTS
+
     pre_filtered = []
     for m in candidates:
         mid = float(m.midpoint or m.last_price or 0)
@@ -170,7 +177,7 @@ async def debug_rejections() -> dict:
         effective_cost = min(mid_cents, 100 - mid_cents)
         from app.frankenstein.brain import round_trip_fee_pct, ROUND_TRIP_FEE_CENTS
         fee_pct = round_trip_fee_pct(effective_cost)
-        _fee_cap = 0.56 if not frank._model.is_trained else 0.35
+        _fee_cap = 0.56 if _is_learning_pre else 0.35
         if fee_pct > _fee_cap:
             continue
         if getattr(m, 'market_type', 'binary') != 'binary':
@@ -194,7 +201,15 @@ async def debug_rejections() -> dict:
     predictions = frank._model.predict_batch(features_list)
 
     params = frank.strategy.params
-    is_learning = not frank._model.is_trained
+
+    # Phase 25b: Use actual training data count for learning mode,
+    # not model.is_trained (which can be True from a stale checkpoint).
+    from app.frankenstein.constants import MIN_TRAINING_SAMPLES
+    _usable = sum(
+        1 for t in frank.memory._trades
+        if t.market_result in ("yes", "no") and t.features
+    )
+    is_learning = _usable < MIN_TRAINING_SAMPLES
 
     # Confidence scorer
     conf_scorer = ConfidenceScorer(

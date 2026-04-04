@@ -234,6 +234,7 @@ class Frankenstein:
             model=self._model, feature_engine=feature_engine,
             strategy=self.strategy, order_manager=self._order_mgr,
             adv_risk=self._adv_risk, event_bus=self._bus,
+            memory=self.memory,
         )
 
         # ── Market Scanner ────────────────────────────────────────
@@ -405,6 +406,23 @@ class Frankenstein:
 
         # Checkpoint restoration
         self._try_load_latest_checkpoint()
+
+        # Phase 25b: Validate the loaded checkpoint has real training data.
+        # If the checkpoint was trained on garbage data (e.g. all-breakeven
+        # churn trades), its predictions are degenerate and worse than
+        # the heuristic fallback.  Reset to untrained in that case.
+        if self._model.is_trained and self.is_in_learning_mode:
+            # Model claims trained but we have < MIN_TRAINING_SAMPLES usable trades.
+            # The checkpoint is likely stale/degenerate.  Reset to heuristic.
+            log.warning(
+                "🧟⚠️ STALE CHECKPOINT DETECTED — loaded model but no usable "
+                "training data.  Resetting to heuristic mode.",
+                model_version=self._state.model_version,
+            )
+            self._model._model = None  # Reset to untrained → use heuristic
+            self._model._train_samples = 0
+            self._state.model_version = "heuristic"
+            self._state.pretrained_loaded = False
 
         # Pretrained model fallback
         if not self._model.is_trained:
@@ -897,12 +915,34 @@ class Frankenstein:
             result["retrain_result"] = {"success": False, "reason": f"Only {self.memory.total_resolved} resolved"}
         return result
 
+    # ── Learning-Mode Property ─────────────────────────────────────────
+
+    @property
+    def is_in_learning_mode(self) -> bool:
+        """
+        Phase 25b: Unified learning mode based on actual usable training data.
+
+        Previously brain.status() used real_trades < 100 while scanner
+        used model.is_trained — creating a dangerous inconsistency when
+        a stale checkpoint was loaded.  Now everything uses the count of
+        resolved trades with definitive market_result (yes/no).
+        """
+        from app.frankenstein.constants import MIN_TRAINING_SAMPLES
+        usable = 0
+        for t in self.memory._trades:
+            if t.market_result in ("yes", "no") and t.features:
+                usable += 1
+                if usable >= MIN_TRAINING_SAMPLES:
+                    return False
+        return True
+
     # ── Status ────────────────────────────────────────────────────────
 
     def status(self) -> dict[str, Any]:
         uptime = time.time() - self._state.birth_time if self._state.is_alive else 0
         snap = self.performance.compute_snapshot() if self.performance._snapshots else None
         real_trades = snap.real_trades if snap else 0
+        _learning = self.is_in_learning_mode
 
         return {
             "name": "Frankenstein",
@@ -912,8 +952,8 @@ class Frankenstein:
             "is_trading": self._state.is_trading and not self._state.is_paused,
             "is_paused": self._state.is_paused,
             "pause_reason": self._state.pause_reason,
-            "learning_mode": real_trades < 100,
-            "learning_progress": f"{min(real_trades, 100)}/100 real trades",
+            "learning_mode": _learning,
+            "learning_progress": f"{min(real_trades, 100)}/100 real trades" if _learning else "graduated",
             "real_trades": real_trades,
             "uptime_seconds": uptime,
             "uptime_human": self._format_uptime(uptime),
