@@ -101,7 +101,7 @@ class MarketDataPipeline:
         api: KalshiAPI,
         ws: KalshiWebSocket | None = None,
         *,
-        poll_interval: float = 15.0,
+        poll_interval: float = 45.0,  # 45s — paginating 70+ pages is slow
         snapshot_interval: float = 60.0,
         on_refresh_callback: Any | None = None,
     ):
@@ -155,9 +155,19 @@ class MarketDataPipeline:
     async def _full_refresh(self) -> None:
         """Fetch all active markets from REST API and update cache + DB."""
         try:
-            markets = await self._api.markets.get_all_markets(
+            all_markets = await self._api.markets.get_all_markets(
                 status=MarketStatus.ACTIVE
             )
+
+            # Filter out MVE parlay markets — they outnumber individual markets
+            # ~10:1 and drown out the cache.  All MVE tickers start with KXMVE.
+            # We keep individual markets (sports, crypto, politics, weather, etc.)
+            _MVE_PREFIXES = ("KXMVE", "KXMVECROSSCATEGORY", "KXMVESPORTS")
+            markets = [
+                m for m in all_markets
+                if not (m.ticker or "").upper().startswith(_MVE_PREFIXES)
+            ]
+
             market_cache.upsert_many(markets)
             await self._upsert_markets_to_db(markets)
 
@@ -168,7 +178,12 @@ class MarketDataPipeline:
                 except Exception as cb_err:
                     log.debug("refresh_callback_error", error=str(cb_err))
 
-            log.info("market_full_refresh", count=len(markets))
+            log.info(
+                "market_full_refresh",
+                total_from_api=len(all_markets),
+                mve_filtered=len(all_markets) - len(markets),
+                individual_cached=len(markets),
+            )
         except Exception as e:
             log.error("market_refresh_failed", error=str(e))
 

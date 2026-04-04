@@ -249,7 +249,7 @@ class KalshiClient:
         params: dict[str, Any] | None = None,
         data_key: str = "markets",
         limit: int = 200,
-        max_pages: int = 50,
+        max_pages: int = 150,
         authenticated: bool = True,
     ) -> list[dict[str, Any]]:
         """
