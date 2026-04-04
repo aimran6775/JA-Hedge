@@ -448,15 +448,18 @@ class MarketScanner:
             if m.ticker in self._features._histories
             and len(self._features._histories[m.ticker].prices) >= 5
         )
-        _cold_start = _seeded < 10  # Not enough seeded yet
+        _cold_start = _seeded < 20  # Not enough seeded yet (was 10)
 
         for m, feat in zip(candidates, features_list):
             arr = feat.to_array()
             zero_pct = (arr == 0.0).sum() / max(len(arr), 1)
             if _cold_start:
-                _thr = 0.85  # Very relaxed — let most markets through
+                # Ultra-relaxed: on cold start, we just need ANY non-zero data.
+                # Model is untrained → learning mode → every trade is a learning trade.
+                # Maker mode = 0 fees so imprecise signals are cheap.
+                _thr = 0.98
             elif not self._model.is_trained:
-                _thr = 0.75  # Still relaxed until model trains
+                _thr = 0.85  # Still relaxed until model trains
             elif len(candidates) < 50:
                 _thr = 0.65  # Relax when few candidates
             else:
@@ -764,9 +767,13 @@ class MarketScanner:
 
             if _is_learning:
                 cost_to_beat = fee_as_fraction + half_spread
-                # Phase 22: Raised from 0.03→0.06.  Data: 443 trades with edge≈0
-                # had 22% WR (coin flips), but 62 trades with edge≥0.05 had 95% WR.
-                effective_min_edge = max(0.06 if USE_MAKER_ORDERS else 0.07, cost_to_beat * 1.5)
+                # MAKER LEARNING: lower threshold to break cold-start trap.
+                # We need SOME trades to collect training data.  0¢ maker fees
+                # mean the only cost is position risk — manageable at 1-2 contracts.
+                # Phase 22 data (22% WR at edge≈0) was on TAKER trades w/ 14¢ fees.
+                # Maker mode is fundamentally different — the fee advantage IS our edge.
+                _base_edge = 0.03 if USE_MAKER_ORDERS else 0.07
+                effective_min_edge = max(_base_edge, cost_to_beat * 1.2)
             else:
                 effective_min_edge = params.min_edge
                 # Phase 5+8: Category-specific min edges for ALL Kalshi categories
@@ -795,9 +802,9 @@ class MarketScanner:
             if abs(prediction.edge) < effective_min_edge:
                 continue
 
-            # Phase 22: Absolute edge floor — NEVER trade below this.
-            # Data proof: 443/562 resolved trades at edge≈0 had 22% WR.
-            _ABSOLUTE_MIN_EDGE = 0.04
+            # Absolute edge floor — never trade below this.
+            # Learning mode gets a lower floor to break cold-start cycle.
+            _ABSOLUTE_MIN_EDGE = 0.02 if _is_learning else 0.04
             if abs(prediction.edge) < _ABSOLUTE_MIN_EDGE:
                 continue
 

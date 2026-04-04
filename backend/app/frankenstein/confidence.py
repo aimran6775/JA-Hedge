@@ -177,8 +177,13 @@ class ConfidenceScorer:
         # Even if the composite grade is high, a liquidity score < 20
         # means the book is too thin to trade reliably.  Markets with
         # volume < 10 or spread > 30% are untradeable regardless.
+        # MAKER MODE EXCEPTION: maker orders CREATE liquidity, so the
+        # veto threshold is much lower.  Wide spreads are a FEATURE
+        # for makers, not a bug — that's where the edge lives.
+        from app.frankenstein.constants import USE_MAKER_ORDERS
+        _veto_threshold = 5 if USE_MAKER_ORDERS else 20
         liquidity_factor = next((f for f in factors if f.name == "Liquidity"), None)
-        if liquidity_factor and liquidity_factor.score < 20:
+        if liquidity_factor and liquidity_factor.score < _veto_threshold:
             should_trade = False
             grade_label = f"{grade_label} — VETOED by liquidity ({liquidity_factor.score:.0f}/100)"
 
