@@ -321,18 +321,22 @@ class ConfidenceScorer:
             score = 10
             reasons.append(f"Negligible edge ({edge_abs:.1%})")
 
-        # Phase 17: HARD penalty if edge < half-spread — this is the #1 killer
-        spread_cost = features.spread_pct / 2.0  # half-spread is real entry cost
-        if spread_cost > 0 and edge_abs < spread_cost:
-            # Edge doesn't even cover the spread — guaranteed loser
-            penalty = 40
-            score -= penalty
-            reasons.append(f"SPREAD EATS EDGE: edge {edge_abs:.1%} < half-spread {spread_cost:.1%}")
-        elif spread_cost > 0 and edge_abs < spread_cost * 1.5:
-            # Edge barely covers spread — thin margin
-            penalty = 20
-            score -= penalty
-            reasons.append(f"Thin margin: edge {edge_abs:.1%} vs half-spread {spread_cost:.1%}")
+        # Phase 17+28: HARD penalty if edge < half-spread — this is the #1 killer
+        # Phase 28: In MAKER mode, spread is NOT a cost (we hold to settlement,
+        # never cross the spread). Only apply this penalty in taker mode.
+        from app.frankenstein.constants import USE_MAKER_ORDERS as _USE_MAKER
+        if not _USE_MAKER:
+            spread_cost = features.spread_pct / 2.0  # half-spread is real entry cost for taker
+            if spread_cost > 0 and edge_abs < spread_cost:
+                # Edge doesn't even cover the spread — guaranteed loser
+                penalty = 40
+                score -= penalty
+                reasons.append(f"SPREAD EATS EDGE: edge {edge_abs:.1%} < half-spread {spread_cost:.1%}")
+            elif spread_cost > 0 and edge_abs < spread_cost * 1.5:
+                # Edge barely covers spread — thin margin
+                penalty = 20
+                score -= penalty
+                reasons.append(f"Thin margin: edge {edge_abs:.1%} vs half-spread {spread_cost:.1%}")
 
         # Bonus: edge relative to price (edge on cheap contracts is more valuable)
         mid = features.midpoint
@@ -364,7 +368,7 @@ class ConfidenceScorer:
         MAKER MODE: Fees are 0¢ — this factor scores high for everything.
         TAKER MODE: 7¢/contract per side = 14¢ round-trip.
         """
-        from app.frankenstein.brain import USE_MAKER_ORDERS
+        from app.frankenstein.constants import USE_MAKER_ORDERS
         
         edge_abs = abs(prediction.edge)
         mid = features.midpoint
@@ -377,8 +381,8 @@ class ConfidenceScorer:
         # Round-trip fee — 0 for maker, 14¢ for taker
         ROUND_TRIP_FEE = 0.0 if USE_MAKER_ORDERS else 0.14
         
-        # Half-spread cost
-        half_spread = features.spread_pct / 2.0
+        # Half-spread cost — 0 for maker (hold to settlement, never cross spread)
+        half_spread = 0.0 if USE_MAKER_ORDERS else features.spread_pct / 2.0
         
         # Net edge after ALL costs
         net_edge = edge_abs - half_spread - ROUND_TRIP_FEE
@@ -535,25 +539,45 @@ class ConfidenceScorer:
         reasons = []
         score = 50  # neutral start
 
+        from app.frankenstein.constants import USE_MAKER_ORDERS as _MAKER_LIQ
+
         # Spread assessment
+        # Phase 28: In maker mode, wider spread = MORE room for our orders,
+        # not a penalty. We create liquidity; we don't consume it.
         spread = features.spread_pct
-        if spread <= 0.03:
-            score += 30
-            reasons.append("Tight spread (≤3%)")
-        elif spread <= 0.06:
-            score += 15
-            reasons.append("Decent spread (3-6%)")
-        elif spread <= 0.10:
-            score += 0
-            reasons.append("Average spread (6-10%)")
-        elif spread <= 0.15:
-            score -= 15
-            reasons.append("Wide spread (10-15%)")
+        if _MAKER_LIQ:
+            # Maker mode: wider spread = better (more room to capture edge)
+            if spread <= 0.03:
+                score += 10
+                reasons.append("Tight spread (≤3%) — less room for maker")
+            elif spread <= 0.10:
+                score += 20
+                reasons.append(f"Good maker spread ({spread:.0%})")
+            elif spread <= 0.30:
+                score += 15
+                reasons.append(f"Wide spread ({spread:.0%}) — good maker opportunity")
+            else:
+                score += 5
+                reasons.append(f"Very wide spread ({spread:.0%}) — maker can fill")
         else:
-            score -= 30
-            reasons.append(f"Very wide spread ({spread:.0%})")
+            if spread <= 0.03:
+                score += 30
+                reasons.append("Tight spread (≤3%)")
+            elif spread <= 0.06:
+                score += 15
+                reasons.append("Decent spread (3-6%)")
+            elif spread <= 0.10:
+                score += 0
+                reasons.append("Average spread (6-10%)")
+            elif spread <= 0.15:
+                score -= 15
+                reasons.append("Wide spread (10-15%)")
+            else:
+                score -= 30
+                reasons.append(f"Very wide spread ({spread:.0%})")
 
         # Volume assessment
+        # Phase 28: In maker mode, low volume is not as penalized (we create liquidity)
         vol = features.volume
         if vol >= 500:
             score += 20
@@ -564,6 +588,9 @@ class ConfidenceScorer:
         elif vol >= 20:
             score += 0
             reasons.append(f"Low volume ({vol:.0f})")
+        elif _MAKER_LIQ:
+            score -= 5  # Phase 28: light penalty in maker mode (was -15)
+            reasons.append(f"Very low volume ({vol:.0f}) — maker mode OK")
         else:
             score -= 15
             reasons.append(f"Very low volume ({vol:.0f})")
