@@ -1473,8 +1473,10 @@ class MarketScanner:
         if prediction.side == "yes":
             p = prediction.predicted_prob
             if USE_MAKER_ORDERS:
+                # Phase 28c: Use bid directly — we set our own price, no buffer needed.
+                # The +0.01 buffer was making Kelly reject signals with narrow edges.
                 if market and market.yes_bid is not None and float(market.yes_bid) > 0:
-                    c = min(float(market.yes_bid) + 0.01, 0.99)
+                    c = min(float(market.yes_bid), 0.99)
                 else:
                     c = max(mid - 0.01, 0.01)
             else:
@@ -1485,10 +1487,11 @@ class MarketScanner:
         else:
             p = 1.0 - prediction.predicted_prob
             if USE_MAKER_ORDERS:
+                # Phase 28c: Use bid directly — no +0.01 buffer.
                 if market and market.no_bid is not None and float(market.no_bid) > 0:
-                    c = min(float(market.no_bid) + 0.01, 0.99)
+                    c = min(float(market.no_bid), 0.99)
                 elif market and market.yes_ask is not None and float(market.yes_ask) > 0:
-                    c = max(1.0 - float(market.yes_ask) + 0.01, 0.01)
+                    c = max(1.0 - float(market.yes_ask), 0.01)
                 else:
                     c = max(1.0 - mid - 0.01, 0.01)
             else:

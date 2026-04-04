@@ -32,7 +32,7 @@ log = get_logger("engine.risk")
 class RiskLimits:
     """Active risk parameters — loaded from strategy config + global defaults."""
 
-    max_position_size: int = 20
+    max_position_size: int = 50
     max_daily_loss: Decimal = Decimal("150.0")
     max_portfolio_exposure: Decimal = Decimal("1500.0")
     max_single_order_cost: Decimal = Decimal("300.0")

@@ -34,7 +34,7 @@ class StrategyParams:
 
     # Position sizing — AGGRESSIVE: deploy capital to make money
     kelly_fraction: float = 0.30     # Phase 27: doubled from 0.15 — bet bigger on edges
-    max_position_size: int = 20      # Phase 27: 4x from 5 — 20 contracts max per trade
+    max_position_size: int = 50      # Phase 28c: 50 contracts max per trade (aggressive)
     max_simultaneous_positions: int = 150   # Phase 27: 150 concurrent positions
 
     # Timing

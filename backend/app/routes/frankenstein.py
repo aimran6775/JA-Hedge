@@ -149,7 +149,10 @@ async def purge_bootstrap_data() -> dict:
 @router.get("/debug/rejections")
 async def debug_rejections() -> dict:
     """Debug: show ALL candidates with full confidence analysis."""
-    frank = _get_frank()
+    try:
+        frank = _get_frank()
+    except Exception as e:
+        return {"error": str(e)}
     from app.pipeline import market_cache
     from app.frankenstein.confidence import ConfidenceScorer
 
@@ -298,7 +301,7 @@ async def debug_rejections() -> dict:
         "total_pre_filtered": len(pre_filtered),
         "model_trained": frank._model.is_trained,
         "is_learning_mode": is_learning,
-        "candidates": results,
+        "candidates": results[:20],  # Phase 28c: cap at 20 for response size
     }
 
 

@@ -140,7 +140,7 @@ class Settings(BaseSettings):
 
     # ── Risk Defaults ─────────────────────────────────────
     risk_max_daily_loss: float = 500.0         # Phase 27: $500 daily loss limit
-    risk_max_position_size: int = 20           # Phase 27: 20 contracts per position
+    risk_max_position_size: int = 50           # Phase 28c: 50 contracts per position (aggressive)
     risk_max_portfolio_exposure: float = 5000.0  # Phase 27: $5K deployed at once
     risk_max_spread_cents: int = 55            # Phase 27: wider spreads for maker
     kill_switch_enabled: bool = True
