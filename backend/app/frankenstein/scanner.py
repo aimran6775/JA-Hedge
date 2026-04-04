@@ -1170,13 +1170,23 @@ class MarketScanner:
             count = candidate["count"]
             price_cents = candidate["price_cents"]
 
-            # Phase 27: Relaxed liquidity-aware count scaling
-            # Maker mode = we ARE the liquidity. Less aggressive capping.
+            # Phase 28c: Maker mode = we ARE the liquidity — much higher volume caps.
+            # Taker mode still needs liquidity to fill.
             vol = features.volume
-            if vol < 20:
-                count = min(count, 5)    # Phase 27: very thin → max 5 (was 2)
-            elif vol < 100:
-                count = min(count, 10)   # Phase 27: thin → max 10 (was 5)
+            if USE_MAKER_ORDERS:
+                # Maker: we provide liquidity, so low volume is fine
+                if vol < 5:
+                    count = min(count, 15)   # Ultra-thin → still deploy
+                elif vol < 20:
+                    count = min(count, 25)   # Thin → solid position
+                elif vol < 100:
+                    count = min(count, 40)   # Normal → near max
+                # High volume → no cap
+            else:
+                if vol < 20:
+                    count = min(count, 5)    # Taker: very thin → max 5
+                elif vol < 100:
+                    count = min(count, 10)   # Taker: thin → max 10
             # High volume → no cap beyond position limits
 
             # Pre-exec spread recheck

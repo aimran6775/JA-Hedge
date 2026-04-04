@@ -105,8 +105,8 @@ LEARNING_MODE_EDGE_CAP_MULT = 2.0  # 100% higher caps during learning
 
 # ── Diversification limits ──────────────────────────────────────────
 # Phase 27: Aggressive diversification — deploy capital broadly.
-MAX_PER_EVENT = 5       # Phase 27: 5 per event (correlated but high-volume events)
-MAX_PER_CATEGORY = 25   # Phase 27: 25 per category — spread across many markets
+MAX_PER_EVENT = 10      # Phase 28c: 10 per event — many independent markets per event
+MAX_PER_CATEGORY = 50   # Phase 28c: 50 per category — deploy broadly
 
 # ── Order lifecycle ─────────────────────────────────────────────────
 ORDER_STALE_SECONDS = 150.0  # Phase 27: cancel unfilled after 2.5 min — faster capital recycling
