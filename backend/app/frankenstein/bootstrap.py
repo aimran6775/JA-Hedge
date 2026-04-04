@@ -388,13 +388,35 @@ async def _fetch_settled_markets(
         return result_str if result_str in ("yes", "no") else None
 
     # Strategy 1: Fetch from high-volume series for diverse data
+    # Phase 28: Added sports, politics, weather, economics, finance series
+    # for category-diverse training data (was crypto-only).
     series_targets = [
-        ("KXBTC15M", 200),   # Bitcoin 15-min: ~9800 settled, fast turnover
-        ("KXETH15M", 200),   # Ethereum 15-min
-        ("KXBTCD", 100),     # Bitcoin daily
-        ("KXETHD", 100),     # Ethereum daily
-        ("KXNAS100", 100),   # Nasdaq 100
-        ("KXSP500", 100),    # S&P 500
+        # Crypto (high volume, fast settlement)
+        ("KXBTC15M", 100),   # Bitcoin 15-min
+        ("KXETH15M", 100),   # Ethereum 15-min
+        ("KXBTCD", 60),      # Bitcoin daily
+        ("KXETHD", 60),      # Ethereum daily
+        # Finance (different dynamics)
+        ("KXNAS100", 80),    # Nasdaq 100
+        ("KXSP500", 80),     # S&P 500
+        # Sports (high edge, known outcomes)
+        ("KXNBAGAME", 80),   # NBA games
+        ("KXMLBGAME", 80),   # MLB games
+        ("KXNFLGAME", 60),   # NFL games
+        ("KXNHLGAME", 60),   # NHL games
+        # Politics (stable markets, clear outcomes)
+        ("KXTRUMP", 40),     # Trump-related markets
+        ("KXGOV", 40),       # Government/political
+        ("KXSENATE", 30),    # Senate races
+        ("KXHOUSE", 30),     # House races
+        # Weather (frequent settlement)
+        ("KXTEMP", 50),      # Temperature markets
+        ("KXRAIN", 30),      # Rain/precipitation
+        # Economics (macro data releases)
+        ("KXCPI", 30),       # CPI inflation
+        ("KXJOBS", 30),      # Jobs/employment
+        ("KXGDP", 30),       # GDP growth
+        ("KXFED", 30),       # Fed rate decisions
     ]
     for series_ticker, target in series_targets:
         if len(results) >= max_markets:

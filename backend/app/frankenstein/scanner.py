@@ -188,6 +188,13 @@ class MarketScanner:
         # Cleanup stale orders
         await self._order_mgr.cleanup_stale_orders()
 
+        # Phase 28: Poll-based requoting — amend stale orders to current prices
+        # This replaces the WebSocket-based BOOK_CHANGED requoting when WS is down.
+        try:
+            await self._order_mgr.requote_pending_orders()
+        except Exception as e:
+            log.debug("poll_requote_error", error=str(e))
+
         # 2. Filter candidates
         candidates = self._filter_candidates(markets)
         if not candidates:
@@ -200,6 +207,17 @@ class MarketScanner:
             return {"exit": "no_candidates_after_filter",
                     "active_markets": len(markets), "session": session,
                     "sports_only": self._sports_only}
+
+        # Phase 28: Category diagnostic — log category distribution every 10 scans
+        if state.total_scans % 10 == 0:
+            _cat_counts: dict[str, int] = {}
+            for _cm in candidates[:200]:
+                _ccat = detect_category(_cm.title or "", _cm.category or "", ticker=_cm.ticker)
+                _cat_counts[_ccat] = _cat_counts.get(_ccat, 0) + 1
+            log.info("📊 CATEGORY_DISTRIBUTION",
+                     total_candidates=len(candidates),
+                     categories=dict(sorted(_cat_counts.items(), key=lambda x: -x[1])[:10]),
+                     scan=state.total_scans)
 
         # 3. Pre-filter
         candidates = self._pre_filter(candidates)
@@ -711,6 +729,23 @@ class MarketScanner:
             if market.ticker in tickers_this_scan:
                 continue
 
+            # Phase 28: Correlated position detection — block opposite-side
+            # trades on the same event. If we're long YES on event X, don't
+            # also go long NO on another market in the same event (self-hedging).
+            if _evt_tk:
+                from app.pipeline.portfolio_tracker import portfolio_state as _ps28
+                _existing_sides_for_event: set[str] = set()
+                for _ptk, _ppos in _ps28.positions.items():
+                    if (_ppos.position or 0) != 0:
+                        _p_evt = getattr(_ppos, "event_ticker", "") or ""
+                        # Check if same event by comparing event tickers
+                        if _p_evt == _evt_tk:
+                            _existing_sides_for_event.add("yes" if (_ppos.position or 0) > 0 else "no")
+                # If we already hold the opposite side in this event, skip
+                _opp_side = "no" if prediction.side == "yes" else "yes"
+                if _opp_side in _existing_sides_for_event:
+                    continue
+
             # Diversification
             evt = getattr(market, "event_ticker", "") or ""
             if evt and events_this_scan.get(evt, 0) >= MAX_PER_EVENT:
@@ -916,34 +951,68 @@ class MarketScanner:
             raw_count = int(kelly * params.max_position_size)
             price_cents = self._order_mgr.compute_price(prediction, features, market=market)
 
-            # Grade-based sizing — Phase 27: bigger positions for high grades
+            # Grade-based sizing — Phase 28: MUCH bigger positions for high grades.
+            # A+ and A are high-confidence → deploy real capital.
+            # $5 minimum bet floor: if count × price < 500¢, scale up count.
             if _is_learning:
                 min_count = 1
             elif conf_breakdown.grade in ("A+",):
-                min_count = 5   # Phase 27: 5 contracts minimum for A+
+                min_count = 15   # Phase 28: 15 contracts minimum for A+ (was 5)
             elif conf_breakdown.grade in ("A",):
-                min_count = 3   # Phase 27: 3 contracts for A
+                min_count = 8    # Phase 28: 8 contracts for A (was 3)
             elif conf_breakdown.grade in ("B+",):
-                min_count = 2   # Phase 27: 2 contracts for B+
+                min_count = 5    # Phase 28: 5 contracts for B+ (was 2)
+            elif conf_breakdown.grade in ("B",):
+                min_count = 3    # Phase 28: 3 contracts for B (was 1)
             else:
                 min_count = 1
 
             count = max(min_count, raw_count)
             count = min(count, params.max_position_size)
 
+            # Phase 28: $5 minimum bet floor — don't waste scan cycles on < $5 trades.
+            # If count × price < 500¢ ($5), scale up count to reach the floor.
+            if not _is_learning and price_cents > 0:
+                min_bet_cents = 500  # $5 minimum bet
+                if count * price_cents < min_bet_cents:
+                    count = max(count, (min_bet_cents + price_cents - 1) // price_cents)
+                    count = min(count, params.max_position_size)
+
             # Net EV check
             cost_frac = price_cents / 100.0
             fee_cost = 0.0 if USE_MAKER_ORDERS else ROUND_TRIP_FEE_CENTS / 100.0
-            # Phase 25b: In maker mode + hold-to-settlement, there is NO spread
-            # cost.  Entry = maker order (our price), exit = settlement (0¢ or $1).
-            # We never cross the spread.  In learning mode, be even more relaxed.
-            if USE_MAKER_ORDERS and _is_learning:
-                spread_cost = 0.0  # Hold to settlement — no spread crossing
-            elif USE_MAKER_ORDERS:
-                spread_cost = features.spread / 4.0  # Half credit for maker entry
+            # Phase 28: Graduated maker mode also gets 0 spread cost — we NEVER
+            # cross the spread in maker mode, so it's not a real cost.
+            if USE_MAKER_ORDERS:
+                spread_cost = 0.0  # Maker + hold-to-settlement = no spread crossing
             else:
                 spread_cost = features.spread / 2.0  # Full half-spread for taker
             net_edge = abs(prediction.edge) - spread_cost - fee_cost
+
+            # Phase 28: Hybrid taker for best trades — A/A+ with strong edge.
+            # Taker = 100% fill rate but 7¢ fee. Worth it for high-confidence signals.
+            from app.frankenstein.constants import (
+                HYBRID_TAKER_ENABLED,
+                HYBRID_TAKER_MIN_GRADE,
+                HYBRID_TAKER_MIN_EDGE,
+                TAKER_FEE_CENTS,
+            )
+            use_taker = False
+            if (
+                HYBRID_TAKER_ENABLED
+                and USE_MAKER_ORDERS
+                and not _is_learning
+                and conf_breakdown.grade in ("A+", "A")
+                and abs(prediction.edge) >= HYBRID_TAKER_MIN_EDGE
+            ):
+                # Verify edge still profitable after taker fees
+                taker_fee_frac = TAKER_FEE_CENTS / 100.0
+                taker_net_edge = abs(prediction.edge) - taker_fee_frac - features.spread / 2.0
+                if taker_net_edge > 0.01:  # At least 1% net edge after all costs
+                    use_taker = True
+                    # Recalculate net_edge with taker costs for EV
+                    net_edge = taker_net_edge
+
             if net_edge <= 0:
                 continue
             ev = net_edge * count * (1.0 - cost_frac)
@@ -966,6 +1035,7 @@ class MarketScanner:
                 "price_cents": price_cents,
                 "kelly": kelly,
                 "ev": ev,
+                "use_taker": use_taker,  # Phase 28: hybrid taker for A/A+ trades
                 "confidence_breakdown": breakdown_dict,
             })
             tickers_this_scan.add(market.ticker)
@@ -1180,11 +1250,18 @@ class MarketScanner:
                 spread=features.spread, volume=features.volume,
             )
 
-            # Execute (Phase 6: multi-level quoting)
-            result = await self._order_mgr.execute_multi_level_trade(
-                market=market, prediction=prediction,
-                features=features, count=count, price_cents=price_cents,
-            )
+            # Execute (Phase 6: multi-level quoting, Phase 28: hybrid taker)
+            if candidate.get("use_taker"):
+                # Phase 28: Taker execution for A/A+ trades — 100% fill rate
+                result = await self._order_mgr.execute_taker_trade(
+                    market=market, prediction=prediction,
+                    features=features, count=count, price_cents=price_cents,
+                )
+            else:
+                result = await self._order_mgr.execute_multi_level_trade(
+                    market=market, prediction=prediction,
+                    features=features, count=count, price_cents=price_cents,
+                )
 
             if result and result.success:
                 state.total_trades_executed += 1
@@ -1626,17 +1703,17 @@ class MarketScanner:
         # Fee-aware minimum edge (aligned with full scan thresholds)
         half_spread = features.spread / 2.0
         if USE_MAKER_ORDERS:
-            cost_to_beat = half_spread
-            # Use category-specific min edges (same as full scan)
+            # Phase 28: Synced with full scan _CATEGORY_MIN_EDGES_MAKER (was stale at 0.06)
+            cost_to_beat = 0.0  # Maker mode = no spread cost
             _REACTIVE_MIN_EDGES = {
-                "sports": 0.06, "crypto": 0.08, "finance": 0.07,
-                "weather": 0.06, "politics": 0.07, "economics": 0.07,
-                "entertainment": 0.06, "science": 0.06,
-                "culture": 0.06, "social_media": 0.05,
-                "current_events": 0.06, "tech": 0.07, "legal": 0.06,
-                "general": 0.06,
+                "sports": 0.04, "crypto": 0.05, "finance": 0.04,
+                "weather": 0.04, "politics": 0.04, "economics": 0.04,
+                "entertainment": 0.04, "science": 0.04,
+                "culture": 0.04, "social_media": 0.03,
+                "current_events": 0.04, "tech": 0.04, "legal": 0.04,
+                "general": 0.04,
             }
-            cat_min = _REACTIVE_MIN_EDGES.get(cat, 0.06)
+            cat_min = _REACTIVE_MIN_EDGES.get(cat, 0.04)
             effective_min_edge = max(cat_min, cost_to_beat * 1.2)
         else:
             cost_to_beat = ROUND_TRIP_FEE_CENTS / 100.0 + half_spread
@@ -1645,8 +1722,8 @@ class MarketScanner:
         if abs(prediction.edge) < effective_min_edge:
             return None
 
-        # Phase 22: Absolute edge floor (same as full scan)
-        if abs(prediction.edge) < 0.04:
+        # Phase 28: Absolute edge floor synced with full scan (was 0.04)
+        if abs(prediction.edge) < 0.025:
             return None
 
         # Price floor
@@ -1668,7 +1745,8 @@ class MarketScanner:
 
         # Net EV check
         cost_frac = price_cents / 100.0
-        spread_cost = features.spread / 2.0
+        # Phase 28: maker mode = 0 spread cost (hold to settlement, never cross spread)
+        spread_cost = 0.0 if USE_MAKER_ORDERS else features.spread / 2.0
         fee_cost = 0.0 if USE_MAKER_ORDERS else ROUND_TRIP_FEE_CENTS / 100.0
         net_edge = abs(prediction.edge) - spread_cost - fee_cost
         if net_edge <= 0:

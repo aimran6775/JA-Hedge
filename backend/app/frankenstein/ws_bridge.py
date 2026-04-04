@@ -184,7 +184,16 @@ class WSBridge:
                         hint="pip install websockets — falling back to poll-only")
             self._running = False
         except Exception as e:
-            log.error("ws_bridge_start_failed", error=str(e))
+            # Phase 28: Detailed error logging for WS connection failures
+            import traceback
+            tb_str = traceback.format_exc()[-500:]
+            log.error("ws_bridge_start_failed",
+                      error=str(e),
+                      error_type=type(e).__name__,
+                      ws_url=ws_url,
+                      has_auth=bool(auth or auth_token),
+                      traceback=tb_str,
+                      hint="WS failed — system will use poll-only mode. Check ws_url and auth config.")
             self._running = False
 
     async def stop(self) -> None:

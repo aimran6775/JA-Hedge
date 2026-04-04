@@ -28,6 +28,9 @@ from app.frankenstein.constants import (
     MULTI_LEVEL_STEP_CENTS,
     MULTI_LEVEL_WEIGHTS,
     ORDER_STALE_SECONDS,
+    POLL_REQUOTE_ENABLED,
+    POLL_REQUOTE_MAX_PER_SCAN,
+    POLL_REQUOTE_MIN_AGE_SECONDS,
     REQUOTE_AGGRESSION_BY_SPREAD,
     REQUOTE_EDGE_CANCEL_THRESHOLD,
     TAKER_FEE_CENTS,
@@ -652,6 +655,209 @@ class OrderManager:
         except Exception as e:
             log.error("exit_failed", ticker=market.ticker, error=str(e))
             return None
+
+    # ── Phase 28: Hybrid Taker Execution ──────────────────────────────
+
+    async def execute_taker_trade(
+        self,
+        market: Market,
+        prediction: Prediction,
+        features: MarketFeatures,
+        count: int,
+        price_cents: int,
+    ) -> ExecutionResult | None:
+        """
+        Phase 28: Execute a taker (IOC/market) order for immediate fill.
+
+        Used for A/A+ grade trades with strong edge where 100% fill rate
+        is more important than saving the 7¢/contract taker fee.
+
+        Prices at the ask (for YES) or no_ask (for NO) to guarantee fill.
+        """
+        try:
+            side = OrderSide.YES if prediction.side == "yes" else OrderSide.NO
+
+            # Price at the ask for guaranteed fill
+            if prediction.side == "yes":
+                ask = float(market.yes_ask or 0) if market.yes_ask else 0
+                if ask > 0:
+                    taker_price = min(int(ask * 100), 99)
+                else:
+                    taker_price = min(price_cents + 2, 99)  # bid + 2¢ as fallback
+            else:
+                no_ask = float(market.no_ask or 0) if market.no_ask else 0
+                if no_ask > 0:
+                    taker_price = min(int(no_ask * 100), 99)
+                else:
+                    taker_price = min(price_cents + 2, 99)
+
+            taker_price = max(1, taker_price)
+
+            result = await self._execution.execute(
+                ticker=market.ticker,
+                side=side,
+                action=OrderAction.BUY,
+                count=count,
+                price_cents=taker_price,
+                order_type=OrderType.LIMIT,  # Limit at ask = instant fill
+                strategy_id="frankenstein_taker",
+                signal_id=None,
+            )
+
+            if result and result.success:
+                self.fill_rate_stats["placed"] += 1
+                self.fill_rate_stats["filled"] += 1  # Taker = instant fill
+
+                # Phase 3+4: reserve capital
+                if self._capital:
+                    if result.order_id:
+                        self._capital.on_order_placed(
+                            result.order_id, cost_cents=count * taker_price,
+                        )
+                        # Immediately mark as filled since taker fills instantly
+                        self._capital.on_order_filled(result.order_id)
+
+                log.info("🧟⚡ TAKER TRADE",
+                         ticker=market.ticker,
+                         side=prediction.side,
+                         price=f"{taker_price}¢",
+                         count=count,
+                         edge=f"{prediction.edge:.3f}")
+
+                if self._bus:
+                    await self._bus.publish(Event(
+                        type=EventType.TRADE_EXECUTED,
+                        data={
+                            "ticker": market.ticker,
+                            "side": prediction.side,
+                            "count": count,
+                            "price_cents": taker_price,
+                            "order_id": result.order_id,
+                            "execution_type": "taker",
+                        },
+                        source="order_manager",
+                    ))
+
+            return result
+        except Exception as e:
+            log.error("taker_execution_failed", ticker=market.ticker, error=str(e))
+            return None
+
+    # ── Phase 28: Poll-Based Requoting ────────────────────────────────
+
+    async def requote_pending_orders(self) -> dict[str, int]:
+        """
+        Phase 28: Poll-based requoting — amend stale orders to current market prices.
+
+        Since WebSocket is unreliable, this runs each scan cycle and checks
+        all pending orders against current market data. If the best bid has
+        moved, we amend our resting orders to stay competitive.
+
+        Returns stats dict with requote counts.
+        """
+        if not POLL_REQUOTE_ENABLED or not self.pending_orders or not USE_MAKER_ORDERS:
+            return {"checked": 0, "requoted": 0, "skipped": 0}
+
+        now = time.time()
+        requoted = 0
+        skipped = 0
+        checked = 0
+
+        # Sort by age (oldest first — most likely to be stale)
+        order_items = sorted(
+            self.pending_orders.items(),
+            key=lambda x: x[1].get("placed_at", now),
+        )
+
+        for order_id, info in order_items[:POLL_REQUOTE_MAX_PER_SCAN]:
+            age = now - info.get("placed_at", now)
+
+            # Skip too-young orders
+            if age < POLL_REQUOTE_MIN_AGE_SECONDS:
+                skipped += 1
+                continue
+
+            # Skip already heavily amended
+            if info.get("amend_count", 0) >= MAX_AMENDS_PER_ORDER:
+                skipped += 1
+                continue
+
+            ticker = info.get("ticker", "")
+            if not ticker:
+                continue
+
+            checked += 1
+
+            # Get current market data from cache
+            from app.pipeline import market_cache as _mc28
+            cached = _mc28.get(ticker)
+            if not cached:
+                continue
+
+            side = info.get("side", "yes")
+            old_price = info.get("price_cents", 0)
+
+            # Compute new optimal price from current book
+            if side == "yes":
+                new_bid = float(cached.yes_bid or 0)
+                new_ask = float(cached.yes_ask or 0)
+                if new_bid <= 0 or new_ask <= 0:
+                    continue
+                spread_cents = max(1, int((new_ask - new_bid) * 100))
+            else:
+                # NO side
+                if cached.no_bid is not None and cached.no_ask is not None:
+                    new_bid = float(cached.no_bid or 0)
+                    new_ask = float(cached.no_ask or 0)
+                else:
+                    ya = float(cached.yes_ask or 0)
+                    yb = float(cached.yes_bid or 0)
+                    new_bid = max(0.01, 1.0 - ya) if ya > 0 else 0.01
+                    new_ask = min(0.99, 1.0 - yb) if yb > 0 else 0.99
+                if new_bid <= 0 or new_ask <= 0:
+                    continue
+                spread_cents = max(1, int((new_ask - new_bid) * 100))
+
+            # Compute smart requote price using spread-adaptive aggression
+            new_price = self._compute_smart_requote_price(
+                side,
+                float(cached.yes_bid or 0),
+                float(cached.yes_ask or 0),
+                float(cached.no_bid or 0) if cached.no_bid is not None else 0.0,
+                float(cached.no_ask or 0) if cached.no_ask is not None else 0.0,
+                spread_cents,
+            )
+
+            if new_price <= 0 or new_price >= 100:
+                continue
+
+            delta = abs(new_price - old_price)
+            if delta < MIN_AMEND_DELTA_CENTS:
+                skipped += 1
+                continue
+
+            # Amend the order
+            self._requote_stats["requotes_attempted"] += 1
+            success = await self._amend_order(order_id, side, new_price)
+            if success:
+                old_count = info.get("count", 1)
+                info["price_cents"] = new_price
+                info["amend_count"] = info.get("amend_count", 0) + 1
+                self.fill_rate_stats["amended"] += 1
+                self._requote_stats["requotes_succeeded"] += 1
+                requoted += 1
+
+                # Update capital reservation
+                if self._capital:
+                    self._capital.on_order_amended(
+                        order_id, new_cost_cents=old_count * new_price,
+                    )
+
+        if requoted > 0:
+            log.info("🧟📝 POLL REQUOTE",
+                     checked=checked, requoted=requoted, skipped=skipped)
+
+        return {"checked": checked, "requoted": requoted, "skipped": skipped}
 
     # ── Stale Order Cleanup ───────────────────────────────────────────
 

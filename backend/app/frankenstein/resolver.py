@@ -76,6 +76,27 @@ class OutcomeResolver:
         except Exception as e:
             log.debug("settlement_fetch_error", error=str(e))
 
+        # Phase 28: Batch-fetch market statuses for all pending tickers at once.
+        # This is MUCH faster than individual API calls per trade (N → 1 call).
+        market_statuses: dict[str, Any] = {}
+        try:
+            from app.state import state as _st
+            if _st.kalshi_api:
+                # Collect unique tickers from pending trades
+                pending_tickers = list({t.ticker for t in pending})
+                # Fetch in batches of 50 (API may limit)
+                for i in range(0, len(pending_tickers), 50):
+                    batch_tickers = pending_tickers[i:i+50]
+                    for tk in batch_tickers:
+                        try:
+                            mkt = await _st.kalshi_api.markets.get_market(tk)
+                            if mkt:
+                                market_statuses[tk] = mkt
+                        except Exception:
+                            pass  # Individual fetch failure is fine
+        except Exception as e:
+            log.debug("batch_market_status_error", error=str(e))
+
         for trade in pending:
             try:
                 # Skip exit/sell records
@@ -85,7 +106,7 @@ class OutcomeResolver:
 
                 resolved = (
                     self._try_settlement_api(trade, settlements_by_ticker)
-                    or await self._try_market_status(trade)
+                    or await self._try_market_status(trade, market_statuses)
                     or self._try_paper_extreme_price(trade)
                     or self._try_timeout(trade)
                 )
@@ -147,7 +168,7 @@ class OutcomeResolver:
 
     # ── Method 2: Market Status ───────────────────────────────────────
 
-    async def _try_market_status(self, trade: TradeRecord) -> bool:
+    async def _try_market_status(self, trade: TradeRecord, prefetched: dict[str, Any] | None = None) -> bool:
         market_settled = False
         market_result_str = None
 
@@ -169,7 +190,33 @@ class OutcomeResolver:
                 elif final_price <= 0.05:
                     market_result_str = "no"
 
-        # If cache didn't show settled, try API
+        # Phase 28: Use pre-fetched batch data (avoids individual API calls)
+        if not market_settled and prefetched and trade.ticker in prefetched:
+            mkt = prefetched[trade.ticker]
+            status_val = (
+                mkt.status.value
+                if hasattr(mkt.status, "value")
+                else str(mkt.status)
+            )
+            if status_val.lower() in ("settled", "closed"):
+                market_settled = True
+                result_attr = getattr(mkt, "result", None) or getattr(mkt, "market_result", None)
+                if result_attr:
+                    market_result_str = (
+                        result_attr.value.lower()
+                        if hasattr(result_attr, "value")
+                        else str(result_attr).lower()
+                    )
+                else:
+                    fp = float(mkt.last_price or 0.5)
+                    if isinstance(fp, int):
+                        fp = fp / 100
+                    if fp >= 0.95:
+                        market_result_str = "yes"
+                    elif fp <= 0.05:
+                        market_result_str = "no"
+
+        # Fallback: if cache and batch both missed, try individual API call
         if not market_settled:
             try:
                 from app.state import state as _st

@@ -348,8 +348,16 @@ class Frankenstein:
                     await self._ws_bridge.subscribe_tickers(active_tickers)
                 log.info("🧟🔌 WS bridge started", tickers=len(active_tickers))
             except Exception as e:
-                log.warning("ws_bridge_start_failed", error=str(e),
-                            hint="Falling back to poll-only — this is normal")
+                # Phase 28: Detailed error logging — WS is optional but useful
+                import traceback
+                tb_str = traceback.format_exc()[-500:]
+                log.warning("ws_bridge_start_failed",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            ws_url=self._ws_url,
+                            has_auth=bool(self._ws_auth),
+                            traceback=tb_str,
+                            hint="Falling back to poll-only — Phase 28 poll requoting will handle order management")
 
         # Register WS subscription refresh (sync subs with active markets every 2 min)
         self.scheduler.register("ws_refresh_subs", self._ws_refresh_task, 120.0)
@@ -623,8 +631,11 @@ class Frankenstein:
                         self._ws_bridge._ws._reconnect_attempts = 0
                     log.info("ws_bridge_reconnected", tickers=len(active))
                 except Exception as e:
-                    log.warning("ws_reconnect_failed", error=str(e),
-                                hint="Will retry in 120s — 24/7 mode never gives up")
+                    # Phase 28: Detailed reconnect failure logging
+                    log.warning("ws_reconnect_failed",
+                                error=str(e),
+                                error_type=type(e).__name__,
+                                hint="Will retry in 120s — poll-based requoting covers order management")
             return
         try:
             active = [m.ticker for m in market_cache.get_active()[:self.config.ws_max_subscriptions]]

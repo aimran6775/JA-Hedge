@@ -162,8 +162,10 @@ MULTI_LEVEL_MIN_SPREAD_CENTS = 4
 MULTI_LEVEL_MAX_LEVELS = 3
 
 # Minimum contract count needed to split across levels.
-# Single-contract orders can't be split.
-MULTI_LEVEL_MIN_COUNT = 2
+# Phase 28: Raised from 2→8 — don't split small orders across levels.
+# With small counts (2-7), splitting wastes orders and reduces fill rate.
+# Better to concentrate at one aggressive price for maximum fill probability.
+MULTI_LEVEL_MIN_COUNT = 8
 
 # Weight allocation per level (summed then normalized).
 #   Level 0 = most aggressive (bid + N¢)  → best fill chance, least edge
@@ -175,6 +177,20 @@ MULTI_LEVEL_WEIGHTS = [0.50, 0.30, 0.20]
 # Price step between levels (cents).  Each level is this many cents
 # deeper (cheaper) than the previous one.
 MULTI_LEVEL_STEP_CENTS = 1
+
+# ── Phase 28: Hybrid Taker Execution ────────────────────────────
+# For highest-confidence trades (A/A+), use taker orders for 100% fill
+# rate. The 7¢/contract fee is worth it on trades with strong edge.
+HYBRID_TAKER_ENABLED = True
+HYBRID_TAKER_MIN_GRADE = "A"       # Minimum grade for taker execution
+HYBRID_TAKER_MIN_EDGE = 0.08       # Minimum edge (8%) to justify taker fees
+
+# ── Phase 28: Poll-Based Requoting ──────────────────────────────
+# Since WebSocket is unreliable, requote pending orders each scan cycle
+# by polling current market prices and amending stale orders.
+POLL_REQUOTE_ENABLED = True
+POLL_REQUOTE_MAX_PER_SCAN = 10     # Max orders to requote per scan cycle
+POLL_REQUOTE_MIN_AGE_SECONDS = 20  # Don't requote orders younger than 20s
 
 
 def round_trip_fee_pct(price_cents: int) -> float:
