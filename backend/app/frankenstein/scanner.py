@@ -16,6 +16,7 @@ scan cycle per call.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -115,11 +116,25 @@ class MarketScanner:
         self._trade_cooldown_seconds: float = 30.0    # Phase 27: 30s ticker cooldown (was 60)
         self._event_cooldown_seconds: float = 15.0    # Phase 27: 15s event cooldown (was 30)
 
+        # Cached learning-mode result (refreshed once per scan cycle)
+        self._learning_mode_cache: bool | None = None
+
     # ── Learning-Mode Detection ───────────────────────────────────────
 
     def _is_in_learning_mode(self) -> bool:
         """
         Determine if we should be in learning mode.
+        Caches the result per scan cycle to avoid O(N) iteration
+        over the entire trade deque on every call.
+        """
+        if self._learning_mode_cache is not None:
+            return self._learning_mode_cache
+        self._learning_mode_cache = self._compute_learning_mode()
+        return self._learning_mode_cache
+
+    def _compute_learning_mode(self) -> bool:
+        """
+        Check actual training data availability.
 
         Phase 25b FIX: Previously used `not model.is_trained`, which was
         wrong because a stale checkpoint loaded from disk makes is_trained=True
@@ -152,10 +167,11 @@ class MarketScanner:
         start = time.monotonic()
         state.total_scans += 1
 
-        # ── Daily trade reset ─────────────────────────────────────
-        from datetime import datetime, timezone as _tz
+        # Reset per-scan caches
+        self._learning_mode_cache = None
 
-        _today = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+        # ── Daily trade reset ─────────────────────────────────────
+        _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if state.daily_trade_date != _today:
             state.daily_trade_count = 0
             state.daily_trade_date = _today
@@ -417,13 +433,13 @@ class MarketScanner:
 
             candidates.append(m)
 
-        # Sports-preferred mode
+        # Sports-only mode: ONLY trade sports when enabled (no fallback to non-sports)
         if self._sports_only and self._sports_detector:
             sports_cands = [c for c in candidates if self._sports_detector.is_sports_market(c)]
             if sports_cands:
-                non_sports = [c for c in candidates if c not in sports_cands]
-                return (sports_cands + non_sports[:50])[:500]
+                return sports_cands[:500]
             log.debug("no_liquid_sports", total_candidates=len(candidates))
+            return []  # No sports available → don't trade non-sports
 
         return candidates[:500]
 
@@ -970,9 +986,9 @@ class MarketScanner:
             count = max(min_count, raw_count)
             count = min(count, params.max_position_size)
 
-            # Phase 28: $5 minimum bet floor — don't waste scan cycles on < $5 trades.
-            # If count × price < 500¢ ($5), scale up count to reach the floor.
-            if not _is_learning and price_cents > 0:
+            # Phase 28: $5 minimum bet floor — only for A+/A grades.
+            # Lower grades don't get forced up to $5 to limit downside.
+            if not _is_learning and price_cents > 0 and conf_breakdown.grade in ("A+", "A"):
                 min_bet_cents = 500  # $5 minimum bet
                 if count * price_cents < min_bet_cents:
                     count = max(count, (min_bet_cents + price_cents - 1) // price_cents)
@@ -1080,7 +1096,7 @@ class MarketScanner:
                 if not sig_market:
                     continue
                 _sig_evt = getattr(sig_market, "event_ticker", "") or ""
-                if _sig_evt and _sig_evt in self._recently_traded:
+                if _sig_evt and _sig_evt in self._recently_traded_events:
                     continue
 
                 feat = self._features.compute(sig_market)
@@ -1743,6 +1759,20 @@ class MarketScanner:
         _floor_cents = MIN_PRICE_FLOOR_LEARNING_CENTS if self._is_in_learning_mode() else MIN_PRICE_FLOOR_CENTS
         _floor = _floor_cents / 100.0
         if features.midpoint < _floor or features.midpoint > 1.0 - _floor:
+            return None
+
+        # Confidence scoring gate (aligned with full scan path)
+        _is_learning = self._is_in_learning_mode()
+        _reactive_min_grade = "F" if _is_learning else "B"
+        _reactive_scorer = ConfidenceScorer(
+            min_grade=_reactive_min_grade,
+            portfolio_heat=self._adv_risk.portfolio_heat if hasattr(self._adv_risk, "portfolio_heat") else 0.0,
+            current_drawdown_pct=self._adv_risk.current_drawdown_pct if hasattr(self._adv_risk, "current_drawdown_pct") else 0.0,
+            open_positions=self._count_open_positions(),
+            max_positions=self._strategy.params.max_simultaneous_positions,
+        )
+        _reactive_conf = _reactive_scorer.score(prediction, features, market=market)
+        if not _reactive_conf.passed:
             return None
 
         # Kelly sizing

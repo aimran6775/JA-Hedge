@@ -18,6 +18,8 @@ import time
 from typing import Any
 
 from app.frankenstein.constants import (
+    EXTREME_PRICE_THRESHOLD_NO,
+    EXTREME_PRICE_THRESHOLD_YES,
     TAKER_FEE_CENTS,
     USE_MAKER_ORDERS,
 )
@@ -185,9 +187,9 @@ class OutcomeResolver:
                 final_price = float(cached_market.last_price or cached_market.midpoint or 0.5)
                 if isinstance(final_price, int):
                     final_price = final_price / 100
-                if final_price >= 0.95:
+                if final_price >= EXTREME_PRICE_THRESHOLD_YES:
                     market_result_str = "yes"
-                elif final_price <= 0.05:
+                elif final_price <= EXTREME_PRICE_THRESHOLD_NO:
                     market_result_str = "no"
 
         # Phase 28: Use pre-fetched batch data (avoids individual API calls)
@@ -211,9 +213,9 @@ class OutcomeResolver:
                     fp = float(mkt.last_price or 0.5)
                     if isinstance(fp, int):
                         fp = fp / 100
-                    if fp >= 0.95:
+                    if fp >= EXTREME_PRICE_THRESHOLD_YES:
                         market_result_str = "yes"
-                    elif fp <= 0.05:
+                    elif fp <= EXTREME_PRICE_THRESHOLD_NO:
                         market_result_str = "no"
 
         # Fallback: if cache and batch both missed, try individual API call
@@ -240,9 +242,9 @@ class OutcomeResolver:
                             fp = float(mkt.last_price or 0.5)
                             if isinstance(fp, int):
                                 fp = fp / 100
-                            if fp >= 0.95:
+                            if fp >= EXTREME_PRICE_THRESHOLD_YES:
                                 market_result_str = "yes"
-                            elif fp <= 0.05:
+                            elif fp <= EXTREME_PRICE_THRESHOLD_NO:
                                 market_result_str = "no"
             except Exception:
                 pass
@@ -392,23 +394,11 @@ class OutcomeResolver:
             self._model.calibration.record(raw_p, actual_yes)
 
     def _report_sports_outcome(self, trade: TradeRecord, pnl_cents: int) -> None:
-        """Report trade outcome to sports monitor."""
-        # Category tracking (always runs, not just for sports)
-        try:
-            from app.frankenstein.categories import detect_category
-            cat = detect_category(
-                trade.market_title or "", trade.category or "",
-                ticker=trade.ticker,
-            )
-            if cat not in self.category_stats:
-                self.category_stats[cat] = {"wins": 0, "losses": 0}
-            if pnl_cents > 0:
-                self.category_stats[cat]["wins"] += 1
-            elif pnl_cents < 0:
-                self.category_stats[cat]["losses"] += 1
-        except Exception:
-            pass
+        """Report trade outcome to sports monitor.
 
+        Note: Category win/loss tracking is handled exclusively by
+        _track_category_outcome() to avoid double-counting.
+        """
         if not self._sports_monitor or not self._sports_detector:
             return
         try:

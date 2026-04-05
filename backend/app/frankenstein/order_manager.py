@@ -168,7 +168,7 @@ class OrderManager:
         # Same side as existing position → discourage piling on
         same_side = (
             (side == "yes" and qty > 0 and pos_side in ("yes", ""))
-            or (side == "no" and qty > 0 and pos_side in ("no", ""))
+            or (side == "no" and qty < 0 and pos_side in ("no", ""))
         )
         if not same_side:
             return 0

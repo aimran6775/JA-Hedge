@@ -438,11 +438,12 @@ class TradeMemory:
         if holdout_pct > 0 and len(X) > min_trades:
             split_idx = int(len(X) * (1 - holdout_pct))
             if split_idx >= min_trades:
+                holdout_size = len(X) - split_idx
+                log.info("holdout_applied", train_size=split_idx,
+                         holdout_size=holdout_size, holdout_pct=holdout_pct)
                 X = X[:split_idx]
                 y = y[:split_idx]
                 weights = weights[:split_idx]
-                log.info("holdout_applied", train_size=split_idx,
-                         holdout_size=len(X) - split_idx, holdout_pct=holdout_pct)
 
         return X, y, weights
 

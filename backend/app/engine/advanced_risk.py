@@ -87,6 +87,7 @@ class AdvancedRiskManager:
 
         # Tracking
         self._peak_equity_cents: int = 0
+        self._peak_equity_initialized: bool = False
         self._daily_pnl_cents: int = 0
         self._weekly_pnl_cents: int = 0
         self._last_daily_reset: float = 0
@@ -145,6 +146,14 @@ class AdvancedRiskManager:
 
         Returns (passed, rejection_reason).
         """
+        # 0. Initialize peak equity from portfolio balance on first call
+        if not self._peak_equity_initialized:
+            balance = portfolio_state.balance_cents or 0
+            if balance > 0:
+                self._peak_equity_cents = balance
+                self._peak_equity_initialized = True
+                log.info("peak_equity_initialized", cents=balance)
+
         # 1. Total position count
         current_count = len(self._position_risks)
         if current_count >= self._limits.max_positions:

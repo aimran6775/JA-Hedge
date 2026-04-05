@@ -740,9 +740,10 @@ class PaperTradingSimulator:
                 stale_ids.append(order_id)
                 continue
 
-            # Check age — cancel orders older than 5 minutes (stale)
+            # Check age — cancel stale orders (synced with real order expiry)
+            from app.frankenstein.constants import ORDER_STALE_SECONDS
             age = (datetime.now(timezone.utc) - order.created_time).total_seconds()
-            if age > 300:
+            if age > ORDER_STALE_SECONDS:
                 order.status = OrderStatus.CANCELED
                 order.updated_time = datetime.now(timezone.utc)
                 stale_ids.append(order_id)

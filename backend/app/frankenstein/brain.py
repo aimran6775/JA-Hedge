@@ -486,8 +486,9 @@ class Frankenstein:
                 if recs.get("recommended_min_edge"):
                     self.strategy.params.min_edge = max(recs["recommended_min_edge"], 0.03)
                 if recs.get("recommended_daily_cap"):
-                    import app.frankenstein.constants as _c
-                    _c.MAX_DAILY_TRADES = min(recs["recommended_daily_cap"], 50)
+                    # Store as runtime override — never mutate module-level constants
+                    self._runtime_daily_trade_cap = min(recs["recommended_daily_cap"], 50)
+                    log.info("backtest_daily_cap_loaded", cap=self._runtime_daily_trade_cap)
                 if recs.get("category_edge_caps"):
                     for cat, cap in recs["category_edge_caps"].items():
                         CATEGORY_EDGE_CAPS[cat] = cap

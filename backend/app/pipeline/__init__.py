@@ -31,9 +31,10 @@ log = get_logger("pipeline.market_data")
 
 class MarketCache:
     """
-    Thread-safe in-memory market cache for sub-millisecond lookups.
+    In-memory market cache for sub-millisecond lookups.
 
     Updated by both the polling loop and WebSocket ticker channel.
+    Note: Not thread-safe — designed for single-threaded asyncio use.
     """
 
     def __init__(self) -> None:
