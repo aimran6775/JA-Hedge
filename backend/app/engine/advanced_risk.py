@@ -363,11 +363,13 @@ class AdvancedRiskManager:
     # ── Portfolio Analytics ───────────────────────────────────────────
 
     def _current_equity_cents(self) -> int:
-        """Estimate current equity from positions."""
-        total = 0
+        """Estimate current equity = cash balance + position values."""
+        from app.pipeline.portfolio_tracker import portfolio_state
+        cash = portfolio_state.balance_cents or 0
+        position_value = 0
         for pr in self._position_risks.values():
-            total += pr.cost_cents + pr.unrealized_pnl_cents
-        return max(total, 0)
+            position_value += pr.cost_cents + pr.unrealized_pnl_cents
+        return max(cash + position_value, 0)
 
     def update_equity(self, equity_cents: int) -> None:
         """Update peak equity tracking."""
