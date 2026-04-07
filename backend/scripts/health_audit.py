@@ -66,9 +66,11 @@ print(f"Model degrading: {p.get('model_degrading')}")
 
 # Strategy
 st = d.get("strategy", {})
+cp = st.get("current_params", {})
 print(f"\n--- STRATEGY ---")
-print(f"min_conf={st.get('min_confidence')}  min_edge={st.get('min_edge')}  kelly={st.get('kelly_fraction')}")
-print(f"aggression={st.get('aggression')}  scan_interval={st.get('scan_interval')}s  adaptations={st.get('adaptations')}")
+print(f"min_conf={cp.get('min_confidence')}  min_edge={cp.get('min_edge')}  kelly={cp.get('kelly_fraction')}")
+print(f"max_pos={cp.get('max_position_size')}  max_simul={cp.get('max_simultaneous_positions')}  scan={cp.get('scan_interval')}s")
+print(f"aggression={st.get('aggression')}  adaptations={st.get('total_adaptations')}")
 
 # Arb
 arb = d.get("arb_scanner", {})
@@ -84,7 +86,7 @@ print(f"Balance: ${pt.get('balance')}  |  PnL: ${pt.get('pnl')}  |  Trades: {pt.
 comp = h.get("components", {})
 print(f"\n--- COMPONENTS ---")
 for k, v in comp.items():
-    flag = " ⚠️" if v not in ("ready", "connected", "available", "active", "ok") else ""
+    flag = " ⚠️" if v not in ("ready", "connected", "available", "active", "ok", "alive") else ""
     print(f"  {k}: {v}{flag}")
 
 # Identify issues

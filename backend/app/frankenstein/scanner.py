@@ -522,13 +522,13 @@ class MarketScanner:
         filtered_c = []
         filtered_f = []
 
-        # Count how many markets already have seeded history
-        _seeded = sum(
-            1 for m in candidates
-            if m.ticker in self._features._histories
-            and len(self._features._histories[m.ticker].prices) >= 5
-        )
-        _cold_start = _seeded < 20  # Not enough seeded yet (was 10)
+        # Time-based cold start: even with candle seeding, technical indicators
+        # (SMA, EMA, RSI, MACD etc.) need multiple scan cycles to populate.
+        # Candle seeding fills price history but compute() still returns 0
+        # for derived features until enough updates accumulate.
+        from app.state import state as _st
+        _uptime = time.time() - _st.frankenstein._state.birth_time if _st.frankenstein else 0
+        _cold_start = _uptime < 600  # First 10 minutes: stay relaxed
 
         for m, feat in zip(candidates, features_list):
             arr = feat.to_array()
