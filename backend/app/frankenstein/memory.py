@@ -194,6 +194,8 @@ class TradeMemory:
         market_ask: int = 0,
         model_version: str = "",
         confidence_breakdown: dict | None = None,
+        category: str = "",
+        market_title: str = "",
     ) -> TradeRecord:
         """Record a new trade in memory."""
         record = TradeRecord(
@@ -220,6 +222,11 @@ class TradeMemory:
             hours_to_expiry=features.hours_to_expiry,
             confidence_breakdown=confidence_breakdown or {},
         )
+
+        if category:
+            record.category = category
+        if market_title:
+            record.market_title = market_title
 
         self._trades.append(record)
         self._pending_trades[record.trade_id] = record
@@ -615,7 +622,7 @@ class TradeMemory:
                         category_hint="",
                         ticker=record.ticker,
                     )
-                    if detected and detected != "general":
+                    if detected:
                         record.category = detected
                         backfilled += 1
 

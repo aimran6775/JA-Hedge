@@ -645,6 +645,12 @@ class OrderManager:
                 )
 
                 # Record exit in memory
+                from app.frankenstein.categories import detect_category as _det
+                _exit_cat = _det(
+                    getattr(market, "title", ""),
+                    category_hint=getattr(market, "category", ""),
+                    ticker=market.ticker,
+                )
                 self.memory.record_trade(
                     ticker=market.ticker,
                     prediction=Prediction(
@@ -657,6 +663,8 @@ class OrderManager:
                     price_cents=exit_price,
                     order_id=result.order_id or "",
                     latency_ms=result.latency_ms,
+                    category=_exit_cat,
+                    market_title=getattr(market, "title", ""),
                 )
 
                 # Publish event

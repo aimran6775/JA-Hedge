@@ -160,12 +160,20 @@ KALSHI_PREFIX_CATEGORY = {
     "KXNHLFIRST": "sports", "KXNBAREBS": "sports",
     "KXNBAPTS": "sports", "KXNBAAST": "sports",
     "KXMLBHR": "sports", "KXMLBSO": "sports",
+    "KXNBATOTAL": "sports", "KXNBAGAMETOTAL": "sports",
+    "KXNHLTOTAL": "sports", "KXMLBGAMETOTAL": "sports",
+    "KXMLBHIT": "sports", "KXMLBGAME": "sports",
+    "KXNFLGAME": "sports", "KXNHLGAME": "sports",
+    "KXNBAGAME": "sports", "KXNBAPLAY": "sports",
     # ── Crypto ─────────────────────────────────────────────
     "KXBTC": "crypto", "KXETH": "crypto", "KXSOL": "crypto",
     "KXCRY": "crypto", "KXXRP": "crypto", "KXDOG": "crypto",
     "KXDOGE": "crypto", "KXADA": "crypto", "KXBNB": "crypto",
     "KXAVAX": "crypto", "KXMATIC": "crypto", "KXLINK": "crypto",
     "KXCRYPTO": "crypto",
+    "KXBTCD": "crypto",     # BTC daily markets
+    "KXETHD": "crypto",     # ETH daily markets
+    "KXSOLD": "crypto",     # SOL daily markets
     # ── Economics ──────────────────────────────────────────
     "KXCPI": "economics", "KXGDP": "economics", "KXJOB": "economics",
     "KXFED": "economics", "KXINF": "economics", "KXPCE": "economics",
@@ -217,6 +225,9 @@ KALSHI_PREFIX_CATEGORY = {
     "KXPODCAST": "culture", "KXCELEB": "culture",
     "KXMENTION": "social_media", "KXTWEET": "social_media",
     "KXTRUTH": "social_media", "KXTHREAD": "social_media",
+    "KXLEAVITT": "social_media",  # Leavitt social media mention markets
+    "KXHYPE": "culture",           # Viral/hype event markets
+    "KXNEXTAG": "current_events",  # "Next" event markets
     # ── Current Events / General Kalshi ──────────────────
     "KXRT": "current_events",      # Real-time event markets
     "KXNEWS": "current_events",

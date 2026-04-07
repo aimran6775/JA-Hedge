@@ -198,36 +198,43 @@ class AdaptiveStrategy:
     # ── Regime Adaptation ─────────────────────────────────────────────
 
     def _adapt_to_regime(self, snap: PerformanceSnapshot) -> list[AdaptationEvent]:
-        """Adjust parameters based on detected market regime."""
+        """Adjust parameters based on detected market regime.
+
+        MAKER MODE PHILOSOPHY: 0 fees means volatility is OPPORTUNITY, not risk.
+        Wider spreads → better maker fills. We should NEVER choke trade flow
+        because of regime detection. Keep targets loose — the model's edge
+        threshold is the real guard, not arbitrary regime tightening.
+        """
         events = []
         regime = snap.regime
 
         if regime == "volatile":
-            # MAKER MODE: 0 fees, so volatile only needs slightly more edge.
-            # Still reduce sizing — vol means more uncertainty.
-            events.extend(self._adjust("min_confidence", 0.50, "volatile_regime"))
-            events.extend(self._adjust("min_edge", 0.07, "volatile_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.08, "volatile_regime"))
-            events.extend(self._adjust("max_position_size", 3, "volatile_regime"))
+            # Volatile = wider spreads = BETTER for makers. Slightly larger edge
+            # requirement (spreads may be noisy), but keep trading.
+            events.extend(self._adjust("min_confidence", 0.38, "volatile_regime"))
+            events.extend(self._adjust("min_edge", 0.04, "volatile_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.22, "volatile_regime"))
+            events.extend(self._adjust("max_position_size", 30, "volatile_regime"))
 
         elif regime == "quiet":
-            # Quiet: loosen up, lean into volume. Maker = free trades.
-            events.extend(self._adjust("min_confidence", 0.42, "quiet_regime"))
-            events.extend(self._adjust("min_edge", 0.04, "quiet_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.15, "quiet_regime"))
-            events.extend(self._adjust("max_position_size", 5, "quiet_regime"))
+            # Quiet = tight spreads = harder for makers. Accept smaller edge,
+            # but make more trades to accumulate small wins.
+            events.extend(self._adjust("min_confidence", 0.35, "quiet_regime"))
+            events.extend(self._adjust("min_edge", 0.03, "quiet_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.28, "quiet_regime"))
+            events.extend(self._adjust("max_position_size", 40, "quiet_regime"))
 
         elif regime == "trending":
-            # Trending: ride the move. Maker = no fee drag.
-            events.extend(self._adjust("min_confidence", 0.45, "trending_regime"))
-            events.extend(self._adjust("min_edge", 0.05, "trending_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.12, "trending_regime"))
+            # Trending = directional moves. Ride with conviction.
+            events.extend(self._adjust("min_confidence", 0.37, "trending_regime"))
+            events.extend(self._adjust("min_edge", 0.035, "trending_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.25, "trending_regime"))
 
         elif regime == "mean_reverting":
-            # Mean-revert: quick grabs. Small edge OK with maker fees=0.
-            events.extend(self._adjust("min_confidence", 0.48, "mean_reverting_regime"))
-            events.extend(self._adjust("min_edge", 0.05, "mean_reverting_regime"))
-            events.extend(self._adjust("kelly_fraction", 0.10, "mean_reverting_regime"))
+            # Mean-revert = great for makers. Post aggressive quotes.
+            events.extend(self._adjust("min_confidence", 0.36, "mean_reverting_regime"))
+            events.extend(self._adjust("min_edge", 0.03, "mean_reverting_regime"))
+            events.extend(self._adjust("kelly_fraction", 0.25, "mean_reverting_regime"))
 
         return [e for e in events if e is not None]
 
@@ -286,15 +293,15 @@ class AdaptiveStrategy:
             return events  # Need substantial data before judging accuracy
 
         if snap.prediction_accuracy < 0.30:
-            # Model is truly bad (<30%) — tighten slightly but not aggressively
-            events.extend(self._adjust("min_confidence", 0.50, "poor_accuracy"))
-            events.extend(self._adjust("min_edge", 0.06, "poor_accuracy"))
-            events.extend(self._adjust("kelly_fraction", 0.10, "poor_accuracy"))
+            # Model is truly bad (<30%) — tighten slightly but stay in the game
+            events.extend(self._adjust("min_confidence", 0.42, "poor_accuracy"))
+            events.extend(self._adjust("min_edge", 0.05, "poor_accuracy"))
+            events.extend(self._adjust("kelly_fraction", 0.18, "poor_accuracy"))
 
         elif snap.prediction_accuracy > 0.55:
             # Model is good — open up
-            events.extend(self._adjust("min_confidence", 0.38, "good_accuracy"))
-            events.extend(self._adjust("min_edge", 0.04, "good_accuracy"))
+            events.extend(self._adjust("min_confidence", 0.34, "good_accuracy"))
+            events.extend(self._adjust("min_edge", 0.03, "good_accuracy"))
 
         # Confidence calibration: nudge edge slightly if overconfident
         if snap.confidence_calibration > 0.20:
