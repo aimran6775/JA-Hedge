@@ -52,13 +52,13 @@ class CapitalAllocator:
 
     # ── Phase 17: Default category budget shares ──────────────────────
     _DEFAULT_CATEGORY_SHARES: dict[str, float] = {
-        "sports": 0.15,
-        "finance": 0.15,
-        "economics": 0.10,
-        "crypto": 0.15,
-        "politics": 0.15,
-        "weather": 0.10,
-        "entertainment": 0.10,
+        "sports": 0.30,        # Phase 30: 15→30% — primary profit engine
+        "finance": 0.12,
+        "economics": 0.08,
+        "crypto": 0.12,
+        "politics": 0.12,
+        "weather": 0.08,
+        "entertainment": 0.08,
         "science": 0.05,
         "general": 0.05,
     }

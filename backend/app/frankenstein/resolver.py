@@ -50,6 +50,8 @@ class OutcomeResolver:
         # Sports (injected later by brain)
         self._sports_detector = sports_detector
         self._sports_monitor = sports_monitor
+        self._sports_predictor_v2 = None  # Phase 30: injected by brain
+        self._sports_risk = None           # Phase 30: injected by brain
 
         # {category: {"wins": int, "losses": int}}
         self.category_stats: dict[str, dict[str, int]] = {}
@@ -434,5 +436,37 @@ class OutcomeResolver:
                 self.category_stats[cat]["wins"] += 1
             else:
                 self.category_stats[cat]["losses"] += 1
+        except Exception:
+            pass
+
+        # Phase 30: Clean up sports risk positions (fixes the leak)
+        try:
+            if self._sports_risk:
+                self._sports_risk.remove_position(trade.ticker)
+        except Exception:
+            pass
+
+        # Phase 30: Feed V2 predictor circuit breaker
+        try:
+            if self._sports_predictor_v2 and self._sports_detector:
+                from app.kalshi.models import Market as _MktModel
+                info = self._sports_detector.detect(
+                    _MktModel(
+                        ticker=trade.ticker,
+                        event_ticker=getattr(trade, "event_ticker", "") or "",
+                    )
+                )
+                if info.is_sports:
+                    pnl_cents = self._compute_pnl(trade, correct)
+                    self._sports_predictor_v2.record_outcome(
+                        sport_id=info.sport_id,
+                        won=correct,
+                        pnl_cents=pnl_cents,
+                    )
+                    # Also clean up hedger
+                    self._sports_predictor_v2.hedger.remove_position(
+                        event_ticker=getattr(trade, "event_ticker", "") or "",
+                        ticker=trade.ticker,
+                    )
         except Exception:
             pass

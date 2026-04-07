@@ -106,6 +106,7 @@ class MarketScanner:
         self._sports_feat = sports_feat
         self._sports_risk = sports_risk
         self._sports_only = sports_only
+        self._sports_predictor_v2 = None  # Phase 30: set by brain after wiring
 
         # Category specialist models
         self._category_models: dict[str, XGBoostPredictor] = category_models or {}
@@ -792,13 +793,30 @@ class MarketScanner:
                 ticker=market.ticker,
             )
 
-            # Sports override
+            # Sports override — Phase 30: V2 predictor with multi-signal
+            # fusion, hedging, circuit breaker, and aggressive sizing.
             sports_pred = None
-            if self._sports_detector and self._sports_predictor and self._sports_feat:
+            _sports_v2_pred = None
+            if self._sports_detector:
                 info = self._sports_detector.detect(market)
                 if info.is_sports:
-                    sports_features = self._sports_feat.compute(market, features)
-                    sports_pred = self._sports_predictor.predict(sports_features, features)
+                    # Try V2 predictor first (multi-signal fusion)
+                    if self._sports_predictor_v2 and self._sports_feat:
+                        sports_features = self._sports_feat.compute(market, features)
+                        _sports_v2_pred = self._sports_predictor_v2.predict(
+                            sports_features, features,
+                            market_title=market.title or "",
+                            event_ticker=market.event_ticker or "",
+                            ticker=market.ticker,
+                        )
+                        if _sports_v2_pred is not None:
+                            sports_pred = _sports_v2_pred
+                    # Fallback to V1 predictor
+                    elif self._sports_predictor and self._sports_feat:
+                        sports_features = self._sports_feat.compute(market, features)
+                        _v1 = self._sports_predictor.predict(sports_features, features)
+                        if _v1 is not None:
+                            sports_pred = _v1
 
             if sports_pred is not None:
                 prediction = sports_pred.to_base_prediction()
@@ -896,10 +914,14 @@ class MarketScanner:
                 continue
 
             # Confidence scoring
+            # Phase 30: has_vegas=True if V2 prediction used Vegas signal
+            _has_vegas = sports_pred is not None
+            if _sports_v2_pred is not None and hasattr(_sports_v2_pred, 'vegas_prob'):
+                _has_vegas = _sports_v2_pred.vegas_prob > 0.01
             conf_breakdown = conf_scorer.score(
                 prediction, features,
                 model_trained=self._model.is_trained,
-                has_vegas=sports_pred is not None,
+                has_vegas=_has_vegas,
                 is_sports=bool(
                     self._sports_detector and self._sports_detector.detect(market).is_sports
                 ) if self._sports_detector else False,
@@ -950,7 +972,7 @@ class MarketScanner:
                 "politics": 1.0,
                 "economics": 1.0,
                 "weather": 0.9,
-                "sports": 0.9,       # Still slightly cautious
+                "sports": 1.3,       # Phase 30: aggressive — V2 predictor is calibrated
                 "entertainment": 0.9,
                 "culture": 0.85,
                 "social_media": 0.85,
@@ -970,16 +992,27 @@ class MarketScanner:
             # Grade-based sizing — Phase 28: MUCH bigger positions for high grades.
             # A+ and A are high-confidence → deploy real capital.
             # $5 minimum bet floor: if count × price < 500¢, scale up count.
+            # Phase 30: Sports with hedge or multi-signal agreement get boosted.
+            _is_hedged = (
+                _sports_v2_pred is not None
+                and getattr(_sports_v2_pred, 'hedge_opportunity', False)
+            )
+            _high_agreement = (
+                _sports_v2_pred is not None
+                and getattr(_sports_v2_pred, 'signal_agreement', 0) > 0.75
+                and len(getattr(_sports_v2_pred, 'signals', [])) >= 2
+            )
+
             if _is_learning:
                 min_count = 1
             elif conf_breakdown.grade in ("A+",):
-                min_count = 15   # Phase 28: 15 contracts minimum for A+ (was 5)
+                min_count = 20 if (_is_hedged or _high_agreement) else 15
             elif conf_breakdown.grade in ("A",):
-                min_count = 8    # Phase 28: 8 contracts for A (was 3)
+                min_count = 12 if (_is_hedged or _high_agreement) else 8
             elif conf_breakdown.grade in ("B+",):
-                min_count = 5    # Phase 28: 5 contracts for B+ (was 2)
+                min_count = 8 if _is_hedged else 5
             elif conf_breakdown.grade in ("B",):
-                min_count = 3    # Phase 28: 3 contracts for B (was 1)
+                min_count = 5 if _is_hedged else 3
             else:
                 min_count = 1
 
@@ -1328,6 +1361,16 @@ class MarketScanner:
                             cost_cents=count * price_cents,
                             is_live=info.is_live,
                         )
+                        # Phase 30: Register with hedger for cross-market tracking
+                        if self._sports_predictor_v2:
+                            self._sports_predictor_v2.hedger.register_position(
+                                event_ticker=market.event_ticker or "",
+                                ticker=market.ticker,
+                                side=prediction.side,
+                                price_cents=price_cents,
+                                edge=prediction.edge,
+                                market_type=info.market_type,
+                            )
 
                 # Detect category & record in memory
                 trade_category = detect_category(

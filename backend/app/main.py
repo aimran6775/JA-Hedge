@@ -210,11 +210,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         game_tracker=_game_tracker,
     )
 
+    # Phase 30: Sports Predictor V2 — multi-signal fusion + hedging + circuit breaker
+    from app.sports.predictor_v2 import sports_predictor_v2 as _sports_v2
+    log.info("🏀 sports_predictor_v2_created", version="v2.0")
+
     # Inject sports components into Frankenstein
     frankenstein._sports_detector = _sports_detector
     frankenstein._odds_client = odds_client
     frankenstein._sports_feat = _sports_feat
     frankenstein._sports_predictor = _sports_predictor
+    frankenstein._sports_predictor_v2 = _sports_v2  # Phase 30: V2 predictor
     frankenstein._sports_risk = _sports_risk
     frankenstein._live_engine = _live_engine
     frankenstein._sports_monitor = _sports_monitor

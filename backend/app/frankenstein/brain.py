@@ -256,6 +256,7 @@ class Frankenstein:
         self._odds_client = None
         self._sports_feat = None
         self._sports_predictor = None
+        self._sports_predictor_v2 = None  # Phase 30: enhanced predictor
         self._sports_risk = None
         self._live_engine = None
         self._sports_monitor = None
@@ -298,10 +299,15 @@ class Frankenstein:
         self._scanner._sports_feat = self._sports_feat
         self._scanner._sports_risk = self._sports_risk
         self._scanner._sports_only = self._sports_only
+        # Phase 30: Wire V2 predictor
+        self._scanner._sports_predictor_v2 = getattr(self, '_sports_predictor_v2', None)
         self._positions._sports_detector = self._sports_detector
         self._positions._sports_risk = self._sports_risk
         self._resolver._sports_detector = self._sports_detector
         self._resolver._sports_monitor = self._sports_monitor
+        # Phase 30: Wire V2 predictor to resolver for circuit breaker feedback
+        self._resolver._sports_predictor_v2 = getattr(self, '_sports_predictor_v2', None)
+        self._resolver._sports_risk = self._sports_risk
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
