@@ -88,6 +88,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         api_for_engine = simulator.wrap_api(kalshi)
         state.paper_simulator = simulator
+        # Phase 31d: Replace state.kalshi_api with the paper wrapper so that
+        # ALL code paths (order_manager amend/cancel/reconcile) route through
+        # the paper simulator instead of hitting real Kalshi with paper order IDs.
+        state.kalshi_api = api_for_engine
         log.info(
             "paper_trading_enabled",
             balance=f"${settings.paper_trading_balance / 100:.2f}",
