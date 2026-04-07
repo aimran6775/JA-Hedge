@@ -331,7 +331,14 @@ class OrderManager:
                     }
                     self._record_fill_observation(_instant_info, filled=True)
 
-                if result.order_id:
+                # Phase 31: Only track as pending if NOT already filled.
+                # Paper fills are instant — adding a filled order to
+                # pending_orders causes 100% requote failure rate.
+                _already_filled = (
+                    result.order
+                    and getattr(result.order, "remaining_count", -1) == 0
+                )
+                if result.order_id and not _already_filled:
                     # Phase 5: store book context for fill prediction
                     _spread = int(features.spread * 100) if features.spread else 1
                     _mid = int(features.midpoint * 100) if features.midpoint else 50
