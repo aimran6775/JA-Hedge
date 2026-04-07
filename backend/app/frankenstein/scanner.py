@@ -38,6 +38,7 @@ from app.frankenstein.constants import (
     USE_MAKER_ORDERS,
     round_trip_fee_pct,
 )
+from app.frankenstein.arb_engine import ArbScanner, arb_scanner
 from app.frankenstein.event_bus import Event, EventBus, EventType
 from app.frankenstein.fill_predictor import FillPredictor
 from app.frankenstein.learner import OnlineLearner
@@ -110,6 +111,9 @@ class MarketScanner:
 
         # Category specialist models
         self._category_models: dict[str, XGBoostPredictor] = category_models or {}
+
+        # Phase 31: Cross-platform arbitrage engine
+        self._arb_scanner: ArbScanner = arb_scanner
 
         # Cooldowns
         self._recently_traded: dict[str, float] = {}
@@ -270,8 +274,29 @@ class MarketScanner:
         # 4c. Intelligence Hub enrichment
         self._intelligence_enrich(candidates, features_list)
 
+        # 4c2. Phase 31: Cross-platform arbitrage scan
+        # Detects large disagreements between external sources (Polymarket,
+        # Vegas, crypto) and Kalshi prices. These override ML predictions
+        # because they're direct price arbitrage — no model needed.
+        arb_signals = self._arb_scanner.scan(candidates, features_list)
+
         # 4d. Batch predict
         predictions = self._model.predict_batch(features_list)
+
+        # 4d2. Phase 31: Override predictions with arb signals
+        # When arb engine finds a large cross-platform edge, use it directly
+        # instead of the ML model's prediction.
+        for i, (m, feat) in enumerate(zip(candidates, features_list)):
+            if m.ticker in arb_signals:
+                arb = arb_signals[m.ticker]
+                # Override the prediction with the arb signal
+                predictions[i] = Prediction(
+                    predicted_prob=arb.external_prob,
+                    confidence=arb.confidence,
+                    side=arb.side,
+                    edge=arb.edge,
+                    model_name=f"arb_{arb.source}",
+                )
 
         # 4e. Category specialist override
         self._category_specialist_override(candidates, features_list, predictions)
@@ -530,19 +555,47 @@ class MarketScanner:
         candidates: list[Market],
         features_list: list[MarketFeatures],
     ) -> None:
-        """Cross-event probability arbitrage detection."""
+        """Cross-event probability arbitrage detection.
+
+        Phase 31: Also detects probability sum violations for direct arb.
+        If N sibling markets in the same event sum to >1.10 or <0.90,
+        there's a structural mispricing that can be traded directly.
+        """
         event_prob_sums: dict[str, float] = {}
-        event_members: dict[str, list[str]] = {}
+        event_members: dict[str, list[tuple[str, float]]] = {}  # evt → [(ticker, mid)]
         for m in candidates:
             evt = getattr(m, "event_ticker", "") or ""
             if evt:
                 mid = float(m.midpoint or m.last_price or 0)
                 event_prob_sums[evt] = event_prob_sums.get(evt, 0.0) + mid
-                event_members.setdefault(evt, []).append(m.ticker)
+                event_members.setdefault(evt, []).append((m.ticker, mid))
+
         for m, feat in zip(candidates, features_list):
             evt = getattr(m, "event_ticker", "") or ""
             if evt and evt in event_prob_sums and len(event_members.get(evt, [])) >= 2:
                 feat.event_prob_sum = event_prob_sums[evt]
+
+                # Phase 31: Sibling arbitrage detection
+                # If prob sum > 1.10, the event is overpriced — short the
+                # most overpriced sibling. If < 0.90, underpriced — buy cheapest.
+                prob_sum = event_prob_sums[evt]
+                mid = float(m.midpoint or m.last_price or 0)
+                n_siblings = len(event_members[evt])
+
+                if n_siblings >= 2 and mid > 0:
+                    # Expected share for this market if probs summed to 1.0
+                    fair_share = mid / prob_sum if prob_sum > 0 else 0
+                    # How much this market is mispriced relative to fair value
+                    mispricing = mid - fair_share
+
+                    if prob_sum > 1.10 and mispricing > 0.03:
+                        # Overpriced event: this market is above fair value
+                        # Signal: short (buy NO)
+                        feat.alt_cross_platform_edge = -mispricing
+                    elif prob_sum < 0.90 and mispricing < -0.03:
+                        # Underpriced event: this market is below fair value
+                        # Signal: long (buy YES)
+                        feat.alt_cross_platform_edge = -mispricing
 
     def _intelligence_enrich(
         self,
@@ -811,12 +864,14 @@ class MarketScanner:
                         )
                         if _sports_v2_pred is not None:
                             sports_pred = _sports_v2_pred
-                    # Fallback to V1 predictor
-                    elif self._sports_predictor and self._sports_feat:
-                        sports_features = self._sports_feat.compute(market, features)
-                        _v1 = self._sports_predictor.predict(sports_features, features)
-                        if _v1 is not None:
-                            sports_pred = _v1
+                    # Phase 31: V1 fallback DISABLED — 3.7% WR was hemorrhaging money.
+                    # If V2 can't produce a signal, skip the market entirely.
+                    # V1 used arbitrary base rates and no time-decay.
+                    # elif self._sports_predictor and self._sports_feat:
+                    #     sports_features = self._sports_feat.compute(market, features)
+                    #     _v1 = self._sports_predictor.predict(sports_features, features)
+                    #     if _v1 is not None:
+                    #         sports_pred = _v1
 
             if sports_pred is not None:
                 prediction = sports_pred.to_base_prediction()

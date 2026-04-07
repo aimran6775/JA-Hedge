@@ -142,13 +142,15 @@ class AdaptiveStrategy:
         events: list[AdaptationEvent] = []
 
         # ── LEARNING MODE GUARD ──────────────────────────────────────
-        # During the first 100 real trades, we have NO statistical basis
-        # to adapt parameters.  Keep defaults and just trade.
-        if snapshot.real_trades < 100:
+        # Phase 31: Raised from 100 → 500. The old guard let adaptation
+        # start at 100 trades which caused 17 adaptations in 1 hour = death spiral.
+        # With only ~100 data points, statistical estimates are garbage.
+        # Keep defaults and collect data until we have real statistical power.
+        if snapshot.real_trades < 500:
             log.info(
                 "strategy_learning_mode_skip_adaptation",
                 real_trades=snapshot.real_trades,
-                remaining=100 - snapshot.real_trades,
+                remaining=500 - snapshot.real_trades,
             )
             # Only compute aggression (cosmetic) — no param changes
             self._compute_aggression(snapshot)

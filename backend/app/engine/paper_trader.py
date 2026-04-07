@@ -760,6 +760,43 @@ class PaperTradingSimulator:
 
     # ── Cancel ────────────────────────────────────────────────────────
 
+    def amend_order(
+        self,
+        order_id: str,
+        yes_price: int | None = None,
+        no_price: int | None = None,
+    ) -> None:
+        """Phase 31: Amend a resting order's price.
+
+        Updates the order in-place and re-attempts maker fill at the new price.
+        This enables poll-based requoting in paper trading mode.
+        """
+        order = self._orders.get(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        if order.status != OrderStatus.RESTING:
+            raise ValueError(f"Order {order_id} is {order.status.value}, not resting")
+
+        new_price = yes_price if order.side == OrderSide.YES else no_price
+        if new_price is None:
+            return
+        if new_price == order.price_cents:
+            return  # No change
+
+        old_price = order.price_cents
+        order.price_cents = new_price
+        order.updated_time = datetime.now(timezone.utc)
+
+        # Re-attempt fill at new price (maker mode)
+        if self.maker_mode and order.remaining_count > 0:
+            self._attempt_maker_fill(order)
+
+        log.debug("paper_order_amended",
+                  order_id=order_id,
+                  old_price=f"{old_price}¢",
+                  new_price=f"{new_price}¢",
+                  ticker=order.ticker)
+
     def cancel_order(self, order_id: str) -> None:
         """Cancel a resting order."""
         order = self._orders.get(order_id)
@@ -903,6 +940,22 @@ class PaperOrdersAPI:
             no_price=price_cents if side == OrderSide.NO else None,
         )
         return self._sim.create_order(req)
+
+    async def amend_order(
+        self,
+        order_id: str,
+        *,
+        yes_price: int | None = None,
+        no_price: int | None = None,
+        count: int | None = None,
+    ) -> None:
+        """Phase 31: Amend a resting paper order's price.
+
+        This was missing entirely, causing 1021 requote failures (0% success).
+        With this fix, poll-based requoting can actually update stale orders
+        to track the current market, potentially doubling fill rate.
+        """
+        self._sim.amend_order(order_id, yes_price=yes_price, no_price=no_price)
 
     async def cancel_order(self, order_id: str) -> None:
         self._sim.cancel_order(order_id)

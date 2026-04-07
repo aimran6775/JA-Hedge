@@ -61,6 +61,7 @@ from app.frankenstein.scheduler import FrankensteinScheduler
 from app.frankenstein.strategy import AdaptiveStrategy
 from app.frankenstein.ws_bridge import WSBridge
 from app.frankenstein.capital_allocator import CapitalAllocator
+from app.frankenstein.arb_engine import arb_scanner
 from app.kalshi.models import Market
 from app.logging_config import get_logger
 from app.pipeline import market_cache
@@ -437,6 +438,11 @@ class Frankenstein:
             self._model._train_samples = 0
             self._state.model_version = "heuristic"
             self._state.pretrained_loaded = False
+            # Phase 31: Reset calibration data — stale checkpoint had poisoned
+            # calibration from bootstrap trades (0% accuracy across all bins).
+            if hasattr(self._model, '_calibration') and self._model._calibration:
+                self._model._calibration.reset()
+                log.warning("🧟⚠️ CALIBRATION RESET — cleared poisoned bootstrap calibration")
 
         # Pretrained model fallback
         if not self._model.is_trained:
@@ -458,22 +464,34 @@ class Frankenstein:
                 except Exception as e:
                     log.error("pretrained_load_failed", error=str(e))
 
-        # ── Phase 26: Synchronous startup bootstrap ─────────────────
-        # The model MUST be trained before trading starts.  Previous approach
-        # (fire-and-forget asyncio.create_task) often failed silently, leaving
-        # the system trading with heuristic-only forever.
-        #
-        # New approach:
-        # 1. Clean stale memory (old churn trades with no usable labels)
-        # 2. Bootstrap from 500+ settled Kalshi markets (known outcomes)
-        # 3. Train XGBoost synchronously → model is ready from first scan
-        # 4. Fall back to heuristic ONLY if bootstrap fails (network error etc.)
+        # ── Phase 31: Bootstrap DISABLED ─────────────────────────────
+        # Bootstrap was injecting synthetic crypto trades (500 at 92.2% WR)
+        # which poisoned the XGBoost model — it learned crypto patterns and
+        # applied them to sports/politics where they don't work (0% accuracy).
+        # The model will now train ONLY on real resolved trades.
+        # Until enough real data accumulates (50+ resolved), the system uses
+        # heuristic predictions (which is FINE for maker mode exploration).
         if not self._model.is_trained:
-            try:
-                await self._startup_bootstrap()
-            except Exception as e:
-                log.error("startup_bootstrap_failed", error=str(e),
-                          hint="System will trade with heuristic predictions")
+            # Try to train from existing real memory (no bootstrap)
+            usable = sum(
+                1 for t in self.memory._trades
+                if t.market_result in ("yes", "no") and t.features
+                and getattr(t, "source", "live") == "live"
+            )
+            if usable >= self.learner.min_samples:
+                try:
+                    result = await self.force_retrain()
+                    if result.get("success"):
+                        log.info("🧟✅ MODEL TRAINED FROM REAL DATA",
+                                 version=result["version"],
+                                 samples=usable)
+                except Exception as e:
+                    log.error("startup_train_failed", error=str(e))
+            else:
+                log.info("🧟📊 AWAITING REAL DATA",
+                         usable=usable,
+                         required=self.learner.min_samples,
+                         hint="Trading with heuristic until enough resolved trades")
 
         # Load pretrained data for fine-tuning (if pretrained model loaded)
         if self._state.pretrained_loaded:
@@ -1123,6 +1141,8 @@ class Frankenstein:
             "order_manager": self._order_mgr.stats(),
             # Phase 5: Fill rate prediction
             "fill_predictor": self._fill_predictor.stats(),
+            # Phase 31: Cross-platform arbitrage
+            "arb_scanner": arb_scanner.status() if arb_scanner else None,
         }
 
     @staticmethod

@@ -278,6 +278,21 @@ class CalibrationTracker:
             ],
         }
 
+    def reset(self) -> None:
+        """Phase 31: Reset all calibration data.
+
+        Called when bootstrap data is purged to prevent stale calibration
+        from poisoned training samples (e.g., 500 crypto bootstrap trades
+        with 0% real accuracy).
+        """
+        self._bin_counts = np.zeros(self.N_BINS, dtype=np.float64)
+        self._bin_positives = np.zeros(self.N_BINS, dtype=np.float64)
+        self._bin_pred_sum = np.zeros(self.N_BINS, dtype=np.float64)
+        self._total_samples = 0
+        self._samples_since_decay = 0
+        self._ece = 0.0
+        self._isotonic_map = None
+
     def to_dict(self) -> dict:
         """Serialize for persistence."""
         return {

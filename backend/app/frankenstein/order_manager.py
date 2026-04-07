@@ -315,6 +315,21 @@ class OrderManager:
                 # fill_rate doesn't show 0% in paper mode.
                 if result.order and getattr(result.order, "remaining_count", -1) == 0:
                     self.fill_rate_stats["filled"] += 1
+                    # Phase 31: Record fill observation for fill predictor
+                    # Paper fills are instant, but we still need to train the
+                    # fill model so it can predict real-market fill rates.
+                    _instant_info = {
+                        "ticker": market.ticker,
+                        "price_cents": price_cents,
+                        "mid_cents": int(features.midpoint * 100) if features.midpoint else 50,
+                        "spread_cents": max(int(features.spread * 100), 1) if features.spread else 3,
+                        "side": prediction.side,
+                        "volume": int(getattr(market, "volume", 0) or 0),
+                        "open_interest": int(getattr(market, "open_interest", 0) or 0),
+                        "amend_count": 0,
+                        "expiration_ts": getattr(market, "close_time", None) or getattr(market, "expiration_time", None),
+                    }
+                    self._record_fill_observation(_instant_info, filled=True)
 
                 if result.order_id:
                     # Phase 5: store book context for fill prediction

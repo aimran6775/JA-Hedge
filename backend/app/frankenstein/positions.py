@@ -278,6 +278,44 @@ class PositionManager:
         if features.hours_to_expiry < 1.0 and unrealized_pnl_pct > 0.40:
             return True, f"maker_lock_gains ({unrealized_pnl_pct:.1%} profit, {features.hours_to_expiry:.1f}h left)"
 
+        # ── Phase 31: Intelligence-driven exit ────────────
+        # If external sources (Polymarket, Vegas, news) strongly disagree
+        # with our position, pay the 7¢ fee to exit.
+        try:
+            from app.frankenstein.arb_engine import arb_scanner
+            arb_signals = arb_scanner._last_signals
+            if ticker in arb_signals:
+                arb = arb_signals[ticker]
+                # If arb says opposite side with large edge, exit
+                if arb.side != our_side and arb.abs_edge > 0.10 and arb.confidence > 0.75:
+                    return True, (
+                        f"maker_intel_exit ({arb.source} says {arb.side} "
+                        f"@ {arb.external_prob:.0%} vs Kalshi {arb.kalshi_prob:.0%}, "
+                        f"edge={arb.edge:+.1%})"
+                    )
+        except Exception:
+            pass
+
+        # ── Phase 31: Momentum exit ───────────────────────
+        # If price is moving strongly against us (3+ consecutive moves
+        # in wrong direction), exit to prevent further loss.
+        try:
+            hist = self._features._histories.get(ticker)
+            if hist and len(hist.prices) >= 5:
+                recent = list(hist.prices)[-5:]
+                if our_side == "yes":
+                    # Price dropping = bad for YES
+                    drops = sum(1 for i in range(1, len(recent)) if recent[i] < recent[i-1])
+                    if drops >= 4 and unrealized_pnl_pct < -0.15:
+                        return True, f"maker_momentum_exit (4+ consecutive drops, pnl={unrealized_pnl_pct:.1%})"
+                else:
+                    # Price rising = bad for NO
+                    rises = sum(1 for i in range(1, len(recent)) if recent[i] > recent[i-1])
+                    if rises >= 4 and unrealized_pnl_pct < -0.15:
+                        return True, f"maker_momentum_exit (4+ consecutive rises, pnl={unrealized_pnl_pct:.1%})"
+        except Exception:
+            pass
+
         return False, ""
 
     # ── Exit Logic ────────────────────────────────────────────────────
