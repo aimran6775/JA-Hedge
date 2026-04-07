@@ -773,9 +773,12 @@ class PaperTradingSimulator:
         """
         order = self._orders.get(order_id)
         if not order:
-            raise ValueError(f"Order {order_id} not found")
+            log.debug("paper_amend_skip_missing", order_id=order_id)
+            return  # Order not found — already filled/cleaned
         if order.status != OrderStatus.RESTING:
-            raise ValueError(f"Order {order_id} is {order.status.value}, not resting")
+            log.debug("paper_amend_skip_status",
+                      order_id=order_id, status=order.status.value)
+            return  # Already filled or cancelled — skip silently
 
         new_price = yes_price if order.side == OrderSide.YES else no_price
         if new_price is None:
