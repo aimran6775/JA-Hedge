@@ -15,6 +15,7 @@ from app.routes.sports import router as sports_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.strategies import router as strategies_router
 from app.routes.intelligence import router as intelligence_router
+from app.routes.stream import router as stream_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(markets_router)
@@ -30,3 +31,4 @@ api_router.include_router(sports_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(strategies_router)
 api_router.include_router(intelligence_router)
+api_router.include_router(stream_router)

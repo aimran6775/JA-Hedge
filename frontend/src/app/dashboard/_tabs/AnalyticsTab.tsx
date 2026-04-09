@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Card } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
 import {
@@ -14,35 +14,13 @@ import {
 } from "@/components/ui/Icons";
 import { api, type FrankensteinTrade } from "@/lib/api";
 import { cn } from "@/lib/utils";
-
-/* ── Helpers ──────────────────────────────────────────────────────────── */
-
-function pnlColor(v: number) {
-  return v > 0 ? "text-accent" : v < 0 ? "text-[var(--danger)]" : "text-[var(--text-muted)]";
-}
-function pnlSign(v: number) {
-  return v > 0 ? `+$${v.toFixed(2)}` : v < 0 ? `-$${Math.abs(v).toFixed(2)}` : "$0.00";
-}
-function prettifyTicker(ticker: string): string {
-  let base = ticker.split("-")[0] ?? ticker;
-  base = base.replace(/^(KX|INX|CPI|GDP|FED|NFL|NBA|MLB|NHL|NCAA)/, "$1 ");
-  base = base.replace(/([a-z])([A-Z])/g, "$1 $2");
-  return base.replace(/\s+/g, " ").trim() || ticker;
-}
-
-function timeAgo(ts: string | null): string {
-  if (!ts) return "--";
-  const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
-  if (m < 1) return "now";
-  if (m < 60) return `${m}m`;
-  if (m < 1440) return `${Math.round(m / 60)}h`;
-  return `${Math.round(m / 1440)}d`;
-}
+import { pnlColor, pnlSign, prettifyTicker, timeAgo, categoryEmoji } from "@/lib/dashboard-utils";
+import { EquityCurve } from "@/components/charts/EquityCurve";
 
 type SubTab = "overview" | "categories" | "confidence" | "model" | "backtest";
 
 /* ═══════════════════════════════════════════════════════════════════════
-   ANALYTICS TAB — How well is the system performing
+   ANALYTICS TAB — Performance analysis with proper charts
    ═══════════════════════════════════════════════════════════════════════ */
 export function AnalyticsTab() {
   const [sub, setSub] = useState<SubTab>("overview");
@@ -113,27 +91,24 @@ export function AnalyticsTab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ strategy: "frankenstein", days: backtestDays }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setBacktestResult(data);
-      }
+      if (res.ok) setBacktestResult(await res.json());
     } catch { /* ignore */ }
     setBacktestRunning(false);
   };
 
   return (
     <div className="space-y-4 animate-fade-in">
-      {/* ── Stat cards ────────────────────────────────────────────────── */}
+      {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Total Trades" value={overview?.total_trades ?? "--"} icon={<IconTarget size={16} />} />
         <StatCard label="Win Rate" value={overview?.win_rate != null ? `${(overview.win_rate * 100).toFixed(0)}%` : "--"} icon={<IconShield size={16} />} />
-        <StatCard label="Total P&L" value={overview?.total_pnl != null ? pnlSign(overview.total_pnl) : "--"} icon={<IconTrendUp size={16} />} />
+        <StatCard label="Total P&L" value={overview?.total_pnl != null ? pnlSign(overview.total_pnl) : "--"} change={overview?.total_pnl} icon={<IconTrendUp size={16} />} />
         <StatCard label="Sharpe" value={overview?.sharpe_ratio?.toFixed(2) ?? "--"} icon={<IconStrategy size={16} />} />
         <StatCard label="Profit Factor" value={overview?.profit_factor?.toFixed(2) ?? "--"} icon={<IconBrain size={16} />} />
         <StatCard label="Max Drawdown" value={overview?.max_drawdown != null ? `$${overview.max_drawdown.toFixed(2)}` : "--"} icon={<IconTrendDown size={16} />} />
       </div>
 
-      {/* ── Sub tabs ──────────────────────────────────────────────────── */}
+      {/* Sub tabs */}
       <div className="flex items-center gap-1 border-b border-white/[0.06]">
         {SUB_TABS.map((t) => (
           <button
@@ -141,15 +116,11 @@ export function AnalyticsTab() {
             onClick={() => setSub(t.id)}
             className={cn(
               "relative px-3 py-2 text-sm font-medium transition-colors",
-              sub === t.id
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+              sub === t.id ? "text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
             )}
           >
             {t.label}
-            {sub === t.id && (
-              <div className="absolute bottom-0 left-1 right-1 h-[2px] rounded-full bg-accent" />
-            )}
+            {sub === t.id && <div className="absolute bottom-0 left-1 right-1 h-[2px] rounded-full bg-accent" />}
           </button>
         ))}
       </div>
@@ -157,10 +128,14 @@ export function AnalyticsTab() {
       {/* ── Overview ──────────────────────────────────────────────────── */}
       {sub === "overview" && (
         <div className="space-y-4">
-          {/* P&L Curve */}
-          <Card title="Cumulative P&L">
-            {pnlCurve && pnlCurve.length > 0 ? (
-              <PnLChart data={pnlCurve} />
+          {/* Interactive Equity Curve */}
+          <Card title="Cumulative P&L" action={
+            pnlCurve && pnlCurve.length > 0 ? (
+              <span className="text-xs text-[var(--text-muted)] tabular-nums">{pnlCurve.length} data points</span>
+            ) : null
+          }>
+            {pnlCurve && pnlCurve.length > 2 ? (
+              <EquityCurve data={pnlCurve} height={260} />
             ) : (
               <div className="flex h-48 items-center justify-center text-sm text-[var(--text-muted)]">
                 Not enough trades for a chart
@@ -168,7 +143,7 @@ export function AnalyticsTab() {
             )}
           </Card>
 
-          {/* Category + Confidence summary side by side */}
+          {/* Category + Confidence side by side */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card title="By Category">
               {byCategory && Object.keys(byCategory).length > 0 ? (
@@ -218,9 +193,7 @@ export function AnalyticsTab() {
                 ))}
             </div>
           ) : (
-            <div className="py-8 text-center text-sm text-[var(--text-muted)]">
-              No category data available
-            </div>
+            <div className="py-8 text-center text-sm text-[var(--text-muted)]">No category data available</div>
           )}
         </Card>
       )}
@@ -300,9 +273,7 @@ export function AnalyticsTab() {
                     ))}
                 </div>
               ) : (
-                <div className="py-6 text-center text-sm text-[var(--text-muted)]">
-                  Calibration not available
-                </div>
+                <div className="py-6 text-center text-sm text-[var(--text-muted)]">Calibration not available</div>
               )}
             </Card>
           </div>
@@ -356,22 +327,19 @@ export function AnalyticsTab() {
                 {backtestRunning ? "Running..." : "Run"}
               </button>
             </div>
-
             {backtestResult && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {([
-                    ["Trades", String(backtestResult.total_trades ?? "--")],
-                    ["Win Rate", backtestResult.win_rate != null ? `${((backtestResult.win_rate as number) * 100).toFixed(0)}%` : "--"],
-                    ["P&L", backtestResult.total_pnl != null ? pnlSign(backtestResult.total_pnl as number) : "--"],
-                    ["Sharpe", (backtestResult.sharpe_ratio as number)?.toFixed(2) ?? "--"],
-                  ] as [string, string][]).map(([label, value]) => (
-                    <div key={label} className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-3">
-                      <div className="text-[10px] text-[var(--text-muted)] uppercase">{label}</div>
-                      <div className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{value}</div>
-                    </div>
-                  ))}
-                </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {([
+                  ["Trades", String(backtestResult.total_trades ?? "--")],
+                  ["Win Rate", backtestResult.win_rate != null ? `${((backtestResult.win_rate as number) * 100).toFixed(0)}%` : "--"],
+                  ["P&L", backtestResult.total_pnl != null ? pnlSign(backtestResult.total_pnl as number) : "--"],
+                  ["Sharpe", (backtestResult.sharpe_ratio as number)?.toFixed(2) ?? "--"],
+                ] as [string, string][]).map(([label, value]) => (
+                  <div key={label} className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-3">
+                    <div className="text-[10px] text-[var(--text-muted)] uppercase">{label}</div>
+                    <div className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{value}</div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -381,94 +349,22 @@ export function AnalyticsTab() {
   );
 }
 
-/* ── P&L Chart (CSS-only) ─────────────────────────────────────────────── */
-
-function PnLChart({ data }: { data: Array<Record<string, unknown>> }) {
-  if (data.length < 2) return null;
-
-  const values = data.map((d) => (d.cumulative_pnl as number) ?? (d.pnl as number) ?? 0);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const height = 180;
-  const width = 100; // percentage
-
-  const points = values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * width;
-      const y = height - ((v - min) / range) * (height - 20) - 10;
-      return `${x},${y}`;
-    })
-    .join(" ");
-
-  // Zero line
-  const zeroY = height - ((0 - min) / range) * (height - 20) - 10;
-
-  return (
-    <div className="relative" style={{ height }}>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        className="w-full h-full"
-      >
-        {/* Zero line */}
-        <line
-          x1="0"
-          y1={zeroY}
-          x2={width}
-          y2={zeroY}
-          stroke="rgba(255,255,255,0.08)"
-          strokeDasharray="2,2"
-          strokeWidth="0.3"
-        />
-        {/* P&L line */}
-        <polyline
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth="0.5"
-          points={points}
-        />
-        {/* Fill below line */}
-        <polygon
-          fill="url(#pnlGrad)"
-          points={`0,${height} ${points} ${width},${height}`}
-          opacity="0.3"
-        />
-        <defs>
-          <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-      </svg>
-      {/* Labels */}
-      <div className="absolute top-1 left-2 text-[10px] tabular-nums text-[var(--text-muted)]">
-        {pnlSign(max)}
-      </div>
-      <div className="absolute bottom-1 left-2 text-[10px] tabular-nums text-[var(--text-muted)]">
-        {pnlSign(min)}
-      </div>
-      <div className="absolute bottom-1 right-2 text-[10px] tabular-nums text-[var(--text-muted)]">
-        {values.length} trades
-      </div>
-    </div>
-  );
-}
-
 /* ── Category row ─────────────────────────────────────────────────────── */
 
 function CategoryRow({ category, stats }: { category: string; stats: Record<string, number> }) {
+  const wrPct = stats.win_rate != null ? stats.win_rate * 100 : 0;
   return (
     <div className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
-      <span className="text-sm text-[var(--text-primary)] capitalize">{category}</span>
+      <div className="flex items-center gap-2">
+        <span className="text-sm">{categoryEmoji(category)}</span>
+        <span className="text-sm text-[var(--text-primary)] capitalize">{category}</span>
+      </div>
       <div className="flex items-center gap-4 text-xs tabular-nums">
         <span className="text-[var(--text-muted)]">{stats.count ?? 0} trades</span>
-        <span className="text-[var(--text-muted)]">
-          {stats.win_rate != null ? `${(stats.win_rate * 100).toFixed(0)}% WR` : ""}
+        <span className={wrPct >= 50 ? "text-accent" : wrPct > 0 ? "text-[var(--warning)]" : "text-[var(--text-muted)]"}>
+          {stats.win_rate != null ? `${wrPct.toFixed(0)}% WR` : ""}
         </span>
-        <span className={`font-medium ${pnlColor(stats.total_pnl ?? 0)}`}>
-          {pnlSign(stats.total_pnl ?? 0)}
-        </span>
+        <span className={`font-medium ${pnlColor(stats.total_pnl ?? 0)}`}>{pnlSign(stats.total_pnl ?? 0)}</span>
       </div>
     </div>
   );
@@ -478,7 +374,10 @@ function CategoryDetailRow({ category, stats }: { category: string; stats: Recor
   return (
     <div className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-sm font-medium text-[var(--text-primary)] capitalize">{category}</span>
+        <div className="flex items-center gap-2">
+          <span>{categoryEmoji(category)}</span>
+          <span className="text-sm font-medium text-[var(--text-primary)] capitalize">{category}</span>
+        </div>
         <span className={`text-sm font-semibold tabular-nums ${pnlColor(stats.total_pnl ?? 0)}`}>
           {pnlSign(stats.total_pnl ?? 0)}
         </span>
@@ -522,9 +421,7 @@ function ConfidenceRow({ band, stats }: { band: string; stats: Record<string, nu
         <span className="text-[var(--text-muted)]">
           {stats.win_rate != null ? `${(stats.win_rate * 100).toFixed(0)}% WR` : ""}
         </span>
-        <span className={`font-medium ${pnlColor(stats.total_pnl ?? 0)}`}>
-          {pnlSign(stats.total_pnl ?? 0)}
-        </span>
+        <span className={`font-medium ${pnlColor(stats.total_pnl ?? 0)}`}>{pnlSign(stats.total_pnl ?? 0)}</span>
       </div>
     </div>
   );
@@ -554,32 +451,18 @@ function TradeTable({ trades }: { trades: FrankensteinTrade[] }) {
         <tbody>
           {trades.slice(0, 50).map((t, i) => (
             <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
-              <td className="py-1.5 pr-4 text-xs tabular-nums text-[var(--text-muted)]">
-                {timeAgo(t.timestamp)}
-              </td>
-              <td className="py-1.5 pr-4 text-xs text-[var(--text-primary)] truncate max-w-[180px]">
-                {prettifyTicker(t.ticker)}
-              </td>
+              <td className="py-1.5 pr-4 text-xs tabular-nums text-[var(--text-muted)]">{timeAgo(t.timestamp)}</td>
+              <td className="py-1.5 pr-4 text-xs text-[var(--text-primary)] truncate max-w-[180px]">{prettifyTicker(t.ticker)}</td>
               <td className="py-1.5 pr-4">
-                <span className={`text-[10px] font-semibold uppercase ${t.side === "yes" ? "text-accent" : "text-[var(--danger)]"}`}>
-                  {t.side}
-                </span>
+                <span className={`text-[10px] font-semibold uppercase ${t.side === "yes" ? "text-accent" : "text-[var(--danger)]"}`}>{t.side}</span>
               </td>
-              <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-[var(--text-secondary)]">
-                {t.price_cents}c
-              </td>
-              <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-[var(--text-secondary)]">
-                {((t.confidence ?? 0) * 100).toFixed(0)}%
-              </td>
-              <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-[var(--text-secondary)]">
-                {((t.edge ?? 0) * 100).toFixed(1)}c
-              </td>
+              <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-[var(--text-secondary)]">{t.price_cents}c</td>
+              <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-[var(--text-secondary)]">{((t.confidence ?? 0) * 100).toFixed(0)}%</td>
+              <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-[var(--text-secondary)]">{((t.edge ?? 0) * 100).toFixed(1)}c</td>
               <td className="py-1.5 pr-4">
                 <span className={`text-[10px] font-semibold uppercase ${
                   t.outcome === "win" ? "text-accent" : t.outcome === "loss" ? "text-[var(--danger)]" : "text-[var(--text-muted)]"
-                }`}>
-                  {t.outcome}
-                </span>
+                }`}>{t.outcome}</span>
               </td>
               <td className={`py-1.5 text-right text-xs tabular-nums font-medium ${pnlColor(t.pnl_cents ?? 0)}`}>
                 {(t.pnl_cents ?? 0) !== 0 ? `${t.pnl_cents > 0 ? "+" : ""}${(t.pnl_cents / 100).toFixed(2)}` : "--"}

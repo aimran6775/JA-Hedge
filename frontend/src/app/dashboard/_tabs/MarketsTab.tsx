@@ -254,60 +254,179 @@ export function MarketsTab() {
       {/* ── Sports ────────────────────────────────────────────────────── */}
       {sub === "sports" && (
         <div className="space-y-4">
-          <Card title="Sports Status">
+          {/* Sports Status Summary */}
+          <Card title="🏀 Sports Module" action={
+            <button onClick={fetchSports} className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
+              <IconRefresh size={14} />
+            </button>
+          }>
             {sportsData ? (
-              <div className="space-y-1.5">
-                {Object.entries(sportsData).slice(0, 8).map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-1.5">
-                    <span className="text-xs text-[var(--text-muted)] capitalize">{k.replace(/_/g, " ")}</span>
-                    <span className="text-xs text-[var(--text-primary)] tabular-nums">{String(v ?? "--")}</span>
-                  </div>
-                ))}
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  {(() => { const d = sportsData as any; return [
+                    ["Active Games", d.active_games ?? d.live_games ?? 0],
+                    ["Markets Found", sportsMarkets.length],
+                    ["Odds Sources", d.odds_sources ?? d.active_sources ?? "--"],
+                    ["Status", d.status ?? (d.enabled ? "Active" : "Inactive")],
+                  ].map(([label, val]) => (
+                    <div key={String(label)} className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-2.5">
+                      <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{String(label)}</div>
+                      <div className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{String(val)}</div>
+                    </div>
+                  )); })()}
+                </div>
+                {/* Key settings */}
+                <div className="space-y-1">
+                  {Object.entries(sportsData)
+                    .filter(([k]) => !['active_games','live_games','status','enabled','odds_sources','active_sources'].includes(k))
+                    .slice(0, 6).map(([k, v]) => (
+                    <div key={k} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-1.5">
+                      <span className="text-xs text-[var(--text-muted)] capitalize">{k.replace(/_/g, " ")}</span>
+                      <span className="text-xs text-[var(--text-primary)] tabular-nums">{typeof v === 'object' ? JSON.stringify(v).slice(0, 40) : String(v ?? "--")}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : (
-              <div className="py-6 text-center text-sm text-[var(--text-muted)]">No sports data</div>
+              <div className="py-6 text-center text-sm text-[var(--text-muted)]">
+                <div className="animate-shimmer h-20 rounded-lg" />
+              </div>
             )}
           </Card>
 
-          {sportsMarkets.length > 0 && (
-            <Card title="Sports Markets" action={<span className="text-xs text-[var(--text-muted)]">{sportsMarkets.length} markets</span>}>
-              <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
-                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                {(sportsMarkets as any[]).slice(0, 30).map((m: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-[var(--text-primary)] truncate">{m.title ?? m.ticker ?? "--"}</div>
-                      <div className="text-[10px] text-[var(--text-muted)]">{m.sport ?? m.category ?? ""}</div>
-                    </div>
-                    <div className="text-xs tabular-nums text-[var(--text-secondary)]">
-                      {m.yes_bid != null ? `${m.yes_bid}c` : "--"}
-                    </div>
-                  </div>
-                ))}
+          {/* Sports Markets */}
+          <Card title="Sports Markets" action={<span className="text-xs text-[var(--text-muted)]">{sportsMarkets.length} markets</span>}>
+            {sportsMarkets.length > 0 ? (
+              <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-[var(--bg-primary)]">
+                    <tr className="border-b border-white/[0.06] text-left text-xs text-[var(--text-muted)] uppercase tracking-wider">
+                      <th className="pb-2 pr-4 font-medium">Market</th>
+                      <th className="pb-2 pr-4 font-medium">Sport</th>
+                      <th className="pb-2 pr-4 text-right font-medium">Yes Bid</th>
+                      <th className="pb-2 pr-4 text-right font-medium">Yes Ask</th>
+                      <th className="pb-2 text-right font-medium">Volume</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                    {(sportsMarkets as any[]).slice(0, 50).map((m: any, i: number) => (
+                      <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
+                        <td className="py-1.5 pr-4 text-xs font-medium text-[var(--text-primary)] truncate max-w-[250px]">
+                          {m.title ?? m.ticker ?? "--"}
+                        </td>
+                        <td className="py-1.5 pr-4">
+                          <span className="inline-flex rounded bg-white/[0.04] border border-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium uppercase text-[var(--text-muted)]">
+                            {m.sport ?? m.category ?? "--"}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-accent">
+                          {m.yes_bid != null ? `${m.yes_bid}¢` : "--"}
+                        </td>
+                        <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-[var(--text-secondary)]">
+                          {m.yes_ask != null ? `${m.yes_ask}¢` : "--"}
+                        </td>
+                        <td className="py-1.5 text-right text-xs tabular-nums text-[var(--text-muted)]">
+                          {m.volume != null ? Number(m.volume).toLocaleString() : "--"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            </Card>
-          )}
+            ) : (
+              <div className="py-8 text-center text-sm text-[var(--text-muted)]">No sports markets found</div>
+            )}
+          </Card>
         </div>
       )}
 
       {/* ── Intelligence ──────────────────────────────────────────────── */}
       {sub === "intelligence" && (
-        <Card title="Intelligence Dashboard">
-          {intelDash ? (
-            <div className="space-y-1.5">
-              {Object.entries(intelDash).slice(0, 12).map(([k, v]) => (
-                <div key={k} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-1.5">
-                  <span className="text-xs text-[var(--text-muted)] capitalize">{k.replace(/_/g, " ")}</span>
-                  <span className="text-xs text-[var(--text-primary)] tabular-nums">
-                    {typeof v === "object" ? JSON.stringify(v).substring(0, 60) : String(v ?? "--")}
-                  </span>
+        <div className="space-y-4">
+          <Card title="🧠 Intelligence Hub" action={
+            <button onClick={fetchIntel} className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
+              <IconRefresh size={14} />
+            </button>
+          }>
+            {intelDash ? (
+              <div className="space-y-3">
+                {/* Summary stats */}
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  {(() => { const d = intelDash as any; return [
+                    ["Active Sources", d.active_sources ?? d.sources_active ?? 0],
+                    ["Total Signals", d.total_signals ?? d.signal_count ?? 0],
+                    ["Avg Confidence", d.avg_confidence != null ? `${(d.avg_confidence * 100).toFixed(0)}%` : "--"],
+                    ["Status", d.status ?? (d.enabled ? "Active" : "Inactive")],
+                  ].map(([label, val]) => (
+                    <div key={String(label)} className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-2.5">
+                      <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{String(label)}</div>
+                      <div className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{String(val)}</div>
+                    </div>
+                  )); })()}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="py-6 text-center text-sm text-[var(--text-muted)]">No intelligence data</div>
-          )}
-        </Card>
+
+                {/* Source list */}
+                {(() => {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const d = intelDash as any;
+                  const sources = d.sources ?? d.data_sources ?? d.source_status;
+                  if (!sources || typeof sources !== 'object') return null;
+                  const entries = Array.isArray(sources) ? sources : Object.entries(sources).map(([k, v]) => ({ name: k, ...(typeof v === 'object' && v !== null ? v as Record<string, unknown> : { status: v }) }));
+                  if (entries.length === 0) return null;
+                  return (
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Data Sources</div>
+                      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                      {entries.slice(0, 12).map((src: any, idx: number) => {
+                        const name = src.name ?? src.source ?? `Source ${idx + 1}`;
+                        const status = src.status ?? src.state ?? 'unknown';
+                        const isActive = ['active','ready','ok','running','connected'].includes(String(status).toLowerCase());
+                        return (
+                          <div key={idx} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-block h-1.5 w-1.5 rounded-full ${isActive ? 'bg-accent' : 'bg-[var(--text-muted)]'}`} />
+                              <span className="text-xs font-medium text-[var(--text-primary)] capitalize">{String(name).replace(/_/g, ' ')}</span>
+                            </div>
+                            <div className="flex items-center gap-3 text-xs">
+                              {src.signal_count != null && (
+                                <span className="tabular-nums text-[var(--text-muted)]">{src.signal_count} signals</span>
+                              )}
+                              {src.last_update && (
+                                <span className="tabular-nums text-[var(--text-muted)]">{String(src.last_update).slice(0, 19)}</span>
+                              )}
+                              <span className={isActive ? 'text-accent' : 'text-[var(--text-muted)]'}>{String(status)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+                {/* Remaining key-value data */}
+                <div className="space-y-1">
+                  {Object.entries(intelDash)
+                    .filter(([k]) => !['sources','data_sources','source_status','active_sources','sources_active','total_signals','signal_count','avg_confidence','status','enabled'].includes(k))
+                    .slice(0, 8).map(([k, v]) => (
+                    <div key={k} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-1.5">
+                      <span className="text-xs text-[var(--text-muted)] capitalize">{k.replace(/_/g, ' ')}</span>
+                      <span className="text-xs text-[var(--text-primary)] tabular-nums">
+                        {typeof v === 'object' ? JSON.stringify(v).slice(0, 50) : String(v ?? '--')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-[var(--text-muted)]">
+                <div className="animate-shimmer h-20 rounded-lg" />
+              </div>
+            )}
+          </Card>
+        </div>
       )}
 
       {/* ── Alerts ────────────────────────────────────────────────────── */}
