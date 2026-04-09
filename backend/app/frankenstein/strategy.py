@@ -92,15 +92,19 @@ class AdaptiveStrategy:
         self.params = base_params or StrategyParams()
         self.adaptation_interval = adaptation_interval
 
-        # Defaults (never go below/above these) — AGGRESSIVE bounds (Phase 27)
-        self._MIN_CONFIDENCE = 0.30    # Phase 27: lower floor
-        self._MAX_CONFIDENCE = 0.55    # Tighter cap — 0.65 chokes trade volume
-        self._MIN_EDGE = 0.02          # Phase 27: 2% min edge — maker has no fees
-        self._MAX_EDGE = 0.12          # Cap at 12%
-        self._MIN_KELLY = 0.10         # Phase 27: floor at 10% — bet meaningful
-        self._MAX_KELLY = 0.40         # Phase 27: up to 40% Kelly
-        self._MIN_AGGRESSION = 0.25    # Phase 27: stay aggressive
-        self._MAX_AGGRESSION = 0.80    # Phase 27: allow high aggression
+        # Phase 32: TIGHT clamp bounds. The old bounds (MAX_CONF=0.55,
+        # MAX_EDGE=0.12) let adaptation drift so far from defaults that
+        # the system stopped trading entirely (min_conf 0.35→0.42, min_edge
+        # 0.03→0.049 after 72 adaptations).  New bounds keep params within
+        # a narrow band around the defaults so adaptation can't kill trade flow.
+        self._MIN_CONFIDENCE = 0.32    # Floor: always take high-confidence trades
+        self._MAX_CONFIDENCE = 0.43    # Cap: never require >43% confidence
+        self._MIN_EDGE = 0.025         # Floor: 2.5% min edge
+        self._MAX_EDGE = 0.06          # Cap: never require >6% edge (was 12%!)
+        self._MIN_KELLY = 0.15         # Floor: bet meaningful amounts
+        self._MAX_KELLY = 0.35         # Cap: don't over-concentrate
+        self._MIN_AGGRESSION = 0.30    # Floor: stay aggressive
+        self._MAX_AGGRESSION = 0.75    # Cap: not reckless
 
         # History
         self._adaptations: list[AdaptationEvent] = []
@@ -142,11 +146,12 @@ class AdaptiveStrategy:
         events: list[AdaptationEvent] = []
 
         # ── LEARNING MODE GUARD ──────────────────────────────────────
-        # Phase 31: Raised from 100 → 500. The old guard let adaptation
-        # start at 100 trades which caused 17 adaptations in 1 hour = death spiral.
-        # With only ~100 data points, statistical estimates are garbage.
-        # Keep defaults and collect data until we have real statistical power.
-        if snapshot.real_trades < 500:
+        # Phase 32: Raised from 500 → 1000. The system has been running
+        # with mostly inherited trade data from prior buggy generations.
+        # Adaptation on that data causes death spirals (72 adaptations
+        # drove min_conf 0.35→0.42, killing trade flow). Wait for 1000
+        # fresh trades before allowing any param changes.
+        if snapshot.real_trades < 1000:
             log.info(
                 "strategy_learning_mode_skip_adaptation",
                 real_trades=snapshot.real_trades,
@@ -252,12 +257,11 @@ class AdaptiveStrategy:
             events.extend(self._adjust("min_confidence", max(self.params.min_confidence - 0.02, self._MIN_CONFIDENCE), "high_win_rate"))
             events.extend(self._adjust("kelly_fraction", min(self.params.kelly_fraction + 0.02, self._MAX_KELLY), "high_win_rate"))
 
-        elif snap.win_rate < 0.25:
-            # Only tighten on truly terrible win rate (<25%), not just below average
-            # Smaller steps: 0.005 confidence, 0.002 edge, 0.005 kelly
-            events.extend(self._adjust("min_confidence", min(self.params.min_confidence + 0.005, self._MAX_CONFIDENCE), "low_win_rate"))
-            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.002, self._MAX_EDGE), "low_win_rate"))
-            events.extend(self._adjust("kelly_fraction", max(self.params.kelly_fraction - 0.005, self._MIN_KELLY), "low_win_rate"))
+        elif snap.win_rate < 0.15:
+            # Phase 32: Only tighten on truly catastrophic WR (<15%, was 25%)
+            # Tiny steps to prevent compounding with other adaptations
+            events.extend(self._adjust("min_confidence", min(self.params.min_confidence + 0.003, self._MAX_CONFIDENCE), "low_win_rate"))
+            events.extend(self._adjust("kelly_fraction", max(self.params.kelly_fraction - 0.003, self._MIN_KELLY), "low_win_rate"))
 
         return [e for e in events if e is not None]
 
@@ -292,11 +296,12 @@ class AdaptiveStrategy:
         if snap.real_trades < 100:
             return events  # Need substantial data before judging accuracy
 
-        if snap.prediction_accuracy < 0.30:
-            # Model is truly bad (<30%) — tighten slightly but stay in the game
-            events.extend(self._adjust("min_confidence", 0.42, "poor_accuracy"))
-            events.extend(self._adjust("min_edge", 0.05, "poor_accuracy"))
-            events.extend(self._adjust("kelly_fraction", 0.18, "poor_accuracy"))
+        if snap.prediction_accuracy < 0.20:
+            # Phase 32: Only trigger on truly terrible accuracy (<20%, was 30%).
+            # Targets lowered to stay within tight clamp bounds.
+            events.extend(self._adjust("min_confidence", 0.40, "poor_accuracy"))
+            events.extend(self._adjust("min_edge", 0.04, "poor_accuracy"))
+            events.extend(self._adjust("kelly_fraction", 0.20, "poor_accuracy"))
 
         elif snap.prediction_accuracy > 0.55:
             # Model is good — open up
@@ -304,8 +309,9 @@ class AdaptiveStrategy:
             events.extend(self._adjust("min_edge", 0.03, "good_accuracy"))
 
         # Confidence calibration: nudge edge slightly if overconfident
-        if snap.confidence_calibration > 0.20:
-            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.005, self._MAX_EDGE), "poor_calibration"))
+        # Phase 32: Raised threshold 0.20→0.30, reduced bump 0.005→0.002
+        if snap.confidence_calibration > 0.30:
+            events.extend(self._adjust("min_edge", min(self.params.min_edge + 0.002, self._MAX_EDGE), "poor_calibration"))
 
         return [e for e in events if e is not None]
 
@@ -320,15 +326,17 @@ class AdaptiveStrategy:
         """
         events = []
 
-        if snap.consecutive_losses >= 5:
-            # Scale back kelly gently — 0.01 per loss in streak
-            reduction = 0.01 * (snap.consecutive_losses - 4)
+        if snap.consecutive_losses >= 8:
+            # Phase 32: Gentler loss-streak handling. Old thresholds (5 losses,
+            # 0.01 per loss) were too aggressive — 13 losses drove kelly from
+            # 0.30 → 0.15 in one cycle. New: start at 8, 0.005 per loss.
+            reduction = 0.005 * (snap.consecutive_losses - 7)
             new_kelly = max(self.params.kelly_fraction - reduction, self._MIN_KELLY)
             events.extend(self._adjust("kelly_fraction", new_kelly, f"loss_streak_{snap.consecutive_losses}"))
 
-            if snap.consecutive_losses >= 8:
-                # Only tighten confidence after a long streak
-                new_conf = min(self.params.min_confidence + 0.02, self._MAX_CONFIDENCE)
+            if snap.consecutive_losses >= 12:
+                # Only tighten confidence after a very long streak
+                new_conf = min(self.params.min_confidence + 0.01, self._MAX_CONFIDENCE)
                 events.extend(self._adjust("min_confidence", new_conf, "loss_streak_tighten"))
 
         # Always restore scan_interval toward baseline (don't let it bloat)

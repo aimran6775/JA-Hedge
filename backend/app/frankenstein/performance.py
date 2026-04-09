@@ -490,12 +490,14 @@ class PerformanceTracker:
 
     # Phase 5+16+20+24b: Category retirement — auto-disable losing categories
     # Phase 24b: Now uses rolling window so categories can recover as model improves
-    _RETIREMENT_MIN_TRADES = 30      # Need 30+ trades to judge (was 20 — too trigger-happy)
-    _RETIREMENT_WR_THRESHOLD = 0.22  # Win rate below 22% → retire (was 28% — too aggressive)
-    _RETIREMENT_COOLDOWN_H = 4.0     # 4h cooldown — give categories time to find new signal
-    _RETIREMENT_MAX_LOSS_STREAK = 10 # 10 consecutive losses → immediate cooldown (was 8)
-    _RETIREMENT_MAX_LOSS_DOLLARS = -40.0  # Phase 24: Loosened from -$25 — intelligence data should help
-    _RETIREMENT_ROLLING_WINDOW = 50  # Phase 24b: Only look at last 50 trades per category for retirement
+    # Phase 32: Retirement was too aggressive — sports & finance got retired
+    # based on inherited buggy-gen data. Raise bar significantly.
+    _RETIREMENT_MIN_TRADES = 75      # Need 75+ trades to judge (was 30)
+    _RETIREMENT_WR_THRESHOLD = 0.12  # Only retire truly hopeless (<12% WR, was 22%)
+    _RETIREMENT_COOLDOWN_H = 2.0     # 2h cooldown (was 4h) — shorter since bar is higher
+    _RETIREMENT_MAX_LOSS_STREAK = 15 # 15 consecutive losses → immediate cooldown (was 10)
+    _RETIREMENT_MAX_LOSS_DOLLARS = -75.0  # Phase 32: -$75 loss floor (was -$40)
+    _RETIREMENT_ROLLING_WINDOW = 75  # Phase 32: Wider window to smooth noise (was 50)
 
     def __init_retirement(self) -> None:
         """Initialize retirement tracking (called lazily)."""

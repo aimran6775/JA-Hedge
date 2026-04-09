@@ -535,15 +535,18 @@ class MarketScanner:
             zero_pct = (arr == 0.0).sum() / max(len(arr), 1)
             if _cold_start:
                 # Ultra-relaxed: on cold start, we just need ANY non-zero data.
-                # Model is untrained → learning mode → every trade is a learning trade.
-                # Maker mode = 0 fees so imprecise signals are cheap.
                 _thr = 0.98
             elif self._is_in_learning_mode():
-                _thr = 0.85  # Still relaxed until enough real data
+                _thr = 0.90  # Relaxed until enough real data
             elif len(candidates) < 50:
-                _thr = 0.65  # Relax when few candidates
+                _thr = 0.82  # Relax when few candidates
             else:
-                _thr = 0.50  # Normal operation
+                # Phase 32: Raised from 0.50. ~30% of features are structurally
+                # zero (alt-data, sports, arb signals) even with full price
+                # history. The old 0.50 threshold blocked everything after
+                # cold-start expired. 0.75 = need at least 25% non-zero which
+                # is achievable with just price + time features.
+                _thr = 0.75
             if zero_pct > _thr:
                 continue
             filtered_c.append(m)
@@ -953,8 +956,15 @@ class MarketScanner:
                 _edges = _CATEGORY_MIN_EDGES_MAKER if USE_MAKER_ORDERS else _CATEGORY_MIN_EDGES_TAKER
                 cat_min = _edges.get(cat, 0.04 if USE_MAKER_ORDERS else 0.06)
                 effective_min_edge = max(effective_min_edge, cat_min)
-                cost_to_beat = fee_as_fraction + half_spread
-                effective_min_edge = max(effective_min_edge, cost_to_beat * (1.2 if USE_MAKER_ORDERS else 1.5))
+                # Phase 32: Maker mode = 0 spread cost. We POST at our
+                # price, we never cross the spread.  The old code included
+                # half_spread which blocked every wide-spread market — the
+                # exact markets makers should target.
+                if USE_MAKER_ORDERS:
+                    cost_to_beat = 0.0  # Maker: no spread cost, no fees
+                else:
+                    cost_to_beat = fee_as_fraction + half_spread
+                    effective_min_edge = max(effective_min_edge, cost_to_beat * 1.5)
 
             if abs(prediction.edge) < effective_min_edge:
                 continue
