@@ -108,6 +108,7 @@ class MarketScanner:
         self._sports_risk = sports_risk
         self._sports_only = sports_only
         self._sports_predictor_v2 = None  # Phase 30: set by brain after wiring
+        self._live_engine = None           # Phase 33: LiveTradingEngine, set by brain
 
         # Category specialist models
         self._category_models: dict[str, XGBoostPredictor] = category_models or {}
@@ -895,6 +896,51 @@ class MarketScanner:
                     )
                     if not passed:
                         continue
+
+            # ── Phase 33: Live In-Game Volatility Trading ──────────
+            # When a game is live and we have the live engine, analyze
+            # game state for score-arb, momentum scalp, garbage-time,
+            # and halftime signals.  These can boost confidence or even
+            # flip the predicted side for in-game mispricing.
+            _live_signals = []
+            if (self._live_engine and self._sports_detector
+                    and self._sports_feat):
+                info = self._sports_detector.detect(market)
+                if info.is_sports and info.is_live:
+                    sports_features = self._sports_feat.compute(market, features)
+                    # Build game_state dict from sports features
+                    _game_state = {
+                        "is_live": sports_features.is_live,
+                        "progress": sports_features.game_progress,
+                        "score_differential": sports_features.score_differential,
+                        "momentum_home": sports_features.momentum_home,
+                        "period": sports_features.game_period,
+                        "is_halftime": sports_features.game_progress > 0.45
+                            and sports_features.game_progress < 0.55
+                            and sports_features.game_period <= 2,
+                    }
+                    _live_signals = self._live_engine.analyze(
+                        _game_state, sports_features, market.ticker,
+                    )
+                    if _live_signals:
+                        # Apply live signal boost to prediction
+                        best_sig = max(_live_signals, key=lambda s: s.strength)
+                        # Boost confidence based on live signal strength
+                        _conf_boost = best_sig.strength * 0.15
+                        prediction = Prediction(
+                            predicted_prob=prediction.predicted_prob,
+                            confidence=min(1.0, prediction.confidence + _conf_boost),
+                            side=best_sig.side if best_sig.strength > 0.6 else prediction.side,
+                            edge=prediction.edge,
+                            model_name=prediction.model_name or "live_boost",
+                        )
+                        log.info("🏟️ LIVE_ENGINE_SIGNAL",
+                                 ticker=market.ticker,
+                                 signal_type=best_sig.signal_type,
+                                 strength=f"{best_sig.strength:.2f}",
+                                 reason=best_sig.reason,
+                                 side=best_sig.side,
+                                 conf_boost=f"{_conf_boost:.3f}")
 
             # Price floor
             mid_price = features.midpoint

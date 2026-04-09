@@ -300,6 +300,7 @@ class Frankenstein:
         self._scanner._sports_feat = self._sports_feat
         self._scanner._sports_risk = self._sports_risk
         self._scanner._sports_only = self._sports_only
+        self._scanner._live_engine = self._live_engine  # Phase 33: in-game volatility
         # Phase 30: Wire V2 predictor
         self._scanner._sports_predictor_v2 = getattr(self, '_sports_predictor_v2', None)
         self._positions._sports_detector = self._sports_detector
@@ -607,6 +608,16 @@ class Frankenstein:
                     }
 
                 interval = self.strategy.params.scan_interval
+                # Phase 33: Faster scanning during live games for
+                # in-game volatility trading (score arb, momentum, etc.)
+                if self._live_engine:
+                    try:
+                        from app.sports.game_tracker import game_tracker as _gt
+                        _live_count = len(_gt.get_live_games())
+                        if _live_count > 0:
+                            interval = min(interval, 15.0)  # 15s during live games
+                    except Exception:
+                        pass
                 elapsed = time.monotonic() - scan_start
                 await asyncio.sleep(max(1.0, interval - elapsed))
         except asyncio.CancelledError:
@@ -1153,6 +1164,8 @@ class Frankenstein:
             "fill_predictor": self._fill_predictor.stats(),
             # Phase 31: Cross-platform arbitrage
             "arb_scanner": arb_scanner.status() if arb_scanner else None,
+            # Phase 33: Live in-game volatility engine
+            "live_engine": self._live_engine.stats() if self._live_engine else None,
         }
 
     @staticmethod

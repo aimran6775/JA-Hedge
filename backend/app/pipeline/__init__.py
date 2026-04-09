@@ -154,36 +154,59 @@ class MarketDataPipeline:
         log.info("market_pipeline_stopped")
 
     async def _full_refresh(self) -> None:
-        """Fetch all active markets from REST API and update cache + DB."""
+        """Fetch all active individual markets via the events endpoint.
+
+        Phase 33: Kalshi has 200K+ active markets, 99% of which are MVE
+        parlays.  Paginating through /markets hits the MVE wall — only
+        ~170 individual markets are found in the first 30K.  Instead, we
+        fetch via /events (which has NO MVE bloat) and collect nested
+        markets.  This gives us all ~1,400 individual markets in ~10-20
+        API calls vs 150+ previously.
+        """
         try:
-            all_markets = await self._api.markets.get_all_markets(
-                status=MarketStatus.ACTIVE
-            )
+            all_markets: list[Market] = []
+            cursor: str | None = None
+            page = 0
+            max_pages = 50  # Safety cap; events are far fewer than markets
 
-            # Filter out MVE parlay markets — they outnumber individual markets
-            # ~10:1 and drown out the cache.  All MVE tickers start with KXMVE.
-            # We keep individual markets (sports, crypto, politics, weather, etc.)
-            _MVE_PREFIXES = ("KXMVE", "KXMVECROSSCATEGORY", "KXMVESPORTS")
-            markets = [
-                m for m in all_markets
-                if not (m.ticker or "").upper().startswith(_MVE_PREFIXES)
-            ]
+            while page < max_pages:
+                events, cursor = await self._api.markets.list_events(
+                    status=MarketStatus.OPEN,
+                    with_nested_markets=True,
+                    limit=200,
+                    cursor=cursor,
+                )
+                for evt in events:
+                    for m in evt.markets:
+                        # Skip MVE / parlay / spot-stream tickers
+                        t_upper = (m.ticker or "").upper()
+                        if t_upper.startswith(("KXMVE", "KXPARLAY", "KXSPOTSTREAMGLOBAL")):
+                            continue
+                        # Inherit event metadata onto market if missing
+                        if not m.event_ticker and evt.event_ticker:
+                            m.event_ticker = evt.event_ticker
+                        if not m.category and evt.category:
+                            m.category = evt.category
+                        all_markets.append(m)
+                page += 1
+                if not cursor or not events:
+                    break
 
-            market_cache.upsert_many(markets)
-            await self._upsert_markets_to_db(markets)
+            market_cache.upsert_many(all_markets)
+            await self._upsert_markets_to_db(all_markets)
 
             # Feed FeatureEngine with fresh price data
             if self._on_refresh_callback:
                 try:
-                    self._on_refresh_callback(markets)
+                    self._on_refresh_callback(all_markets)
                 except Exception as cb_err:
                     log.debug("refresh_callback_error", error=str(cb_err))
 
             log.info(
                 "market_full_refresh",
-                total_from_api=len(all_markets),
-                mve_filtered=len(all_markets) - len(markets),
-                individual_cached=len(markets),
+                method="events",
+                pages=page,
+                individual_cached=len(all_markets),
             )
         except Exception as e:
             log.error("market_refresh_failed", error=str(e))
