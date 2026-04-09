@@ -56,10 +56,11 @@ TIMEOUT_PRICE_NO = 0.10              # timeout resolve NO when ≤ 0.10 (was 0.2
 # Strategy: hold to settlement — no early exit (avoids sell-side fees).
 USE_MAKER_ORDERS = True
 
-# Phase 6+25+27: Hard daily trade cap.
-# Phase 27: Raised from 300→500 for aggressive capital deployment.
-# With 0¢ maker fees, the cost of exploration is near-zero.
-MAX_DAILY_TRADES = 500
+# Phase 6+25+27+34: Hard daily trade cap.
+# Phase 34: Reduced from 500→200. At 500, system hit the cap in 30 minutes
+# with 41K markets available. 200 trades/day = still ~$400-600 deployed
+# but spreads capital more carefully over the full trading day.
+MAX_DAILY_TRADES = 200
 
 # Phase 7+27: Price floor — minimum contract cost to avoid fee traps
 # Phase 27: Lowered to 10¢ — maker has 0 fees, cheap contracts offer

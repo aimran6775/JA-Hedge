@@ -644,28 +644,11 @@ class OrderManager:
                     reason=reason,
                 )
 
-                # Record exit in memory
-                from app.frankenstein.categories import detect_category as _det
-                _exit_cat = _det(
-                    getattr(market, "title", ""),
-                    category_hint=getattr(market, "category", ""),
-                    ticker=market.ticker,
-                )
-                self.memory.record_trade(
-                    ticker=market.ticker,
-                    prediction=Prediction(
-                        side=side, confidence=0.0, predicted_prob=0.5,
-                        edge=0.0, model_name="exit", model_version="exit",
-                    ),
-                    features=self._features.compute(market),
-                    action="sell",
-                    count=count,
-                    price_cents=exit_price,
-                    order_id=result.order_id or "",
-                    latency_ms=result.latency_ms,
-                    category=_exit_cat,
-                    market_title=getattr(market, "title", ""),
-                )
+                # Phase 34: Do NOT record exit trades in memory.
+                # Exit records have conf=0/edge=0/model_version="exit" and
+                # were polluting trade memory, inflating trade counts, and
+                # poisoning category analytics. The resolver tracks outcomes
+                # on the original entry trade — exits don't need memory entries.
 
                 # Publish event
                 if self._bus:

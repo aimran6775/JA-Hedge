@@ -119,8 +119,8 @@ class MarketScanner:
         # Cooldowns
         self._recently_traded: dict[str, float] = {}
         self._recently_traded_events: dict[str, float] = {}
-        self._trade_cooldown_seconds: float = 30.0    # Phase 27: 30s ticker cooldown (was 60)
-        self._event_cooldown_seconds: float = 15.0    # Phase 27: 15s event cooldown (was 30)
+        self._trade_cooldown_seconds: float = 120.0    # Phase 34: 120s ticker cooldown (was 30)
+        self._event_cooldown_seconds: float = 60.0     # Phase 34: 60s event cooldown (was 15)
 
         # Cached learning-mode result (refreshed once per scan cycle)
         self._learning_mode_cache: bool | None = None
@@ -327,7 +327,7 @@ class MarketScanner:
         _position_room = max(0, params.max_simultaneous_positions - _open)
         max_trades_per_scan = max(
             1,  # ALWAYS allow at least 1 trade per scan
-            min(_position_room, 12, _daily_remaining),  # Phase 27: up to 12 per scan (was 7)
+            min(_position_room, 5, _daily_remaining),  # Phase 34: max 5 per scan (was 12)
         )
 
         # Execute top trades

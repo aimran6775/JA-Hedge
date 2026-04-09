@@ -842,10 +842,18 @@ class Frankenstein:
         if _reason != "ok":
             log.info("health_note", reason=_reason)
 
-        # Phase 20: Evaluate category retirements
-        newly_retired = self.performance.evaluate_retirements()
-        if newly_retired:
-            log.warning("🧟💀 CATEGORIES RETIRED", categories=newly_retired)
+        # Phase 34: Category retirement DISABLED. It was retiring profitable
+        # categories (sports at +$14 PnL) due to exit-trade pollution of the
+        # rolling window stats. The real quality filters are: confidence scoring,
+        # edge gates, feature completeness, and portfolio risk checks.
+        # Re-enable once exit-trade memory pollution is fixed and stats are clean.
+        # newly_retired = self.performance.evaluate_retirements()
+        # if newly_retired:
+        #     log.warning("🧟💀 CATEGORIES RETIRED", categories=newly_retired)
+
+        # Phase 34: Force-unretire all categories on every snapshot
+        # so any previously retired categories get back in the game.
+        self.performance.unretire_all()
 
         # Phase 15: Log category analytics every snapshot
         try:

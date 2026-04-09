@@ -67,6 +67,12 @@ class PositionManager:
         # Trailing stop peaks: {_peak_pnl_TICKER: float}
         self._trailing_peaks: dict[str, float] = {}
 
+        # Phase 34: Exit cooldown — prevent re-attempting exits on same ticker.
+        # Maps ticker → timestamp of last exit attempt. If an exit order is
+        # resting (not yet filled), don't create another one.
+        self._exit_cooldown: dict[str, float] = {}
+        self._EXIT_COOLDOWN_SECONDS = 300  # 5 minutes between exit attempts
+
     # ── Learning-Mode Detection ───────────────────────────────────────
 
     def _is_in_learning_mode(self) -> bool:
@@ -108,6 +114,13 @@ class PositionManager:
         markets_by_ticker = {m.ticker: m for m in markets}
         exits_executed = 0
 
+        # Phase 34: Clean expired exit cooldowns
+        _now = time.time()
+        self._exit_cooldown = {
+            t: ts for t, ts in self._exit_cooldown.items()
+            if _now - ts < self._EXIT_COOLDOWN_SECONDS
+        }
+
         for ticker, pos in list(portfolio_state.positions.items()):
             market = markets_by_ticker.get(ticker)
             if not market:
@@ -115,6 +128,11 @@ class PositionManager:
 
             position_count = abs(pos.position or 0) if hasattr(pos, "position") else 0
             if position_count == 0:
+                continue
+
+            # Phase 34: Skip tickers with recent exit attempts to prevent
+            # repeated exit spam (same ticker exited 5-9x per cycle).
+            if ticker in self._exit_cooldown:
                 continue
 
             # Phase 25: MINIMUM HOLD TIME — prevent churn loop.
@@ -207,6 +225,9 @@ class PositionManager:
                     market=market, side=our_side,
                     count=position_count, reason=exit_reason,
                 )
+                # Phase 34: Always record cooldown on exit attempt, even if
+                # the order rests unfilled, to prevent re-exit spam.
+                self._exit_cooldown[ticker] = time.time()
                 if result and result.success:
                     exits_executed += 1
                     self._adv_risk.remove_position(ticker)
