@@ -570,6 +570,16 @@ class Frankenstein:
                         except Exception:
                             pass
 
+                        # Phase 32: Periodic paper state save (every ~60s)
+                        try:
+                            from app.state import state as _st2
+                            if _st2.paper_simulator and hasattr(_st2, '_paper_state_path'):
+                                if not hasattr(self, '_last_paper_save') or (time.time() - self._last_paper_save) > 60:
+                                    _st2.paper_simulator.save_state_to_file(_st2._paper_state_path)
+                                    self._last_paper_save = time.time()
+                        except Exception:
+                            pass
+
                         # Manage positions first
                         markets = market_cache.get_active()
                         if markets:

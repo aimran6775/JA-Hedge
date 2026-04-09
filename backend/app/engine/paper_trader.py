@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -885,6 +886,106 @@ class PaperTradingSimulator:
         but routes all orders/portfolio through the paper trader.
         """
         return PaperTradingAPIWrapper(real_api, self)
+
+    # ── State Persistence ─────────────────────────────────────────────
+
+    def save_state_to_file(self, path: str) -> None:
+        """Persist paper trading state to JSON file for crash recovery.
+
+        Saves balance, positions, stats so we survive Railway redeploys.
+        Orders and fills are ephemeral — only balance + positions matter.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        state = {
+            "version": 1,
+            "saved_at": time.time(),
+            "balance_cents": self.balance_cents,
+            "starting_balance_cents": self.starting_balance_cents,
+            "total_orders": self.total_orders,
+            "total_fills": self.total_fills,
+            "total_fees_paid": self.total_fees_paid,
+            "total_volume_cents": self.total_volume_cents,
+            "positions": {
+                ticker: {
+                    "ticker": pos.ticker,
+                    "yes_count": pos.yes_count,
+                    "no_count": pos.no_count,
+                    "total_cost_cents": pos.total_cost_cents,
+                    "realized_pnl_cents": pos.realized_pnl_cents,
+                    "fees_paid_cents": pos.fees_paid_cents,
+                }
+                for ticker, pos in self._positions.items()
+                if pos.yes_count > 0 or pos.no_count > 0
+            },
+        }
+
+        _Path(path).parent.mkdir(parents=True, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            _json.dump(state, f, indent=2)
+        os.replace(tmp, path)  # atomic rename
+        log.info(
+            "paper_state_saved",
+            balance=f"${self.balance_cents / 100:.2f}",
+            positions=len(state["positions"]),
+            path=path,
+        )
+
+    def load_state_from_file(self, path: str) -> bool:
+        """Restore paper trading state from JSON file.
+
+        Returns True if state was successfully loaded.
+        """
+        import json as _json
+
+        if not os.path.exists(path):
+            log.info("paper_state_file_not_found", path=path)
+            return False
+
+        try:
+            with open(path) as f:
+                state = _json.load(f)
+
+            if state.get("version") != 1:
+                log.warning("paper_state_version_mismatch", version=state.get("version"))
+                return False
+
+            old_balance = self.balance_cents
+
+            self.balance_cents = state["balance_cents"]
+            self.starting_balance_cents = state["starting_balance_cents"]
+            self.total_orders = state.get("total_orders", 0)
+            self.total_fills = state.get("total_fills", 0)
+            self.total_fees_paid = state.get("total_fees_paid", 0)
+            self.total_volume_cents = state.get("total_volume_cents", 0)
+
+            # Restore positions
+            for ticker, pos_data in state.get("positions", {}).items():
+                self._positions[ticker] = SimulatedPosition(
+                    ticker=pos_data["ticker"],
+                    yes_count=pos_data.get("yes_count", 0),
+                    no_count=pos_data.get("no_count", 0),
+                    total_cost_cents=pos_data.get("total_cost_cents", 0),
+                    realized_pnl_cents=pos_data.get("realized_pnl_cents", 0),
+                    fees_paid_cents=pos_data.get("fees_paid_cents", 0),
+                )
+
+            saved_ago = time.time() - state.get("saved_at", 0)
+            log.info(
+                "paper_state_loaded",
+                balance=f"${self.balance_cents / 100:.2f}",
+                pnl=f"${self.pnl_cents / 100:.2f}",
+                positions=len(state.get("positions", {})),
+                saved_ago=f"{saved_ago:.0f}s",
+                was_default=f"${old_balance / 100:.2f}",
+            )
+            return True
+
+        except Exception as e:
+            log.error("paper_state_load_failed", error=str(e), path=path)
+            return False
 
 
 # ── API Wrapper ───────────────────────────────────────────────────────────

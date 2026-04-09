@@ -52,15 +52,25 @@ class CapitalAllocator:
 
     # ── Phase 17: Default category budget shares ──────────────────────
     _DEFAULT_CATEGORY_SHARES: dict[str, float] = {
-        "sports": 0.30,        # Phase 30: 15→30% — primary profit engine
+        # Phase 32: Rebalanced from actual performance data (2640 trades):
+        # Crypto: 92.2% WR, +$221.76  →  25% (was 12%)
+        # Science: 25.9% WR, +$54.08  →  12% (was 5%)
+        # Finance: 31.8% WR, +$24.40  →  12% (keep)
+        # Sports: 5.1% WR, +$18.65   →  15% (was 30%, break-even on 1504 trades)
+        # Culture: 44.3% WR, -$11.98  →  6% (was 8%, slightly negative)
+        # Politics: 0% WR, -$7.32    →  4% (was 12%, losing)
+        # Weather: 0% WR, -$2.10     →  3% (was 8%, losing)
+        "crypto": 0.25,
+        "sports": 0.15,
         "finance": 0.12,
+        "science": 0.12,
         "economics": 0.08,
-        "crypto": 0.12,
-        "politics": 0.12,
-        "weather": 0.08,
         "entertainment": 0.08,
-        "science": 0.05,
-        "general": 0.05,
+        "culture": 0.06,
+        "politics": 0.04,
+        "general": 0.04,
+        "weather": 0.03,
+        "current_events": 0.03,
     }
     # Min / max share per category (clamp after performance weighting)
     _MIN_CATEGORY_SHARE = 0.03  # No category goes below 3%

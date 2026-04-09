@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     risk_max_daily_loss: float = 500.0         # Phase 27: $500 daily loss limit
     risk_max_position_size: int = 50           # Phase 28c: 50 contracts per position (aggressive)
     risk_max_portfolio_exposure: float = 5000.0  # Phase 27: $5K deployed at once
-    risk_max_spread_cents: int = 55            # Phase 27: wider spreads for maker
+    risk_max_spread_cents: int = 95            # Phase 32: 55→95 for maker mode (we create liquidity)
     kill_switch_enabled: bool = True
     # ── Paper Trading ─────────────────────────────────────────────
     paper_trading: bool = True  # Use simulated balance (fake money)

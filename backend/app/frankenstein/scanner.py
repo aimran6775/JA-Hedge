@@ -1308,9 +1308,15 @@ class MarketScanner:
             # High volume → no cap beyond position limits
 
             # Pre-exec spread recheck
-            risk_spread_limit = 55  # Phase 27: synced with strategy max_spread_cents
-            if self._execution._risk_manager:
-                risk_spread_limit = self._execution._risk_manager.limits.max_spread_cents
+            # Phase 32: Maker mode uses 95¢ limit — we CREATE liquidity,
+            # wide spreads are expected and profitable (our edge, not a risk).
+            # Taker mode uses the risk manager's tighter limit.
+            if USE_MAKER_ORDERS:
+                risk_spread_limit = 95
+            else:
+                risk_spread_limit = 55
+                if self._execution._risk_manager:
+                    risk_spread_limit = self._execution._risk_manager.limits.max_spread_cents
             fresh = market_cache.get(market.ticker)
             if fresh and fresh.spread is not None:
                 fresh_spread = int(float(fresh.spread) * 100)
@@ -1318,7 +1324,7 @@ class MarketScanner:
                     scan_debug["exec_rejections"] += 1
                     scan_debug["top_candidates"].append({
                         "ticker": market.ticker, "stage": "spread_recheck_rejected",
-                        "spread": fresh_spread, "limit": params.max_spread_cents,
+                        "spread": fresh_spread, "limit": risk_spread_limit,
                     })
                     continue
 

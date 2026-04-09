@@ -86,6 +86,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             fee_rate_cents=_paper_fee,
             maker_mode=USE_MAKER_ORDERS,  # Phase 21: realistic maker fill rates
         )
+        # Phase 32: Restore paper state from disk (survive redeploys)
+        _paper_state_path = f"{settings.persist_dir}/paper_state.json"
+        if simulator.load_state_from_file(_paper_state_path):
+            log.info("📦 paper_state_restored",
+                     balance=simulator.balance_dollars,
+                     pnl=simulator.pnl_dollars)
+        else:
+            log.info("📦 paper_state_fresh_start",
+                     balance=f"${settings.paper_trading_balance / 100:.2f}")
+        state._paper_state_path = _paper_state_path  # save path for shutdown
+
         api_for_engine = simulator.wrap_api(kalshi)
         state.paper_simulator = simulator
         # Phase 31d: Replace state.kalshi_api with the paper wrapper so that
@@ -94,7 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         state.kalshi_api = api_for_engine
         log.info(
             "paper_trading_enabled",
-            balance=f"${settings.paper_trading_balance / 100:.2f}",
+            balance=f"${simulator.balance_cents / 100:.2f}",
         )
 
     # Execution engine
@@ -458,6 +469,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await state.frankenstein.sleep()
         except Exception:
             pass
+
+    # Phase 32: Save paper trading state to disk (survive redeploys)
+    if state.paper_simulator and hasattr(state, '_paper_state_path'):
+        try:
+            state.paper_simulator.save_state_to_file(state._paper_state_path)
+        except Exception as e:
+            log.error("paper_state_save_failed", error=str(e))
 
     # WebSocket feeds are now stopped by Frankenstein.sleep()
 
