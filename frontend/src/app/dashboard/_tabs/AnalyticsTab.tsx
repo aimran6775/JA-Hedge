@@ -30,6 +30,15 @@ function prettifyTicker(ticker: string): string {
   return base.replace(/\s+/g, " ").trim() || ticker;
 }
 
+function timeAgo(ts: string | null): string {
+  if (!ts) return "--";
+  const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.round(m / 60)}h`;
+  return `${Math.round(m / 1440)}d`;
+}
+
 type SubTab = "overview" | "categories" | "confidence" | "model" | "backtest";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -532,6 +541,7 @@ function TradeTable({ trades }: { trades: FrankensteinTrade[] }) {
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-[var(--bg-primary)]">
           <tr className="border-b border-white/[0.06] text-left text-xs text-[var(--text-muted)] uppercase tracking-wider">
+            <th className="pb-2 pr-4 font-medium">Time</th>
             <th className="pb-2 pr-4 font-medium">Market</th>
             <th className="pb-2 pr-4 font-medium">Side</th>
             <th className="pb-2 pr-4 text-right font-medium">Price</th>
@@ -544,6 +554,9 @@ function TradeTable({ trades }: { trades: FrankensteinTrade[] }) {
         <tbody>
           {trades.slice(0, 50).map((t, i) => (
             <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
+              <td className="py-1.5 pr-4 text-xs tabular-nums text-[var(--text-muted)]">
+                {timeAgo(t.timestamp)}
+              </td>
               <td className="py-1.5 pr-4 text-xs text-[var(--text-primary)] truncate max-w-[180px]">
                 {prettifyTicker(t.ticker)}
               </td>

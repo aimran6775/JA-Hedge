@@ -438,6 +438,7 @@ export function LiveTab() {
                       <div className="text-[10px] text-[var(--text-muted)]">
                         {t.side?.toUpperCase()} x{t.count} @ {t.price_cents}c
                         / {((t.confidence ?? 0) * 100).toFixed(0)}% conf
+                        <span className="ml-1 opacity-60">· {timeAgo(t.timestamp)}</span>
                       </div>
                     </div>
                   </div>
