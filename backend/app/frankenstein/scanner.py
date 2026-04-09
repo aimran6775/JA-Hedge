@@ -828,8 +828,12 @@ class MarketScanner:
                 continue
 
             # Early retirement check — don't even evaluate retired categories
+            # Phase 32b: NEVER retire sports in sports-only mode. The other
+            # quality gates (edge, confidence, feature gate) are the real
+            # filters. Retiring sports when it's the ONLY category = 0 trades.
             if self._performance and self._performance.is_category_retired(_pre_cat):
-                continue
+                if not (self._sports_only and _pre_cat == "sports"):
+                    continue
 
             # Category performance gate — only gate on THIS session's stats,
             # needs 30+ trades and sub-30% WR to gate (was 20 trades, 40% WR)
@@ -1337,14 +1341,16 @@ class MarketScanner:
                 continue
 
             # Phase 20: Skip retired categories
+            # Phase 32b: Don't retire sports when in sports_only mode
             _cat_retire = _detected_cat
             if self._performance and self._performance.is_category_retired(_cat_retire):
-                scan_debug["portfolio_rejections"] += 1
-                scan_debug["top_candidates"].append({
-                    "ticker": market.ticker, "stage": "category_retired",
-                    "category": _cat_retire,
-                })
-                continue
+                if not (self._sports_only and _cat_retire == "sports"):
+                    scan_debug["portfolio_rejections"] += 1
+                    scan_debug["top_candidates"].append({
+                        "ticker": market.ticker, "stage": "category_retired",
+                        "category": _cat_retire,
+                    })
+                    continue
 
             # Phase 3+4: Capital budget check
             if self._capital:
@@ -1828,9 +1834,10 @@ class MarketScanner:
             except Exception:
                 pass
 
-        # Skip retired categories
+        # Skip retired categories (but never sports in sports_only mode)
         if self._performance and self._performance.is_category_retired(cat):
-            return None
+            if not (self._sports_only and cat == "sports"):
+                return None
 
         # Edge cap
         MAX_ALLOWED_EDGE = CATEGORY_EDGE_CAPS.get(cat, 0.10)
