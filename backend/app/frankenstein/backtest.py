@@ -217,12 +217,13 @@ def run_backtest(
                 continue
 
             # Apply price filter
-            mid = feat.midpoint
+            mid = float(feat.midpoint)
             if mid < min_price or mid > max_price:
                 continue
 
             # Apply spread filter
-            if feat.spread > max_spread:
+            spread = float(feat.spread)
+            if spread > max_spread:
                 continue
 
             # Predict
@@ -250,20 +251,20 @@ def run_backtest(
             if USE_MAKER_ORDERS:
                 # Maker enters at the BID — better price than taker
                 if side == "yes":
-                    entry_price = min(0.99, max(0.01, mid - feat.spread / 2))
+                    entry_price = min(0.99, max(0.01, mid - spread / 2))
                     p_win = prob_yes
                 else:
-                    entry_price = min(0.99, max(0.01, (1.0 - mid) - feat.spread / 2))
+                    entry_price = min(0.99, max(0.01, (1.0 - mid) - spread / 2))
                     p_win = 1.0 - prob_yes
                 buy_fee_dollars = 0.0  # maker = free
                 sell_fee_dollars = 0.0  # hold to settlement = no sell
             else:
                 # Taker enters at the ASK
                 if side == "yes":
-                    entry_price = min(0.99, max(0.01, mid + feat.spread / 2))
+                    entry_price = min(0.99, max(0.01, mid + spread / 2))
                     p_win = prob_yes
                 else:
-                    entry_price = min(0.99, max(0.01, (1.0 - mid) + feat.spread / 2))
+                    entry_price = min(0.99, max(0.01, (1.0 - mid) + spread / 2))
                     p_win = 1.0 - prob_yes
                 buy_fee_dollars = TAKER_FEE_CENTS / 100.0
                 sell_fee_dollars = TAKER_FEE_CENTS / 100.0

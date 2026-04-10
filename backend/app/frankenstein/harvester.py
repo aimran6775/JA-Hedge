@@ -101,7 +101,7 @@ class MarketHarvester:
 
         for market, feat in zip(candidates, features_list):
             ticker = market.ticker
-            if not feat or feat.midpoint <= 0:
+            if not feat or float(feat.midpoint) <= 0:
                 continue
 
             # Detect category from features (already computed by FeatureEngine)
@@ -118,7 +118,7 @@ class MarketHarvester:
                 feat.to_array().tolist(),
                 now,
                 cat,
-                feat.midpoint,
+                float(feat.midpoint),
             )
             saved += 1
 

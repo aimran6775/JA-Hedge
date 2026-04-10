@@ -1021,7 +1021,7 @@ class MarketScanner:
                         event_ticker=market.event_ticker,
                         sport_id=info.sport_id,
                         count=1,
-                        price_cents=int(features.midpoint * 100),
+                        price_cents=int(float(features.midpoint) * 100),
                         is_live=info.is_live,
                         edge=prediction.edge,
                     )
@@ -1074,7 +1074,7 @@ class MarketScanner:
                                  conf_boost=f"{_conf_boost:.3f}")
 
             # Price floor
-            mid_price = features.midpoint
+            mid_price = float(features.midpoint)
             _floor_cents = MIN_PRICE_FLOOR_LEARNING_CENTS if _is_learning else MIN_PRICE_FLOOR_CENTS
             _floor = _floor_cents / 100.0
             if mid_price < _floor or mid_price > 1.0 - _floor:
@@ -1091,9 +1091,9 @@ class MarketScanner:
             if abs(prediction.edge) > MAX_ALLOWED_EDGE:
                 continue
 
-            # Fee-aware minimum edge
-            half_spread = features.spread / 2.0
-            price_cents = int(features.midpoint * 100)
+            # Fee-aware minimum edge (Phase 35c: defensive float conversion)
+            half_spread = float(features.spread) / 2.0
+            price_cents = int(float(features.midpoint) * 100)
             effective_cost = min(price_cents, 100 - price_cents)
 
             if USE_MAKER_ORDERS:
@@ -1281,7 +1281,7 @@ class MarketScanner:
             if USE_MAKER_ORDERS:
                 spread_cost = 0.0  # Maker + hold-to-settlement = no spread crossing
             else:
-                spread_cost = features.spread / 2.0  # Full half-spread for taker
+                spread_cost = float(features.spread) / 2.0  # Full half-spread for taker
             net_edge = abs(prediction.edge) - spread_cost - fee_cost
 
             # Phase 28: Hybrid taker for best trades — A/A+ with strong edge.
@@ -1302,7 +1302,7 @@ class MarketScanner:
             ):
                 # Verify edge still profitable after taker fees
                 taker_fee_frac = TAKER_FEE_CENTS / 100.0
-                taker_net_edge = abs(prediction.edge) - taker_fee_frac - features.spread / 2.0
+                taker_net_edge = abs(prediction.edge) - taker_fee_frac - float(features.spread) / 2.0
                 if taker_net_edge > 0.01:  # At least 1% net edge after all costs
                     use_taker = True
                     # Recalculate net_edge with taker costs for EV
@@ -1379,9 +1379,9 @@ class MarketScanner:
                     continue
 
                 feat = self._features.compute(sig_market)
-                if feat.midpoint < 0.15 or feat.midpoint > 0.85:
+                if float(feat.midpoint) < 0.15 or float(feat.midpoint) > 0.85:
                     continue
-                half_spread = feat.spread / 2.0 if feat.spread else 0.0
+                half_spread = float(feat.spread) / 2.0 if feat.spread else 0.0
                 if abs(sig.edge) <= half_spread:
                     continue
 
@@ -1407,7 +1407,7 @@ class MarketScanner:
                 cost_frac = price_cents / 100.0
 
                 # Net EV check — same as main scan path (Issue #24)
-                spread_cost = feat.spread / 2.0 if feat.spread else 0.0
+                spread_cost = float(feat.spread) / 2.0 if feat.spread else 0.0
                 fee_cost = 0.0 if USE_MAKER_ORDERS else ROUND_TRIP_FEE_CENTS / 100.0
                 net_edge = abs(clamped_edge) - spread_cost - fee_cost
                 if net_edge <= 0:
@@ -1791,7 +1791,7 @@ class MarketScanner:
         """
         from app.frankenstein.constants import TAKER_FEE_CENTS as _TFC
 
-        mid = features.midpoint
+        mid = float(features.midpoint)
 
         if prediction.side == "yes":
             p = prediction.predicted_prob
@@ -2028,7 +2028,7 @@ class MarketScanner:
             return None
 
         # Fee-aware minimum edge (aligned with full scan thresholds)
-        half_spread = features.spread / 2.0
+        half_spread = float(features.spread) / 2.0
         if USE_MAKER_ORDERS:
             # Phase 28: Synced with full scan _CATEGORY_MIN_EDGES_MAKER (was stale at 0.06)
             cost_to_beat = 0.0  # Maker mode = no spread cost
@@ -2056,7 +2056,8 @@ class MarketScanner:
         # Price floor
         _floor_cents = MIN_PRICE_FLOOR_LEARNING_CENTS if self._is_in_learning_mode() else MIN_PRICE_FLOOR_CENTS
         _floor = _floor_cents / 100.0
-        if features.midpoint < _floor or features.midpoint > 1.0 - _floor:
+        _mid = float(features.midpoint)
+        if _mid < _floor or _mid > 1.0 - _floor:
             return None
 
         # Confidence scoring gate (aligned with full scan path)
@@ -2087,7 +2088,7 @@ class MarketScanner:
         # Net EV check
         cost_frac = price_cents / 100.0
         # Phase 28: maker mode = 0 spread cost (hold to settlement, never cross spread)
-        spread_cost = 0.0 if USE_MAKER_ORDERS else features.spread / 2.0
+        spread_cost = 0.0 if USE_MAKER_ORDERS else float(features.spread) / 2.0
         fee_cost = 0.0 if USE_MAKER_ORDERS else ROUND_TRIP_FEE_CENTS / 100.0
         net_edge = abs(prediction.edge) - spread_cost - fee_cost
         if net_edge <= 0:

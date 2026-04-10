@@ -157,10 +157,10 @@ class PositionManager:
                 if _is_learning and USE_MAKER_ORDERS:
                     our_side_check = "yes" if (pos.position or 0) > 0 else "no"
                     features_check = self._features.compute(market)
-                    mid_check = features_check.midpoint
+                    mid_check = float(features_check.midpoint)
                     entry_price_check = self._order_mgr.estimate_entry_price(ticker)
                     if entry_price_check > 0 and mid_check > 0:
-                        half_spread = features_check.spread / 2.0
+                        half_spread = float(features_check.spread) / 2.0
                         fee_per_side = 0.07  # TAKER_FEE_CENTS / 100
                         exit_cost = half_spread + fee_per_side
                         if our_side_check == "yes":
@@ -186,7 +186,7 @@ class PositionManager:
             features = self._features.compute(market)
             prediction = self._model.predict(features)
 
-            mid = features.midpoint
+            mid = float(features.midpoint)
             if mid <= 0 or mid >= 1:
                 continue
 
@@ -195,7 +195,7 @@ class PositionManager:
                 continue
 
             # Current value — fee-aware
-            half_spread = features.spread / 2.0
+            half_spread = float(features.spread) / 2.0
             fee_per_side = TAKER_FEE_CENTS / 100.0  # 0.07
             exit_cost = half_spread + fee_per_side
 

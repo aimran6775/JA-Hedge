@@ -114,7 +114,7 @@ class ArbScanner:
 
             for market, feat in zip(candidates, features_list):
                 try:
-                    kalshi_mid = feat.midpoint
+                    kalshi_mid = float(feat.midpoint)
                     if kalshi_mid <= 0.02 or kalshi_mid >= 0.98:
                         continue  # Already near-certain, no arb
 
