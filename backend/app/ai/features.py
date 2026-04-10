@@ -350,16 +350,35 @@ class FeatureEngine:
     technical indicators on demand.
     """
 
+    # Phase 35c: Bounded history limits to prevent memory leaks
+    MAX_HISTORIES = 10000
+    MAX_OB_CACHE = 10000
+
     def __init__(self) -> None:
         self._histories: dict[str, PriceHistory] = {}
         # Phase 6: Orderbook depth cache — populated by brain._enrich_orderbook_depth()
         self._ob_depth_cache: dict[str, dict[str, float]] = {}
+        self._history_access_order: list[str] = []  # LRU tracking
+
+    def _prune_histories_if_needed(self) -> None:
+        """Prune oldest histories if over limit (LRU eviction)."""
+        if len(self._histories) > self.MAX_HISTORIES:
+            # Remove oldest 10%
+            to_remove = len(self._histories) - int(self.MAX_HISTORIES * 0.9)
+            for ticker in list(self._histories.keys())[:to_remove]:
+                self._histories.pop(ticker, None)
+        if len(self._ob_depth_cache) > self.MAX_OB_CACHE:
+            to_remove = len(self._ob_depth_cache) - int(self.MAX_OB_CACHE * 0.9)
+            for ticker in list(self._ob_depth_cache.keys())[:to_remove]:
+                self._ob_depth_cache.pop(ticker, None)
 
     def update(self, ticker: str, price: float, volume: float = 0,
                oi: float = 0, spread: float = 0) -> None:
         """Push a new price observation for a market."""
         if ticker not in self._histories:
             self._histories[ticker] = PriceHistory()
+            # Phase 35c: Prune if over limit
+            self._prune_histories_if_needed()
         import time
         self._histories[ticker].add(time.time(), price, volume, oi, spread)
 

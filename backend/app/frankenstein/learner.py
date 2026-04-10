@@ -174,8 +174,10 @@ class OnlineLearner:
         # Phase 5: Blend pretrained historical data with live data
         # After enough real trades, mix in historical data to prevent
         # catastrophic forgetting of base patterns.
+        # Phase 35c: Add feature dimension validation
         if (self._pretrained_X is not None 
-            and len(X) >= self._FINETUNE_MIN_REAL_TRADES):
+            and len(X) >= self._FINETUNE_MIN_REAL_TRADES
+            and self._pretrained_X.shape[1] == X.shape[1]):  # Dimension check
             n_hist = int(len(X) * self._FINETUNE_HISTORICAL_RATIO / (1 - self._FINETUNE_HISTORICAL_RATIO))
             n_hist = min(n_hist, len(self._pretrained_X))
             if n_hist > 0:
@@ -195,6 +197,11 @@ class OnlineLearner:
                     sample_weights = np.concatenate([live_weights, hist_weights])
                 log.info("pretrained_blend", live_samples=len(X)-n_hist,
                          historical_samples=n_hist, ratio=f"{self._FINETUNE_HISTORICAL_RATIO:.0%}")
+        elif (self._pretrained_X is not None 
+              and self._pretrained_X.shape[1] != X.shape[1]):
+            log.warning("pretrained_feature_mismatch", 
+                       pretrained_features=self._pretrained_X.shape[1],
+                       current_features=X.shape[1])
 
         # Phase 35: Blend harvested market data (free training from non-traded markets)
         if self._harvester:

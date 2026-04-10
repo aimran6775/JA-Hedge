@@ -21,12 +21,14 @@ from app.engine.execution import ExecutionEngine, ExecutionResult
 from app.frankenstein.constants import (
     FILL_PROB_DECAY_SECONDS,
     FILL_PROB_MIN_STALE_SECONDS,
+    MAX_PENDING_ORDERS,
     MULTI_LEVEL_ENABLED,
     MULTI_LEVEL_MAX_LEVELS,
     MULTI_LEVEL_MIN_COUNT,
     MULTI_LEVEL_MIN_SPREAD_CENTS,
     MULTI_LEVEL_STEP_CENTS,
     MULTI_LEVEL_WEIGHTS,
+    ORDER_CANCELLATION_LOCK_SECONDS,
     ORDER_STALE_SECONDS,
     POLL_REQUOTE_ENABLED,
     POLL_REQUOTE_MAX_PER_SCAN,
@@ -95,6 +97,38 @@ class OrderManager:
             "total_levels_placed": 0,
             "multi_level_fallback": 0,  # fell back to single due to spread/count
         }
+        # Phase 35c: Orders being cancelled (don't requote these)
+        self._cancellation_lock: set[str] = set()
+        self._cancellation_lock_times: dict[str, float] = {}
+
+    def reset_stats(self) -> None:
+        """Phase 35c: Reset all stats counters (call between sessions)."""
+        self.fill_rate_stats = {
+            "placed": 0, "filled": 0, "cancelled": 0, "amended": 0,
+            "edge_cancelled": 0, "decay_cancelled": 0,
+        }
+        self._requote_stats = {
+            "requotes_attempted": 0, "requotes_succeeded": 0,
+            "requotes_skipped_edge": 0, "requotes_skipped_delta": 0,
+            "requotes_cancelled_edge": 0,
+        }
+        self._multi_level_stats = {
+            "multi_level_trades": 0, "single_level_trades": 0,
+            "total_levels_placed": 0, "multi_level_fallback": 0,
+        }
+
+    def _prune_pending_orders_if_needed(self) -> None:
+        """Phase 35c: Hard cap on pending_orders to prevent memory leak."""
+        if len(self.pending_orders) > MAX_PENDING_ORDERS:
+            # Remove oldest 10% by placed_at time
+            to_remove = len(self.pending_orders) - int(MAX_PENDING_ORDERS * 0.9)
+            sorted_orders = sorted(
+                self.pending_orders.items(),
+                key=lambda x: x[1].get("placed_at", 0)
+            )
+            for oid, _ in sorted_orders[:to_remove]:
+                self.pending_orders.pop(oid, None)
+                log.warning("pruned_stale_order", order_id=oid)
 
     # ── Phase 7: Confidence-to-Price Skew ────────────────────────────
 

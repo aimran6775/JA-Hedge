@@ -109,12 +109,16 @@ class FillPredictor:
         prob = predictor.predict_fill_probability(obs)
     """
 
-    def __init__(self, *, max_history: int = 5000) -> None:
+    def __init__(self, *, max_history: int = 5000, retrain_interval: int = 50) -> None:
         self._model: Any = None       # SGDClassifier (created lazily)
         self._observations: deque[FillObservation] = deque(maxlen=max_history)
         self._n_fills: int = 0
         self._n_cancels: int = 0
         self._is_fitted: bool = False
+
+        # Phase 35c: Batch updates instead of per-observation retraining
+        self._retrain_interval = retrain_interval
+        self._updates_since_retrain: int = 0
 
         # Rolling statistics for fallback
         self._recent_fill_rate: float = DEFAULT_FILL_PROB
@@ -167,17 +171,32 @@ class FillPredictor:
         self._update_rolling_rate()
 
     def _update_model(self, obs: FillObservation) -> None:
-        """Incrementally update the model with one new observation."""
+        """Incrementally update the model with one new observation.
+        
+        Phase 35c: Batch updates every N observations to reduce overhead.
+        """
+        self._updates_since_retrain += 1
+        
+        # Only retrain every N observations to reduce overhead
+        if self._updates_since_retrain < self._retrain_interval:
+            return
+            
         model = self._ensure_model()
         if model == "unavailable":
             return
 
-        X = obs.to_feature_array().reshape(1, -1)
-        y = np.array([1 if obs.filled else 0])
+        # Batch retrain on recent observations
+        recent = list(self._observations)[-self._retrain_interval:]
+        if len(recent) < 10:
+            return
+            
+        X = np.array([o.to_feature_array() for o in recent])
+        y = np.array([1 if o.filled else 0 for o in recent])
 
         try:
             model.partial_fit(X, y, classes=np.array([0, 1]))
             self._is_fitted = True
+            self._updates_since_retrain = 0
         except Exception as e:
             log.debug("fill_model_update_failed", error=str(e))
 

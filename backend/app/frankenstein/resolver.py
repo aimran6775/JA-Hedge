@@ -14,6 +14,7 @@ Extracted from brain.py _resolve_outcomes_task().
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -85,20 +86,24 @@ class OutcomeResolver:
 
         # Phase 28: Batch-fetch market statuses for all pending tickers at once.
         # This is MUCH faster than individual API calls per trade (N → 1 call).
+        # Phase 35c: Add timeout to prevent hanging on slow API
         market_statuses: dict[str, Any] = {}
         try:
             from app.state import state as _st
             if _st.kalshi_api:
                 # Collect unique tickers from pending trades
                 pending_tickers = list({t.ticker for t in pending})
-                # Fetch in batches of 50 (API may limit)
+                # Fetch in batches of 50 (API may limit) with timeout
                 for i in range(0, len(pending_tickers), 50):
                     batch_tickers = pending_tickers[i:i+50]
                     for tk in batch_tickers:
                         try:
-                            mkt = await _st.kalshi_api.markets.get_market(tk)
-                            if mkt:
-                                market_statuses[tk] = mkt
+                            async with asyncio.timeout(5.0):  # 5s per market
+                                mkt = await _st.kalshi_api.markets.get_market(tk)
+                                if mkt:
+                                    market_statuses[tk] = mkt
+                        except asyncio.TimeoutError:
+                            log.debug("market_fetch_timeout", ticker=tk)
                         except Exception:
                             pass  # Individual fetch failure is fine
         except Exception as e:

@@ -570,17 +570,17 @@ class WSBridge:
             cached = market_cache.get(ticker)
             if not cached:
                 return
-            from decimal import Decimal
+            # Use float (not Decimal) to match codebase expectations
             if book.yes_bid > 0:
-                cached.yes_bid = Decimal(str(round(book.yes_bid, 2)))
+                cached.yes_bid = round(book.yes_bid, 2)
             if book.yes_ask > 0:
-                cached.yes_ask = Decimal(str(round(book.yes_ask, 2)))
+                cached.yes_ask = round(book.yes_ask, 2)
             if book.last_price > 0:
-                cached.last_price = Decimal(str(round(book.last_price, 2)))
+                cached.last_price = round(book.last_price, 2)
             # Recompute midpoint
             if book.yes_bid > 0 and book.yes_ask > 0:
-                cached.midpoint = Decimal(str(round(book.mid, 4)))
-                cached.spread = Decimal(str(round(book.yes_ask - book.yes_bid, 4)))
+                cached.midpoint = round(book.mid, 4)
+                cached.spread = round(book.yes_ask - book.yes_bid, 4)
         except Exception:
             pass
 

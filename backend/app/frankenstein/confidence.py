@@ -46,6 +46,10 @@ FACTOR_WEIGHTS = {
     "risk_context": 0.05,      # Handled by risk manager
 }
 
+# Phase 35c: Runtime assertion that weights sum to 1.0
+_WEIGHT_SUM = sum(FACTOR_WEIGHTS.values())
+assert abs(_WEIGHT_SUM - 1.0) < 0.01, f"FACTOR_WEIGHTS must sum to 1.0, got {_WEIGHT_SUM}"
+
 # ── Grade Thresholds ──────────────────────────────────────────────────────
 
 GRADE_MAP = [

@@ -72,6 +72,8 @@ class CapitalAllocator:
         "weather": 0.03,
         "current_events": 0.03,
     }
+    # Phase 35c: Assert shares sum to 1.0
+    assert abs(sum(_DEFAULT_CATEGORY_SHARES.values()) - 1.0) < 0.01, "Category shares must sum to 1.0"
     # Min / max share per category (clamp after performance weighting)
     _MIN_CATEGORY_SHARE = 0.03  # No category goes below 3%
     _MAX_CATEGORY_SHARE = 0.40  # No category exceeds 40%

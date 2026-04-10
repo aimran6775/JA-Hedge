@@ -193,6 +193,41 @@ POLL_REQUOTE_ENABLED = True
 POLL_REQUOTE_MAX_PER_SCAN = 10     # Max orders to requote per scan cycle
 POLL_REQUOTE_MIN_AGE_SECONDS = 20  # Don't requote orders younger than 20s
 
+# ── Phase 35c: Gap Fixes ────────────────────────────────────────
+# Feature completeness thresholds (moved from hardcoded values)
+FEATURE_COMPLETENESS_COLD_START = 0.98   # 98% features during cold start
+FEATURE_COMPLETENESS_LEARNING = 0.90     # 90% during learning mode
+FEATURE_COMPLETENESS_NORMAL = 0.75       # 75% in normal operation
+
+# Scanner bounded dict limits — prevent memory leaks
+MAX_PRICE_HISTORY_ENTRIES = 10000  # Max tickers to track price history
+MAX_CATEGORY_CACHE_ENTRIES = 10000 # Max tickers for category cache
+
+# Memory configuration
+MAX_IMPORTANT_TRADES = 500         # Cap for pinned important trades
+IMPORTANT_PNL_THRESHOLD_CENTS = 500  # $5 threshold for importance
+
+# Order manager limits
+MAX_PENDING_ORDERS = 500           # Absolute cap on pending_orders dict
+ORDER_CANCELLATION_LOCK_SECONDS = 5  # Don't requote orders being cancelled
+
+# Fill predictor configuration
+FILL_PREDICTOR_RETRAIN_INTERVAL = 50  # Retrain after N observations
+
+# Harvester configuration  
+MAX_HARVEST_SNAPSHOTS = 20000      # Max pending snapshots
+MAX_HARVEST_BUFFER = 50000         # Max harvested training records
+HARVEST_SNAPSHOT_TTL_HOURS = 72    # Snapshot expiry
+
+# LLM blend ratio (when LLM is enabled)
+LLM_BLEND_RATIO = 0.30             # 30% LLM, 70% ML when LLM active
+
+# Resolver batch timeout
+RESOLVER_BATCH_TIMEOUT_SECONDS = 30.0  # Timeout for market fetch batches
+
+# Strategy drift protection
+MAX_STRATEGY_DRIFT_CYCLES = 1000   # Reset to defaults after N adaptations
+
 
 def round_trip_fee_pct(price_cents: int) -> float:
     """Round-trip fee as a percentage of contract cost.

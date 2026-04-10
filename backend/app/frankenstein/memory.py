@@ -145,15 +145,24 @@ class TradeMemory:
     trades (big wins/losses) are retained longer.
     """
 
+    # Phase 35c: Configurable important trade thresholds
+    MAX_IMPORTANT_TRADES = 500
+    IMPORTANT_PNL_THRESHOLD_CENTS = 500  # $5
+
     def __init__(
         self,
         max_trades: int = 50_000,
         max_snapshots: int = 100_000,
         persist_path: str | None = None,
+        max_important_trades: int | None = None,
+        important_pnl_threshold: int | None = None,
     ):
         self.max_trades = max_trades
         self.max_snapshots = max_snapshots
         self.persist_path = persist_path
+        self._max_important = max_important_trades or self.MAX_IMPORTANT_TRADES
+        self._important_threshold = important_pnl_threshold or self.IMPORTANT_PNL_THRESHOLD_CENTS
+        self._prune_counter = 0  # Phase 35c: track for periodic index cleanup
 
         # Core storage
         self._trades: deque[TradeRecord] = deque(maxlen=max_trades)
@@ -289,11 +298,17 @@ class TradeMemory:
         elif outcome == TradeOutcome.LOSS:
             self.total_losses += 1
 
-        # Pin high-impact trades (capped at 500)
-        if abs(pnl_cents) > 500:  # > $5 P&L
+        # Pin high-impact trades (capped)
+        if abs(pnl_cents) > self._important_threshold:
             self._important_trades.append(record)
-            if len(self._important_trades) > 500:
-                self._important_trades = self._important_trades[-500:]
+            if len(self._important_trades) > self._max_important:
+                self._important_trades = self._important_trades[-self._max_important:]
+
+        # Phase 35c: Periodic index cleanup (every 1000 resolutions)
+        self._prune_counter += 1
+        if self._prune_counter >= 1000:
+            self.prune_ticker_index()
+            self._prune_counter = 0
 
         log.info(
             "trade_resolved",

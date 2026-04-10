@@ -111,6 +111,10 @@ class AdaptiveStrategy:
         self._last_adaptation: float = 0.0
         self._total_adaptations: int = 0
 
+        # Phase 35c: Drift protection — reset to defaults periodically
+        self._default_params = StrategyParams()  # Store original defaults
+        self._MAX_DRIFT_CYCLES = 1000  # Reset after this many adaptations
+
         # Enforce bounds on initial params (protects against stale persisted values)
         self._clamp_all_params()
 
@@ -184,6 +188,15 @@ class AdaptiveStrategy:
 
         self._last_adaptation = now
         self._total_adaptations += 1
+
+        # Phase 35c: Drift protection — reset to defaults after too many adaptations
+        if self._total_adaptations > 0 and self._total_adaptations % self._MAX_DRIFT_CYCLES == 0:
+            log.info("strategy_drift_reset", cycles=self._total_adaptations)
+            self.params = StrategyParams()  # Fresh defaults
+            events.append(AdaptationEvent(
+                parameter="ALL",
+                reason="drift_protection_reset",
+            ))
 
         # Hard-clamp after all adaptations — belt + suspenders
         self._clamp_all_params()
