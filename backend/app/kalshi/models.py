@@ -169,17 +169,17 @@ class Market(BaseModel):
     model_config = {"populate_by_name": True, "extra": "allow"}
 
     @property
-    def midpoint(self) -> Decimal | None:
-        """Calculate bid-ask midpoint for YES side."""
+    def midpoint(self) -> float | None:
+        """Calculate bid-ask midpoint for YES side. Returns float for consistency."""
         if self.yes_bid is not None and self.yes_ask is not None:
-            return (self.yes_bid + self.yes_ask) / 2
-        return self.last_price
+            return float(self.yes_bid + self.yes_ask) / 2
+        return float(self.last_price) if self.last_price is not None else None
 
     @property
-    def spread(self) -> Decimal | None:
-        """Bid-ask spread in dollars."""
+    def spread(self) -> float | None:
+        """Bid-ask spread in dollars. Returns float for consistency."""
         if self.yes_bid is not None and self.yes_ask is not None:
-            return self.yes_ask - self.yes_bid
+            return float(self.yes_ask - self.yes_bid)
         return None
 
 
