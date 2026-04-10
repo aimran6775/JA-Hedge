@@ -393,13 +393,13 @@ class WSDataFeeder:
             from app.pipeline import market_cache
             cached = market_cache.get(ticker)
             if cached:
-                from decimal import Decimal
+                # Phase 35c: Use float (not Decimal) for consistency
                 if yes_bid:
-                    cached.yes_bid = Decimal(str(yes_bid))
+                    cached.yes_bid = float(yes_bid)
                 if yes_ask:
-                    cached.yes_ask = Decimal(str(yes_ask))
+                    cached.yes_ask = float(yes_ask)
                 if last:
-                    cached.last_price = Decimal(str(last))
+                    cached.last_price = float(last)
         except Exception:
             pass
 
