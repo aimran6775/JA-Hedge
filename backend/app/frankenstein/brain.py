@@ -253,7 +253,10 @@ class Frankenstein:
         # Wire scanner's category stats to resolver
         self._scanner._category_stats_ref = self._resolver.category_stats
 
-        # Phase 35: Wire market harvester to scanner, resolver, learner
+        # Phase 35b: Market harvester — collects ALL observed markets as training data
+        self._harvester = MarketHarvester()
+
+        # Wire harvester to scanner, resolver, learner
         self._scanner._harvester = self._harvester
         self._resolver._harvester = self._harvester
         self.learner._harvester = self._harvester
