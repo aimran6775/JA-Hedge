@@ -234,8 +234,10 @@ class OrderManager:
         - Confidence-aware: high confidence → cross spread for fill
         - Low confidence → post passive limit for better fill price
         """
-        mid = features.midpoint
-        spread_cents = max(int(features.spread * 100), 1)
+        # Phase 35c: Defensive float conversion to prevent Decimal errors
+        mid = float(features.midpoint)
+        spread_frac = float(features.spread)
+        spread_cents = max(int(spread_frac * 100), 1)
         confidence = prediction.confidence
 
         # Extract real bid/ask when market data is available
@@ -257,8 +259,8 @@ class OrderManager:
         if USE_MAKER_ORDERS:
             # ── MAKER PRICING: place at bid + confidence skew ──
             if prediction.side == "yes":
-                bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - features.spread / 2)
-                ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + features.spread / 2)
+                bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - spread_frac / 2)
+                ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + spread_frac / 2)
                 if spread_cents <= 1:
                     price_frac = max(bid, 0.01)
                 else:
@@ -274,8 +276,8 @@ class OrderManager:
                     no_bid = real_no_bid if real_no_bid > 0 else 0.01
                     no_ask = real_no_ask
                 else:
-                    no_bid = 1.0 - (mid + features.spread / 2)
-                    no_ask = 1.0 - (mid - features.spread / 2)
+                    no_bid = 1.0 - (mid + spread_frac / 2)
+                    no_ask = 1.0 - (mid - spread_frac / 2)
 
                 if spread_cents <= 1:
                     price_frac = max(no_bid, 0.01)
@@ -287,8 +289,8 @@ class OrderManager:
         else:
             # ── TAKER PRICING (original logic) ──
             if prediction.side == "yes":
-                bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - features.spread / 2)
-                ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + features.spread / 2)
+                bid = real_yes_bid if real_yes_bid and real_yes_bid > 0 else (mid - spread_frac / 2)
+                ask = real_yes_ask if real_yes_ask and real_yes_ask > 0 else (mid + spread_frac / 2)
 
                 if spread_cents <= 2:
                     price_frac = min(ask, 0.99)
@@ -303,8 +305,8 @@ class OrderManager:
                     no_bid = real_no_bid if real_no_bid > 0 else 0.01
                     no_ask = real_no_ask
                 else:
-                    no_bid = 1.0 - (mid + features.spread / 2)
-                    no_ask = 1.0 - (mid - features.spread / 2)
+                    no_bid = 1.0 - (mid + spread_frac / 2)
+                    no_ask = 1.0 - (mid - spread_frac / 2)
 
                 if spread_cents <= 2:
                     price_frac = min(no_ask, 0.99)
@@ -355,8 +357,8 @@ class OrderManager:
                     _instant_info = {
                         "ticker": market.ticker,
                         "price_cents": price_cents,
-                        "mid_cents": int(features.midpoint * 100) if features.midpoint else 50,
-                        "spread_cents": max(int(features.spread * 100), 1) if features.spread else 3,
+                        "mid_cents": int(float(features.midpoint) * 100) if features.midpoint else 50,
+                        "spread_cents": max(int(float(features.spread) * 100), 1) if features.spread else 3,
                         "side": prediction.side,
                         "volume": int(getattr(market, "volume", 0) or 0),
                         "open_interest": int(getattr(market, "open_interest", 0) or 0),
@@ -374,8 +376,8 @@ class OrderManager:
                 )
                 if result.order_id and not _already_filled:
                     # Phase 5: store book context for fill prediction
-                    _spread = int(features.spread * 100) if features.spread else 1
-                    _mid = int(features.midpoint * 100) if features.midpoint else 50
+                    _spread = int(float(features.spread) * 100) if features.spread else 1
+                    _mid = int(float(features.midpoint) * 100) if features.midpoint else 50
                     _vol = getattr(market, "volume", 0) or 0
                     _oi = getattr(market, "open_interest", 0) or 0
                     _exp = getattr(market, "close_time", None) or getattr(market, "expiration_time", None)
@@ -448,7 +450,7 @@ class OrderManager:
         if not USE_MAKER_ORDERS or not MULTI_LEVEL_ENABLED:
             return [base_price]
 
-        spread_cents = max(int(features.spread * 100), 1)
+        spread_cents = max(int(float(features.spread) * 100), 1)
         if spread_cents < MULTI_LEVEL_MIN_SPREAD_CENTS:
             return [base_price]
 
@@ -467,8 +469,8 @@ class OrderManager:
                     bid_c = max(1, int((1.0 - ya) * 100)) if ya > 0 else 1
                     ask_c = min(99, int((1.0 - yb) * 100)) if yb > 0 else 99
         else:
-            mid = features.midpoint
-            half = features.spread / 2.0
+            mid = float(features.midpoint)
+            half = float(features.spread) / 2.0
             bid_c = max(1, int((mid - half) * 100))
             ask_c = min(99, int((mid + half) * 100))
 
@@ -570,7 +572,7 @@ class OrderManager:
         or the single-order result on fallback.
         """
         # Check multi-level eligibility
-        spread_cents = max(int(features.spread * 100), 1)
+        spread_cents = max(int(float(features.spread) * 100), 1)
         if (
             not MULTI_LEVEL_ENABLED
             or not USE_MAKER_ORDERS
@@ -1327,7 +1329,7 @@ class OrderManager:
                 return True  # Can't evaluate — keep the order
 
             features = self._features.compute(market)
-            mid = features.midpoint
+            mid = float(features.midpoint)
             if mid <= 0 or mid >= 1:
                 return True
 
