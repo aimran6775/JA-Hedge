@@ -116,6 +116,9 @@ class MarketScanner:
         # Phase 31: Cross-platform arbitrage engine
         self._arb_scanner: ArbScanner = arb_scanner
 
+        # Phase 35: LLM market analyzer (injected from main.py via brain)
+        self._llm_analyzer: Any = None
+
         # Cooldowns
         self._recently_traded: dict[str, float] = {}
         self._recently_traded_events: dict[str, float] = {}
@@ -283,6 +286,11 @@ class MarketScanner:
 
         # 4d. Batch predict
         predictions = self._model.predict_batch(features_list)
+
+        # 4d1. Phase 35: LLM market analysis for top candidates
+        # The LLM provides world-knowledge reasoning about event outcomes.
+        # We inject its predictions into the ensemble BEFORE the final blend.
+        await self._llm_enrich(candidates, features_list, predictions)
 
         # 4d2. Phase 31: Override predictions with arb signals
         # When arb engine finds a large cross-platform edge, use it directly
@@ -727,6 +735,119 @@ class MarketScanner:
 
         except Exception as e:
             log.debug("intelligence_enrich_error", error=str(e))
+
+    # ── Phase 35: LLM Market Analysis ─────────────────────────────────
+
+    async def _llm_enrich(
+        self,
+        candidates: list[Market],
+        features_list: list[MarketFeatures],
+        predictions: list[Prediction],
+    ) -> None:
+        """Use GPT-4o-mini to analyze top candidates and inject into ensemble.
+
+        Called after predict_batch, before arb overrides.
+        The LLM provides world-knowledge reasoning about event outcomes
+        that statistical models cannot capture (e.g., "Trump is the frontrunner"
+        or "Lakers are tanking this season").
+
+        We only analyze the TOP candidates (by initial predicted edge) to
+        limit API costs. The LLM predictions are then injected into the
+        ensemble model for the next predict cycle, or used to directly
+        boost/reduce confidence.
+        """
+        if not self._llm_analyzer:
+            return
+
+        try:
+            # Select top candidates by absolute edge (worth LLM analysis)
+            scored = []
+            for i, (m, feat, pred) in enumerate(zip(candidates, features_list, predictions)):
+                edge = abs(pred.edge) if pred.edge else 0
+                scored.append((edge, i, m, feat, pred))
+
+            scored.sort(reverse=True)
+            # Analyze top 15 by edge (LLM budget per scan)
+            top_indices = [s[1] for s in scored[:15]]
+            top_markets = [candidates[i] for i in top_indices]
+            top_features = [features_list[i] for i in top_indices]
+
+            # Build market_data dicts for LLM
+            market_datas = []
+            for m, f in zip(top_markets, top_features):
+                market_datas.append({
+                    "ticker": m.ticker,
+                    "title": getattr(m, "title", "") or m.ticker,
+                    "subtitle": getattr(m, "subtitle", "") or "",
+                    "category": getattr(m, "category", "") or "",
+                    "yes_price": int(f.last_price * 100) if f.last_price else 50,
+                    "volume": int(getattr(m, "volume", 0) or 0),
+                    "open_interest": int(getattr(m, "open_interest", 0) or 0),
+                    "expiration": str(getattr(m, "expiration_time", "") or ""),
+                })
+
+            # Batch analyze
+            llm_results = await self._llm_analyzer.analyze_batch(market_datas)
+
+            if not llm_results:
+                return
+
+            # Inject LLM predictions into ensemble's cache for this cycle
+            llm_cache: dict[str, dict[str, float]] = {}
+            enriched = 0
+
+            for ticker, result in llm_results.items():
+                if not result:
+                    continue
+                llm_prob = result.get("probability")
+                llm_conf = result.get("confidence", 0.5)
+                if llm_prob is None or llm_conf < 0.3:
+                    continue
+
+                llm_cache[ticker] = {
+                    "probability": llm_prob,
+                    "confidence": llm_conf,
+                }
+                enriched += 1
+
+                # Also directly boost/penalize predictions for high-confidence LLM calls
+                for i in top_indices:
+                    if candidates[i].ticker == ticker:
+                        old_pred = predictions[i]
+                        market_price = features_list[i].midpoint
+
+                        # If LLM strongly disagrees with ML model, adjust
+                        if llm_conf >= 0.7:
+                            ml_prob = old_pred.predicted_prob or market_price
+                            # Blend: 70% ML + 30% LLM for high-confidence calls
+                            blended = 0.70 * ml_prob + 0.30 * llm_prob
+                            new_edge = blended - market_price
+                            if abs(new_edge) > abs(old_pred.edge or 0):
+                                predictions[i] = Prediction(
+                                    predicted_prob=blended,
+                                    confidence=min(0.95, old_pred.confidence + 0.05),
+                                    side="yes" if new_edge > 0 else "no",
+                                    edge=new_edge,
+                                    model_name=f"llm_blend_{old_pred.model_name}",
+                                    model_version=old_pred.model_version,
+                                    tree_agreement=old_pred.tree_agreement,
+                                    prediction_std=old_pred.prediction_std,
+                                    calibrated_prob=old_pred.calibrated_prob,
+                                    calibration_error=old_pred.calibration_error,
+                                    is_calibrated=old_pred.is_calibrated,
+                                    raw_prob=old_pred.raw_prob,
+                                )
+                        break
+
+            # Inject into ensemble for any re-predictions this cycle
+            if hasattr(self._model, "inject_llm_predictions"):
+                self._model.inject_llm_predictions(llm_cache)
+
+            if enriched > 0:
+                log.info("llm_enrichment", enriched=enriched, total_candidates=len(candidates))
+
+        except Exception as e:
+            log.debug("llm_enrich_error", error=str(e))
 
     def _category_specialist_override(
         self,

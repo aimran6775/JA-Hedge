@@ -125,6 +125,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     feat_engine = FeatureEngine()
     model = EnsemblePredictor()  # Phase 4: XGBoost + LR + calibration
+
+    # Phase 35: LLM market analyzer (GPT-4o-mini)
+    llm_analyzer = None
+    if settings.llm_enabled and settings.openai_api_key:
+        try:
+            from app.ai.llm_analyzer import LLMAnalyzer
+            llm_analyzer = LLMAnalyzer(api_key=settings.openai_api_key)
+            log.info("🧠 llm_analyzer_created", model="gpt-4o-mini")
+        except Exception as e:
+            log.warning("llm_analyzer_failed", error=str(e))
+    else:
+        log.info("llm_analyzer_skipped", reason="no openai_api_key" if not settings.openai_api_key else "disabled")
+
     strategy = TradingStrategy(
         model=model,
         feature_engine=feat_engine,
@@ -167,6 +180,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     state.frankenstein = frankenstein
     log.info("🧟 frankenstein_created", generation=0)
+
+    # Phase 35: Wire LLM analyzer into Frankenstein's scanner
+    if llm_analyzer:
+        frankenstein._scanner._llm_analyzer = llm_analyzer
+        log.info("🧠 llm_analyzer_wired_to_scanner")
 
     # 📊 Pre-built Trading Strategies Engine
     from app.strategies import StrategyEngine

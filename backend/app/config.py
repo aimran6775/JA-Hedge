@@ -169,6 +169,10 @@ class Settings(BaseSettings):
     congress_api_key: str = ""                # Congress.gov API key
     intelligence_enabled: bool = True         # Enable multi-source intelligence system
 
+    # ── LLM / OpenAI (Phase 35) ───────────────────────────
+    openai_api_key: str = ""                  # OpenAI API key for GPT-4o-mini market analysis
+    llm_enabled: bool = True                  # Enable LLM market analyzer (requires openai_api_key)
+
     # ── Celery ────────────────────────────────────────────
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"

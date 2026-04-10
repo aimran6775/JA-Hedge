@@ -175,16 +175,19 @@ class PlattCalibrator:
 
 class EnsemblePredictor(PredictionModel):
     """
-    Ensemble predictor combining XGBoost + Logistic Regression.
+    Ensemble predictor combining XGBoost + LR + LightGBM + LLM.
+
+    Phase 35: Multi-model ensemble with Bayesian edge estimation.
 
     Architecture:
-      1. Both models predict P(YES)
-      2. Weighted average (xgb_weight * xgb_prob + lr_weight * lr_prob)
-      3. Platt calibration applied to ensemble output
-      4. Final calibrated probability used for trading decisions
+      1. XGBoost: captures nonlinear patterns in features
+      2. Logistic Regression: captures linear signals
+      3. LightGBM: different regularization for diversity
+      4. LLM: world knowledge + reasoning about event outcomes
+      5. Platt calibration applied to ensemble output
+      6. Bayesian edge: posterior probability shrunk toward market price
 
-    The ensemble reduces variance and catches linear patterns
-    that XGBoost might miss, while XGBoost captures nonlinearities.
+    The ensemble bets BIG when all models agree and SMALL when they disagree.
     """
 
     def __init__(
@@ -199,8 +202,25 @@ class EnsemblePredictor(PredictionModel):
 
         self._xgb_weight = xgb_weight
         self._lr_weight = lr_weight
-        self._version = "ensemble-1.0.0"
+        self._version = "ensemble-2.0.0"
         self._feature_names = MarketFeatures.feature_names()
+
+        # Phase 35: LightGBM model (trained alongside XGBoost)
+        self._lgb_model: Any = None
+        self._lgb_trained: bool = False
+
+        # Phase 35: LLM prediction cache (populated by scanner before predict)
+        # ticker → {"probability": float, "confidence": float}
+        self._llm_cache: dict[str, dict[str, float]] = {}
+
+        # Phase 35: Ensemble statistics
+        self._ensemble_stats = {
+            "total_predictions": 0,
+            "llm_used": 0,
+            "lgb_used": 0,
+            "high_conviction": 0,
+            "bayesian_edges": [],
+        }
 
     @property
     def name(self) -> str:
@@ -223,43 +243,178 @@ class EnsemblePredictor(PredictionModel):
     def _model(self, value: Any) -> None:
         self._xgb._model = value
 
+    def inject_llm_predictions(self, predictions: dict[str, dict[str, float]]) -> None:
+        """Phase 35: Inject LLM predictions for the current scan cycle.
+
+        Called by scanner after LLM batch analysis, before predict_batch.
+        Format: {ticker: {"probability": float, "confidence": float}}
+        """
+        self._llm_cache = predictions
+
+    def train_lightgbm(self, X: np.ndarray, y: np.ndarray,
+                       sample_weights: np.ndarray | None = None) -> dict[str, float]:
+        """Phase 35: Train LightGBM for ensemble diversity."""
+        try:
+            import lightgbm as lgb
+
+            n_samples = len(X)
+            n_val = max(int(n_samples * 0.2), 2)
+
+            X_train, X_val = X[:-n_val], X[-n_val:]
+            y_train, y_val = y[:-n_val], y[-n_val:]
+
+            dtrain = lgb.Dataset(
+                X_train, label=y_train,
+                weight=sample_weights[:-n_val] if sample_weights is not None else None,
+            )
+            dval = lgb.Dataset(X_val, label=y_val, reference=dtrain)
+
+            params = {
+                "objective": "binary", "metric": ["binary_logloss", "auc"],
+                "boosting_type": "gbdt", "num_leaves": 15,
+                "learning_rate": 0.02, "feature_fraction": 0.6,
+                "bagging_fraction": 0.7, "bagging_freq": 5,
+                "min_child_samples": 10, "reg_alpha": 1.0,
+                "reg_lambda": 5.0, "max_depth": 4, "verbose": -1, "seed": 42,
+            }
+
+            callbacks = [lgb.early_stopping(30), lgb.log_evaluation(0)]
+            model = lgb.train(
+                params, dtrain, num_boost_round=500,
+                valid_sets=[dval], callbacks=callbacks,
+            )
+
+            self._lgb_model = model
+            self._lgb_trained = True
+
+            y_pred = model.predict(X_val)
+            from sklearn.metrics import roc_auc_score
+            val_auc = roc_auc_score(y_val, y_pred)
+
+            log.info("lightgbm_trained", samples=n_samples, val_auc=f"{val_auc:.4f}")
+            return {"lgb_val_auc": val_auc, "lgb_n_samples": n_samples}
+
+        except ImportError:
+            log.info("lightgbm not installed — ensemble uses XGBoost + LR only")
+            return {"lgb_status": "not_available"}
+        except Exception as e:
+            log.error("lightgbm_train_error", error=str(e))
+            return {"lgb_status": "error", "error": str(e)}
+
     def predict(self, features: MarketFeatures) -> Prediction:
-        """Generate calibrated ensemble prediction."""
+        """Generate calibrated multi-model ensemble prediction."""
         if not self._xgb.is_trained:
             return self._xgb._heuristic_predict(features)
 
         try:
             X = features.to_array().reshape(1, -1)
             raw_probs, cal_probs = self._ensemble_predict(X)
+
+            # Phase 35: Multi-model Bayesian blending
+            xgb_prob = float(cal_probs[0])
+            market_price = features.midpoint
+            self._ensemble_stats["total_predictions"] += 1
+
+            # Collect all model votes
+            model_probs = [xgb_prob]  # XGBoost+LR ensemble is vote #1
+            model_weights = [0.40]
+            model_names = ["xgb_lr"]
+
+            # LightGBM vote
+            if self._lgb_trained and self._lgb_model is not None:
+                try:
+                    lgb_X = X
+                    model_nf = self._lgb_model.num_feature()
+                    if lgb_X.shape[1] > model_nf:
+                        lgb_X = lgb_X[:, :model_nf]
+                    elif lgb_X.shape[1] < model_nf:
+                        pad = np.zeros((1, model_nf - lgb_X.shape[1]))
+                        lgb_X = np.hstack([lgb_X, pad])
+                    lgb_prob = float(self._lgb_model.predict(lgb_X)[0])
+                    lgb_prob = max(0.01, min(0.99, lgb_prob))
+                    model_probs.append(lgb_prob)
+                    model_weights.append(0.20)
+                    model_names.append("lightgbm")
+                    self._ensemble_stats["lgb_used"] += 1
+                except Exception:
+                    pass
+
+            # LLM vote
+            llm_data = self._llm_cache.get(features.ticker)
+            if llm_data:
+                llm_prob = llm_data["probability"]
+                llm_conf = llm_data.get("confidence", 0.5)
+                model_probs.append(llm_prob)
+                # LLM weight scaled by its own confidence
+                model_weights.append(0.25 * llm_conf)
+                model_names.append("llm")
+                self._ensemble_stats["llm_used"] += 1
+
+            # Market baseline (wisdom of crowds prior)
+            model_probs.append(market_price)
+            model_weights.append(0.15)
+            model_names.append("baseline")
+
+            # Normalize weights
+            w_total = sum(model_weights)
+            if w_total > 0:
+                model_weights = [w / w_total for w in model_weights]
+
+            # Weighted blend
+            blended = sum(p * w for p, w in zip(model_probs, model_weights))
+            blended = max(0.01, min(0.99, blended))
+
+            # Model agreement (0=disagree, 1=perfect agreement)
+            prob_std = float(np.std(model_probs))
+            agreement = max(0.0, min(1.0, 1.0 - prob_std / 0.25))
+
+            # Bayesian edge: shrink prediction toward market price by uncertainty
+            n_models = len([n for n in model_names if n != "baseline"])
+            signal_precision = agreement * math.sqrt(max(n_models, 1))
+            prior_precision = 1.0
+            total_prec = signal_precision + prior_precision
+            posterior = (
+                market_price * prior_precision / total_prec
+                + blended * signal_precision / total_prec
+            )
+            posterior = max(0.01, min(0.99, posterior))
+
+            # High conviction detection
+            non_baseline = [p for p, n in zip(model_probs, model_names) if n != "baseline"]
+            all_agree_side = (
+                all(p > market_price for p in non_baseline)
+                or all(p < market_price for p in non_baseline)
+            )
+            is_high_conviction = (
+                len(non_baseline) >= 2
+                and agreement > 0.80
+                and all_agree_side
+                and abs(posterior - market_price) > 0.03
+            )
+            if is_high_conviction:
+                self._ensemble_stats["high_conviction"] += 1
+
             return self._build_ensemble_prediction(
                 raw_prob=float(raw_probs[0]),
-                calibrated_prob=float(cal_probs[0]),
+                calibrated_prob=posterior,
                 features=features,
+                model_agreement=agreement,
+                is_high_conviction=is_high_conviction,
             )
         except Exception as e:
             log.error("ensemble_predict_failed", error=str(e))
             return self._xgb._heuristic_predict(features)
 
     def predict_batch(self, features_list: list[MarketFeatures]) -> list[Prediction]:
-        """Batch calibrated ensemble prediction."""
+        """Phase 35: Batch calibrated multi-model ensemble prediction."""
         if not features_list:
             return []
 
         if not self._xgb.is_trained:
             return [self._xgb._heuristic_predict(f) for f in features_list]
 
-        try:
-            X = np.array([f.to_array() for f in features_list])
-            raw_probs, cal_probs = self._ensemble_predict(X)
-            return [
-                self._build_ensemble_prediction(
-                    raw_prob=float(rp), calibrated_prob=float(cp), features=f,
-                )
-                for rp, cp, f in zip(raw_probs, cal_probs, features_list)
-            ]
-        except Exception as e:
-            log.error("ensemble_batch_predict_failed", error=str(e))
-            return [self._xgb._heuristic_predict(f) for f in features_list]
+        # Delegate to per-item predict() which does multi-model blending
+        return [self.predict(f) for f in features_list]
 
     def _ensemble_predict(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Compute weighted ensemble probability and calibrate.
@@ -404,6 +559,11 @@ class EnsemblePredictor(PredictionModel):
                 log.warning("val_eval_failed", error=str(e))
 
         log.info("ensemble_trained", **{k: f"{v:.4f}" if isinstance(v, float) else v for k, v in metrics.items()})
+
+        # Phase 35: Also train LightGBM on full train+cal for diversity
+        lgb_metrics = self.train_lightgbm(X[:n_train + n_cal], y[:n_train + n_cal])
+        metrics.update(lgb_metrics)
+
         return metrics
 
     def _build_prediction(self, prob_yes: float, features: MarketFeatures) -> Prediction:
@@ -416,11 +576,14 @@ class EnsemblePredictor(PredictionModel):
         raw_prob: float,
         calibrated_prob: float,
         features: MarketFeatures,
+        *,
+        model_agreement: float = 1.0,
+        is_high_conviction: bool = False,
     ) -> Prediction:
         """Build prediction from raw + calibrated ensemble probability.
-        
-        Unlike XGBoost._build_prediction, this does NOT re-calibrate
-        because the ensemble pipeline already applied Platt calibration.
+
+        Phase 35: Uses Bayesian posterior as the effective probability
+        and factors in model agreement for confidence scoring.
         """
         import math
 
@@ -431,12 +594,10 @@ class EnsemblePredictor(PredictionModel):
         # Determine side
         side = "yes" if effective_edge > 0 else "no"
 
-        # Compute real confidence — same market-aware formula as XGBoost
-        # Decisiveness = divergence from MARKET PRICE, not from 0.5
+        # Compute real confidence — market-aware formula
         divergence = abs(effective_prob - market_price)
         decisiveness = min(divergence / 0.15, 1.0)
 
-        # Edge capped at 15% — anything higher is model error
         edge_abs = min(abs(effective_edge), 0.15)
         edge_signal = edge_abs / 0.15
 
@@ -444,19 +605,25 @@ class EnsemblePredictor(PredictionModel):
         cal_error = self._xgb._calibration.expected_error(raw_prob) if hasattr(self._xgb, '_calibration') else 0.0
         cal_penalty = max(0.0, 1.0 - cal_error * 5.0)
 
-        # Price-range penalty — extreme prices are harder to predict
+        # Price-range penalty
         price_penalty = 1.0
         if market_price < 0.15 or market_price > 0.85:
             price_penalty = 0.5
         elif market_price < 0.25 or market_price > 0.75:
             price_penalty = 0.75
 
+        # Phase 35: Factor in model agreement
+        # High agreement → higher confidence. Disagreement → lower confidence.
+        agreement_factor = model_agreement
+        conviction_bonus = 0.10 if is_high_conviction else 0.0
+
         confidence = (
-            0.25 * decisiveness +
-            0.25 * edge_signal +
-            0.20 * 1.0 +      # ensemble inherently has better agreement
+            0.20 * decisiveness +
+            0.20 * edge_signal +
+            0.25 * agreement_factor +   # Phase 35: agreement replaces flat 1.0
             0.10 * cal_penalty +
-            0.20 * price_penalty
+            0.15 * price_penalty +
+            0.10 * conviction_bonus      # Phase 35: bonus for all-models-agree
         )
         confidence = max(0.05, min(0.99, confidence))
 

@@ -279,6 +279,22 @@ class OnlineLearner:
         # Champion/challenger comparison
         if self._should_promote(checkpoint):
             self._promote(challenger, checkpoint)
+
+            # Phase 35: Train LightGBM for ensemble diversity
+            # After XGBoost promotion, also train LightGBM alongside it.
+            # LightGBM uses different regularization → ensemble diversity.
+            try:
+                if hasattr(self.model, 'train_lightgbm'):
+                    lgb_metrics = self.model.train_lightgbm(
+                        X, y, sample_weights=sample_weights,
+                    )
+                    log.info("lightgbm_retrained", **{
+                        k: f"{v:.4f}" if isinstance(v, float) else v
+                        for k, v in lgb_metrics.items()
+                    })
+            except Exception as e:
+                log.debug("lightgbm_retrain_error", error=str(e))
+
             return checkpoint
         else:
             log.info(

@@ -598,14 +598,15 @@ class PaperTradingSimulator:
 
     def _attempt_maker_fill(self, order: SimulatedOrder) -> bool:
         """
-        Simulate realistic maker order fill probability.
+        Phase 35: Realistic maker fill simulation using price-crossing detection.
 
-        Real Kalshi maker fill rates are 20-40% depending on:
-        - Price proximity to midpoint (closer = higher fill)
-        - Time resting (longer = eventually fills or expires)
-        - Market volume (higher volume = more crossing flow)
+        Instead of random coin flips, we check if the market's current price
+        has moved through our resting order price — just like a real exchange.
 
-        This replaces the old 85% instant fill which was wildly unrealistic.
+        A maker BUY order at 35¢ fills when the market trades AT or BELOW 35¢.
+        A maker SELL order at 65¢ fills when the market trades AT or ABOVE 65¢.
+
+        We also model partial fills and time-priority with a small random element.
         """
         import random
 
@@ -613,40 +614,112 @@ class PaperTradingSimulator:
             return False
 
         price = order.price_cents
+        ticker = order.ticker
 
-        # Base fill probability: ~30% for typical maker orders
-        # Aggressive prices (near mid) fill more often
-        # Passive prices (far from mid) fill less
-        if price <= 15 or price >= 85:
-            # Extreme prices: very few counterparties
-            fill_prob = 0.15
-        elif price <= 25 or price >= 75:
-            fill_prob = 0.25
-        elif price <= 40 or price >= 60:
-            # Near midpoint: decent fill rate
-            fill_prob = 0.35
-        else:
-            # 40-60 range: most liquid, best fills
-            fill_prob = 0.40
+        # Get current market state from cache
+        from app.pipeline import market_cache
+        cached = market_cache.get(ticker)
 
-        # Time decay boost: orders resting longer get cumulative fill chance
-        age_seconds = (datetime.now(timezone.utc) - order.created_time).total_seconds()
-        if age_seconds > 60:
-            fill_prob = min(0.60, fill_prob + 0.05)  # +5% after 1 min
-        if age_seconds > 120:
-            fill_prob = min(0.70, fill_prob + 0.10)  # +15% total after 2 min
-
-        if random.random() > fill_prob:
-            # No fill — order stays resting
-            return False
-
-        # Partial fill simulation: larger orders have more partial fills
-        fill_count = order.remaining_count
-        if fill_count > 2:
-            if random.random() < 0.40:  # 40% chance of partial
+        if not cached:
+            # No market data — use time-based random fill as fallback
+            age_seconds = (datetime.now(timezone.utc) - order.created_time).total_seconds()
+            # Very conservative without data: 5% base + 2% per minute
+            fill_prob = min(0.30, 0.05 + age_seconds * 0.02 / 60)
+            if random.random() > fill_prob:
+                return False
+            fill_count = order.remaining_count
+            if fill_count > 2 and random.random() < 0.40:
                 fill_count = max(1, int(fill_count * random.uniform(0.30, 0.70)))
+            self._execute_maker_fill(order, fill_count)
+            return True
 
-        # Fill at posted price (maker = no slippage)
+        # Extract current market prices
+        last_price = getattr(cached, "last_price", None) or getattr(cached, "yes_price", None)
+        yes_bid = getattr(cached, "yes_bid", None)
+        yes_ask = getattr(cached, "yes_ask", None)
+        no_bid = getattr(cached, "no_bid", None)
+        no_ask = getattr(cached, "no_ask", None)
+        volume = getattr(cached, "volume", 0) or 0
+
+        # Convert to cents if needed
+        def _to_cents(v: float | int | None) -> int | None:
+            if v is None:
+                return None
+            if isinstance(v, float) and v <= 1.0:
+                return int(v * 100)
+            return int(v)
+
+        last_cents = _to_cents(last_price)
+        yes_bid_c = _to_cents(yes_bid)
+        yes_ask_c = _to_cents(yes_ask)
+
+        # ─── Price-crossing detection ───
+        # For BUY YES at price P: fills if market YES price drops to P or below
+        # For BUY NO at price P: fills if market NO price drops to P or below
+        #   (which means YES price rises to 100-P or above)
+        crossed = False
+
+        if order.side == OrderSide.YES:
+            if order.action == OrderAction.BUY:
+                # We're bidding YES at `price` cents.
+                # Fills if yes_ask drops to our price or below
+                if yes_ask_c is not None and yes_ask_c <= price:
+                    crossed = True
+                elif last_cents is not None and last_cents <= price:
+                    crossed = True
+            else:  # SELL YES
+                # We're offering YES at `price` cents.
+                # Fills if yes_bid rises to our price or above
+                if yes_bid_c is not None and yes_bid_c >= price:
+                    crossed = True
+                elif last_cents is not None and last_cents >= price:
+                    crossed = True
+        else:  # NO side
+            # NO at price P is equivalent to YES at (100-P)
+            complement = 100 - price
+            if order.action == OrderAction.BUY:
+                # Buying NO at P → fills if YES price rises to complement or above
+                if last_cents is not None and last_cents >= complement:
+                    crossed = True
+                elif yes_bid_c is not None and yes_bid_c >= complement:
+                    crossed = True
+            else:  # SELL NO
+                if last_cents is not None and last_cents <= complement:
+                    crossed = True
+                elif yes_ask_c is not None and yes_ask_c <= complement:
+                    crossed = True
+
+        if not crossed:
+            # Price hasn't crossed yet — check proximity + time for partial fills
+            # This models queue priority: our order is in the book, and random
+            # market flow may partially fill us even before a full cross.
+            age_seconds = (datetime.now(timezone.utc) - order.created_time).total_seconds()
+
+            # How close is our price to the market?
+            proximity = 0.0
+            if last_cents is not None and price > 0:
+                dist = abs(last_cents - price) if order.side == OrderSide.YES else abs(last_cents - (100 - price))
+                proximity = max(0.0, 1.0 - dist / 10.0)  # 0 at 10+ cents away, 1 at same price
+
+            # Volume-adjusted fill probability
+            vol_factor = min(1.0, volume / 500.0)  # High volume → more random flow
+
+            # Time-decayed fill chance for near-market orders
+            time_factor = min(1.0, age_seconds / 120.0)  # Ramps up over 2 min
+
+            fill_prob = proximity * vol_factor * time_factor * 0.15  # Max ~15% per check
+            if random.random() > fill_prob:
+                return False
+
+        # Fill — determine count
+        fill_count = order.remaining_count
+        if not crossed and fill_count > 1:
+            # Non-crossing fill = partial (random market flow)
+            fill_count = max(1, int(fill_count * random.uniform(0.20, 0.50)))
+        elif crossed and fill_count > 2 and random.random() < 0.25:
+            # Even crossed orders sometimes partially fill
+            fill_count = max(1, int(fill_count * random.uniform(0.50, 0.90)))
+
         self._execute_maker_fill(order, fill_count)
         return True
 

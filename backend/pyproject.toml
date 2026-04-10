@@ -42,8 +42,10 @@ dependencies = [
     # ── ML / AI ────────────────────────────────────
     "scikit-learn>=1.5.0",
     "xgboost>=2.1.0",
+    "lightgbm>=4.0.0",
     "pandas>=2.2.0",
     "numpy>=1.26.0",
+    "openai>=1.0.0",
 
     # ── Scheduling ─────────────────────────────────
     "apscheduler>=3.10.0",
