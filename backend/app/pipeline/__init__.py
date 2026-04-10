@@ -321,12 +321,13 @@ class MarketDataPipeline:
         existing = market_cache.get(ticker)
         if existing:
             # Patch the existing market with new fields
+            # Phase 35c: Use float (not Decimal) for consistency
             if "yes_bid" in data:
-                existing.yes_bid = Decimal(str(data["yes_bid"]))
+                existing.yes_bid = float(data["yes_bid"])
             if "yes_ask" in data:
-                existing.yes_ask = Decimal(str(data["yes_ask"]))
+                existing.yes_ask = float(data["yes_ask"])
             if "last_price" in data:
-                existing.last_price = Decimal(str(data["last_price"]))
+                existing.last_price = float(data["last_price"])
             if "volume" in data:
-                existing.volume = Decimal(str(data["volume"]))
+                existing.volume = float(data["volume"])
             market_cache.upsert(existing)
