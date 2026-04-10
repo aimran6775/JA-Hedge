@@ -157,6 +157,18 @@ class MarketFeatures:
     alt_weather_extreme: float = 0.0    # Weather extreme score [0, 1]
     alt_source_count: float = 0.0       # How many intelligence sources had data [0, 1]
 
+    # ── Phase 35: Category + Interaction Features ────────
+    # Category encoding: lets XGBoost learn per-category behavior
+    category_id: float = 0.0            # ordinal category ID (0=unknown, 1=politics, etc.)
+    # Cross-feature interactions: XGBoost CAN discover these but converges
+    # faster if we pre-compute the most important ones
+    vol_confirmed_move: float = 0.0     # price_change_5m × volume_ratio (volume-confirmed direction)
+    rsi_time_signal: float = 0.0        # rsi_14 × normalized_time (RSI near expiry = high signal)
+    convergence_urgency: float = 0.0    # convergence_rate × time_urgency (convergence speed at expiry)
+    momentum_regime: float = 0.0        # macd_histogram × volatility_ratio (momentum in vol context)
+    spread_edge: float = 0.0            # spread × hours_to_expiry (liquidity cost vs time value)
+    ext_disagreement: float = 0.0       # alt_cross_platform_edge × settlement_confidence
+
     def to_array(self) -> np.ndarray:
         """Convert to numpy array for ML model input."""
         return np.array(
@@ -233,6 +245,11 @@ class MarketFeatures:
                 self.alt_news_volume, self.alt_social_sentiment,
                 self.alt_weather_temp, self.alt_weather_extreme,
                 self.alt_source_count,
+                # Phase 35: category + interaction features
+                self.category_id,
+                self.vol_confirmed_move, self.rsi_time_signal,
+                self.convergence_urgency, self.momentum_regime,
+                self.spread_edge, self.ext_disagreement,
             ],
             dtype=np.float32,
         )
@@ -282,6 +299,11 @@ class MarketFeatures:
             "alt_news_volume", "alt_social_sentiment",
             "alt_weather_temp", "alt_weather_extreme",
             "alt_source_count",
+            # Phase 35: category + interaction
+            "category_id",
+            "vol_confirmed_move", "rsi_time_signal",
+            "convergence_urgency", "momentum_regime",
+            "spread_edge", "ext_disagreement",
         ]
 
 
@@ -652,6 +674,42 @@ class FeatureEngine:
             net_move = abs(p10[-1] - p10[0])
             total_move = sum(abs(p10[i] - p10[i-1]) for i in range(1, len(p10)))
             features.price_efficiency = net_move / max(total_move, 1e-6) if total_move > 0 else 0.0
+
+        # ── Phase 35: Category Encoding ───────────────────
+        # Ordinal encoding — XGBoost can split on this to learn per-category patterns.
+        # Categories mapped to stable integer IDs.
+        _cat_str = getattr(market, 'category', '') or ''
+        _title_str = getattr(market, 'title', '') or ''
+        _cat_map = {
+            'politics': 1, 'economics': 2, 'finance': 3, 'crypto': 4,
+            'sports': 5, 'entertainment': 6, 'science': 7, 'weather': 8,
+            'social_media': 9, 'tech': 10, 'health': 11, 'legal': 12,
+        }
+        _cat_lower = _cat_str.lower()
+        features.category_id = float(_cat_map.get(_cat_lower, 0))
+        # Also try to detect from title/ticker if category field is empty
+        if features.category_id == 0:
+            _t_low = _title_str.lower() + ' ' + market.ticker.lower()
+            for kw, cid in [('nba', 5), ('nfl', 5), ('mlb', 5), ('nhl', 5),
+                            ('bitcoin', 4), ('btc', 4), ('eth', 4), ('crypto', 4),
+                            ('trump', 1), ('biden', 1), ('election', 1), ('congress', 1),
+                            ('fed ', 2), ('rate', 2), ('gdp', 2), ('cpi', 2),
+                            ('weather', 8), ('temperature', 8), ('rain', 8),
+                            ('s&p', 3), ('nasdaq', 3), ('dow', 3), ('stock', 3)]:
+                if kw in _t_low:
+                    features.category_id = float(cid)
+                    break
+
+        # ── Phase 35: Interaction Features ────────────────
+        # These encode the most predictive non-linear relationships.
+        # XGBoost can discover these itself, but pre-computing them
+        # means it needs fewer trees / less depth to find the pattern.
+        features.vol_confirmed_move = features.price_change_5m * features.volume_ratio
+        features.rsi_time_signal = (features.rsi_14 / 100.0) * features.normalized_time
+        features.convergence_urgency = features.convergence_rate * features.time_urgency
+        features.momentum_regime = features.macd_histogram * features.volatility_ratio
+        features.spread_edge = features.spread * max(features.hours_to_expiry, 0.01)
+        features.ext_disagreement = features.alt_cross_platform_edge * features.settlement_confidence
 
         return features
 

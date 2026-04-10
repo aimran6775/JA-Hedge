@@ -171,7 +171,7 @@ class Settings(BaseSettings):
 
     # ── LLM / OpenAI (Phase 35) ───────────────────────────
     openai_api_key: str = ""                  # OpenAI API key for GPT-4o-mini market analysis
-    llm_enabled: bool = True                  # Enable LLM market analyzer (requires openai_api_key)
+    llm_enabled: bool = False                 # Disabled — our own model beats rented LLM reasoning
 
     # ── Celery ────────────────────────────────────────────
     celery_broker_url: str = "redis://localhost:6379/1"

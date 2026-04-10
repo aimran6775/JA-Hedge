@@ -62,6 +62,7 @@ from app.frankenstein.strategy import AdaptiveStrategy
 from app.frankenstein.ws_bridge import WSBridge
 from app.frankenstein.capital_allocator import CapitalAllocator
 from app.frankenstein.arb_engine import arb_scanner
+from app.frankenstein.harvester import MarketHarvester
 from app.kalshi.models import Market
 from app.logging_config import get_logger
 from app.pipeline import market_cache
@@ -251,6 +252,11 @@ class Frankenstein:
         )
         # Wire scanner's category stats to resolver
         self._scanner._category_stats_ref = self._resolver.category_stats
+
+        # Phase 35: Wire market harvester to scanner, resolver, learner
+        self._scanner._harvester = self._harvester
+        self._resolver._harvester = self._harvester
+        self.learner._harvester = self._harvester
 
         # Sports components (injected by main.py)
         self._sports_detector = None
@@ -1174,6 +1180,8 @@ class Frankenstein:
             "arb_scanner": arb_scanner.status() if arb_scanner else None,
             # Phase 33: Live in-game volatility engine
             "live_engine": self._live_engine.stats() if self._live_engine else None,
+            # Phase 35: Market outcome harvester
+            "harvester": self._harvester.stats() if self._harvester else None,
         }
 
     @staticmethod

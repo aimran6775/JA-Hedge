@@ -96,6 +96,9 @@ class OnlineLearner:
         self._category_models: dict[str, XGBoostPredictor] = {}
         self._MIN_CATEGORY_SAMPLES = 40  # need at least 40 resolved per category
 
+        # Phase 35: Market outcome harvester (injected by brain)
+        self._harvester: Any = None
+
         # Phase 5: Pretrained model blending
         # After N real trades, we blend pretrained historical data with
         # live trade data for retraining.  This prevents the model from
@@ -192,6 +195,28 @@ class OnlineLearner:
                     sample_weights = np.concatenate([live_weights, hist_weights])
                 log.info("pretrained_blend", live_samples=len(X)-n_hist,
                          historical_samples=n_hist, ratio=f"{self._FINETUNE_HISTORICAL_RATIO:.0%}")
+
+        # Phase 35: Blend harvested market data (free training from non-traded markets)
+        if self._harvester:
+            try:
+                harvest_data = self._harvester.get_training_data(
+                    max_samples=len(X) * 3,  # Up to 3x trade data from harvest
+                    max_age_hours=72.0,
+                )
+                if harvest_data is not None:
+                    h_X, h_y, h_weights = harvest_data
+                    n_harvest = len(h_X)
+                    X = np.vstack([X, h_X])
+                    y = np.concatenate([y, h_y])
+                    if sample_weights is not None:
+                        sample_weights = np.concatenate([sample_weights, h_weights])
+                    else:
+                        trade_weights = np.ones(len(X) - n_harvest) * 1.0
+                        sample_weights = np.concatenate([trade_weights, h_weights])
+                    log.info("harvest_blend", trade_samples=len(X)-n_harvest,
+                             harvest_samples=n_harvest, total=len(X))
+            except Exception as e:
+                log.debug("harvest_blend_error", error=str(e))
 
         log.info(
             "retrain_starting",

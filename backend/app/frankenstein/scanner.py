@@ -119,6 +119,9 @@ class MarketScanner:
         # Phase 35: LLM market analyzer (injected from main.py via brain)
         self._llm_analyzer: Any = None
 
+        # Phase 35: Market outcome harvester (injected from brain)
+        self._harvester: Any = None
+
         # Cooldowns
         self._recently_traded: dict[str, float] = {}
         self._recently_traded_events: dict[str, float] = {}
@@ -277,6 +280,13 @@ class MarketScanner:
 
         # 4c. Intelligence Hub enrichment
         self._intelligence_enrich(candidates, features_list)
+
+        # 4c3. Phase 35: Harvest features for ALL candidates (free training data)
+        if self._harvester:
+            try:
+                self._harvester.snapshot(candidates, features_list)
+            except Exception:
+                pass
 
         # 4c2. Phase 31: Cross-platform arbitrage scan
         # Detects large disagreements between external sources (Polymarket,

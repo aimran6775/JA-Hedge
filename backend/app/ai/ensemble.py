@@ -269,13 +269,21 @@ class EnsemblePredictor(PredictionModel):
             )
             dval = lgb.Dataset(X_val, label=y_val, reference=dtrain)
 
+            # Deliberately different from XGBoost for genuine ensemble diversity:
+            # - DART boosting (dropout regularization) vs XGBoost's gbtree
+            # - More leaves (31 vs XGB's ~15) but shallower (max_depth=3)
+            # - Higher feature_fraction dropout (0.5 vs XGB using all)
+            # - Different random seed for different tree splits
+            # - Lower learning rate + more rounds = different error surface
             params = {
                 "objective": "binary", "metric": ["binary_logloss", "auc"],
-                "boosting_type": "gbdt", "num_leaves": 15,
-                "learning_rate": 0.02, "feature_fraction": 0.6,
-                "bagging_fraction": 0.7, "bagging_freq": 5,
-                "min_child_samples": 10, "reg_alpha": 1.0,
-                "reg_lambda": 5.0, "max_depth": 4, "verbose": -1, "seed": 42,
+                "boosting_type": "dart", "num_leaves": 31,
+                "learning_rate": 0.01, "feature_fraction": 0.5,
+                "bagging_fraction": 0.6, "bagging_freq": 3,
+                "min_child_samples": 15, "reg_alpha": 2.0,
+                "reg_lambda": 8.0, "max_depth": 3, "verbose": -1,
+                "seed": 137, "drop_rate": 0.15, "skip_drop": 0.5,
+                "extra_trees": True,
             }
 
             callbacks = [lgb.early_stopping(30), lgb.log_evaluation(0)]
@@ -317,7 +325,7 @@ class EnsemblePredictor(PredictionModel):
 
             # Collect all model votes
             model_probs = [xgb_prob]  # XGBoost+LR ensemble is vote #1
-            model_weights = [0.40]
+            model_weights = [0.50]
             model_names = ["xgb_lr"]
 
             # LightGBM vote
@@ -333,7 +341,7 @@ class EnsemblePredictor(PredictionModel):
                     lgb_prob = float(self._lgb_model.predict(lgb_X)[0])
                     lgb_prob = max(0.01, min(0.99, lgb_prob))
                     model_probs.append(lgb_prob)
-                    model_weights.append(0.20)
+                    model_weights.append(0.35)
                     model_names.append("lightgbm")
                     self._ensemble_stats["lgb_used"] += 1
                 except Exception:
@@ -352,7 +360,7 @@ class EnsemblePredictor(PredictionModel):
 
             # Market baseline (wisdom of crowds prior)
             model_probs.append(market_price)
-            model_weights.append(0.15)
+            model_weights.append(0.10)
             model_names.append("baseline")
 
             # Normalize weights

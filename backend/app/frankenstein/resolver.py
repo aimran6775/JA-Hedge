@@ -53,6 +53,9 @@ class OutcomeResolver:
         self._sports_predictor_v2 = None  # Phase 30: injected by brain
         self._sports_risk = None           # Phase 30: injected by brain
 
+        # Phase 35: Market harvester (injected by brain)
+        self._harvester: Any = None
+
         # {category: {"wins": int, "losses": int}}
         self.category_stats: dict[str, dict[str, int]] = {}
 
@@ -134,6 +137,22 @@ class OutcomeResolver:
                     data={"resolved_count": resolved_count},
                     source="resolver",
                 ))
+
+        # Phase 35: Feed ALL settlements to market harvester for free training data.
+        # This includes markets we didn't trade — every settlement is a training sample.
+        if self._harvester and settlements_by_ticker:
+            try:
+                settled_map: dict[str, str] = {}
+                for ticker, settlement in settlements_by_ticker.items():
+                    result = getattr(settlement, "market_result", None)
+                    if result is not None:
+                        r_str = result.value.lower() if hasattr(result, "value") else str(result).lower()
+                        if r_str in ("yes", "no"):
+                            settled_map[ticker] = r_str
+                if settled_map:
+                    self._harvester.try_harvest(settled_map)
+            except Exception as e:
+                log.debug("harvester_feed_error", error=str(e))
 
         return resolved_count
 
