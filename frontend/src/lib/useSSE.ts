@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 
 export interface SSESnapshot {
   type: string;
@@ -189,80 +189,82 @@ export function useSSE(): UseSSEReturn {
   const [data, setData] = useState<SSESnapshot | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
-  const esRef = useRef<EventSource | null>(null);
-  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sseAlive = useRef(false);
-
-  const stopPolling = useCallback(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-  }, []);
-
-  const doPoll = useCallback(async () => {
-    const snapshot = await pollDashboard();
-    if (snapshot) {
-      setData(snapshot);
-      setLastUpdate(Date.now());
-      setConnected(true);
-    }
-  }, []);
-
-  const startPolling = useCallback(() => {
-    if (pollingRef.current) return; // already running
-    doPoll(); // immediate first poll
-    pollingRef.current = setInterval(doPoll, 5000);
-  }, [doPoll]);
-
-  const connect = useCallback(() => {
-    if (esRef.current) esRef.current.close();
-
-    // Use relative URL — Next.js rewrites proxy to backend
-    const es = new EventSource("/api/stream");
-    esRef.current = es;
-
-    es.addEventListener("connected", () => {
-      setConnected(true);
-    });
-
-    es.addEventListener("snapshot", (event) => {
-      try {
-        const parsed = JSON.parse(event.data) as SSESnapshot;
-        setData(parsed);
-        setLastUpdate(Date.now());
-        setConnected(true);
-        sseAlive.current = true;
-        stopPolling(); // SSE works — no need to poll
-      } catch {
-        // ignore parse errors
-      }
-    });
-
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-      esRef.current = null;
-      startPolling(); // SSE failed — poll instead
-      // Retry SSE connection after 30s
-      retryRef.current = setTimeout(connect, 30_000);
-    };
-
-    // If SSE hasn't delivered data within 6s, start polling as backup
-    setTimeout(() => {
-      if (!sseAlive.current) startPolling();
-    }, 6000);
-  }, [startPolling, stopPolling]);
 
   useEffect(() => {
+    let esRef: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let sseAlive = false;
+    let cancelled = false;
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    async function doPoll() {
+      if (cancelled) return;
+      const snapshot = await pollDashboard();
+      if (cancelled) return;
+      if (snapshot) {
+        setData(snapshot);
+        setLastUpdate(Date.now());
+        setConnected(true);
+      }
+    }
+
+    function startPolling() {
+      if (pollTimer || cancelled) return;
+      doPoll(); // immediate first
+      pollTimer = setInterval(doPoll, 5000);
+    }
+
+    function connect() {
+      if (cancelled) return;
+      if (esRef) esRef.close();
+
+      const es = new EventSource("/api/stream");
+      esRef = es;
+
+      es.addEventListener("connected", () => {
+        if (!cancelled) setConnected(true);
+      });
+
+      es.addEventListener("snapshot", (event) => {
+        if (cancelled) return;
+        try {
+          const parsed = JSON.parse(event.data) as SSESnapshot;
+          setData(parsed);
+          setLastUpdate(Date.now());
+          setConnected(true);
+          sseAlive = true;
+          stopPolling();
+        } catch { /* ignore */ }
+      });
+
+      es.onerror = () => {
+        if (cancelled) return;
+        setConnected(false);
+        es.close();
+        esRef = null;
+        startPolling();
+        retryTimer = setTimeout(connect, 30_000);
+      };
+
+      // If SSE hasn't delivered data in 6s, start polling
+      setTimeout(() => {
+        if (!sseAlive && !cancelled) startPolling();
+      }, 6000);
+    }
+
     connect();
+
     return () => {
-      if (esRef.current) esRef.current.close();
-      if (retryRef.current) clearTimeout(retryRef.current);
+      cancelled = true;
+      if (esRef) esRef.close();
+      if (retryTimer) clearTimeout(retryTimer);
       stopPolling();
     };
-  }, [connect, stopPolling]);
+  }, []); // no deps — stable effect
 
   return { data, connected, lastUpdate };
 }
