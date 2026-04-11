@@ -338,6 +338,8 @@ export interface FrankensteinTrade {
   outcome: string;
   pnl_cents: number;
   timestamp: string;
+  category?: string;
+  market_title?: string;
   confidence_breakdown?: ConfidenceBreakdown | null;
 }
 

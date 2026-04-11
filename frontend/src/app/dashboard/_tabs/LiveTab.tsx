@@ -1,395 +1,388 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
-import { Card } from "@/components/ui/Card";
-import { StatCard } from "@/components/ui/StatCard";
-import {
-  IconCircle,
-  IconRefresh,
-  IconTrendUp,
-  IconTrendDown,
-  IconShield,
-  IconZap,
-  IconPortfolio,
-  IconBrain,
-  IconTarget,
-} from "@/components/ui/Icons";
+import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { useSSE } from "@/lib/useSSE";
-import { pnlColor, pnlSign, prettifyTicker, timeAgo, fmtUptime } from "@/lib/dashboard-utils";
-import { EquityCurve } from "@/components/charts/EquityCurve";
 
 /* ═══════════════════════════════════════════════════════════════════════
-   LIVE TAB — Real-time trading dashboard (SSE-driven)
+   LIVE TAB — Clean, minimal real-time trading dashboard
+   Phase 1-20: Complete redesign for clarity
    ═══════════════════════════════════════════════════════════════════════ */
+
 export function LiveTab() {
-  /* ── SSE real-time data ───────────────────────────────────────────── */
-  const { data: sse, connected: sseConnected, lastUpdate } = useSSE();
-
-  /* ── Supplementary data (not in SSE) ──────────────────────────────── */
-  const [fills, setFills] = useState<
-    Array<{
-      ticker: string;
-      side: string;
-      action: string;
-      count: number | null;
-      price_dollars: string | null;
-      fee_dollars: string | null;
-      created_time: string | null;
-    }>
-  >([]);
-  const [pnlCurve, setPnlCurve] = useState<Array<Record<string, unknown>>>([]);
-  const [marketTitles, setMarketTitles] = useState<Record<string, string>>({});
+  const { data: sse, connected, lastUpdate } = useSSE();
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [equityData, setEquityData] = useState<EquityPoint[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const titleCache = useRef<Record<string, string>>({});
 
-  /* ── Fetch supplementary data on slower interval ──────────────────── */
-  const fetchSupplementary = useCallback(async () => {
+  // Fetch trades with P&L data
+  const fetchData = useCallback(async () => {
     try {
-      const [fl, analytics] = await Promise.all([
-        api.portfolio.fills({ limit: 10 }).catch(() => []),
+      const [tradesRes, analyticsRes] = await Promise.all([
+        api.frankenstein.recentTrades(50).catch(() => []),
         api.frankenstein.analytics().catch(() => null),
       ]);
-      setFills(fl);
-      if (analytics) {
-        const curve = (analytics as Record<string, unknown>).pnl_curve;
-        if (Array.isArray(curve)) setPnlCurve(curve);
+      
+      // Transform trades with proper P&L
+      const transformed = (tradesRes || []).map((t: RawTrade) => ({
+        id: t.trade_id || `${t.ticker}-${t.timestamp}`,
+        ticker: t.ticker,
+        title: t.market_title || prettifyTicker(t.ticker),
+        side: t.side,
+        count: t.count,
+        priceCents: t.price_cents,
+        pnlCents: t.pnl_cents || 0,
+        outcome: t.outcome || "pending",
+        confidence: t.confidence || 0,
+        edge: t.edge || 0,
+        timestamp: t.timestamp,
+        category: t.category || "unknown",
+      }));
+      setTrades(transformed);
+
+      // Build equity curve from analytics
+      if (analyticsRes?.pnl_curve) {
+        const curve = analyticsRes.pnl_curve.map((p: { ts?: number; timestamp?: number; pnl?: number; cumulative_pnl?: number }) => ({
+          time: p.ts || p.timestamp || 0,
+          value: p.pnl ?? p.cumulative_pnl ?? 0,
+        }));
+        setEquityData(curve);
       }
       setError(null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Connection failed");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
     }
   }, []);
 
   useEffect(() => {
-    fetchSupplementary();
-    const iv = setInterval(fetchSupplementary, 15000);
+    fetchData();
+    const iv = setInterval(fetchData, 10000);
     return () => clearInterval(iv);
-  }, [fetchSupplementary]);
+  }, [fetchData]);
 
-  /* ── Resolve market titles ───────────────────────────────────────── */
-  const allTickers = [
-    ...(sse?.positions?.map((p) => p.ticker) ?? []),
-    ...(sse?.recent_trades?.map((t) => t.ticker) ?? []),
-    ...fills.map((f) => f.ticker),
-  ];
-
-  useEffect(() => {
-    const unknown = [...new Set(allTickers)].filter((tk) => !titleCache.current[tk]);
-    if (unknown.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      const resolved: Record<string, string> = {};
-      await Promise.all(
-        unknown.map(async (tk) => {
-          try {
-            const m = await api.markets.get(tk);
-            if (m?.title) resolved[tk] = m.title;
-          } catch { /* keep ticker */ }
-        }),
-      );
-      if (!cancelled && Object.keys(resolved).length > 0) {
-        titleCache.current = { ...titleCache.current, ...resolved };
-        setMarketTitles((prev) => ({ ...prev, ...resolved }));
-      }
-    })();
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(allTickers)]);
-
-  /* ── Derived from SSE ───────────────────────────────────────────── */
+  // Derived values
   const frank = sse?.frankenstein;
-  const perf = frank?.performance;
-  const mem = frank?.memory;
-  const positions = sse?.positions ?? [];
-  const realTrades = (sse?.recent_trades ?? []).filter(
-    (t) => !t.model_version?.startsWith("bootstrap"),
-  );
+  const isLive = frank?.is_alive && frank?.is_trading && !frank?.is_paused || false;
+  const balance = sse?.balance?.balance_cents || 0;
+  const dailyPnl = sse?.pnl?.daily_pnl || 0;
+  const positions = sse?.positions?.length || 0;
+  const winRate = frank?.performance?.win_rate || 0;
+  const totalPnl = frank?.performance?.total_pnl || 0;
+  
+  // Separate wins/losses
+  const resolvedTrades = trades.filter(t => t.outcome !== "pending");
+  const wins = resolvedTrades.filter(t => t.outcome === "win");
+  const losses = resolvedTrades.filter(t => t.outcome === "loss");
+  const realizedPnl = resolvedTrades.reduce((sum, t) => sum + t.pnlCents, 0);
+  const unrealizedPnl = dailyPnl * 100 - realizedPnl; // Approximate
 
-  const brainAlive = frank?.is_alive ?? false;
-  const brainTrading = frank?.is_trading ?? false;
-  const brainPaused = frank?.is_paused ?? false;
-  const brainLabel = !brainAlive ? "Offline" : brainPaused ? "Paused" : brainTrading ? "Trading" : "Idle";
-  const brainColor = !brainAlive
-    ? "text-[var(--text-muted)]"
-    : brainPaused ? "text-[var(--warning)]" : brainTrading ? "text-accent" : "text-blue-400";
-  const dotColor = !brainAlive
-    ? "bg-[var(--text-muted)]"
-    : brainPaused ? "bg-[var(--warning)]" : brainTrading ? "bg-accent" : "bg-blue-400";
+  const lastUpdateAgo = lastUpdate ? Math.round((Date.now() - lastUpdate) / 1000) : null;
 
-  const title = (tk: string) => marketTitles[tk] || prettifyTicker(tk);
-  const sinceUpdate = lastUpdate ? Math.round((Date.now() - lastUpdate) / 1000) : null;
-
-  /* ── Render ─────────────────────────────────────────────────────── */
   return (
-    <div className="space-y-4 animate-fade-in">
-      {/* Header */}
+    <div className="space-y-4 p-1">
+      {/* Status Bar */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 rounded-lg glass px-3 py-1.5 text-xs">
-            <span className="relative flex h-2 w-2">
-              {brainAlive && brainTrading && !brainPaused && (
-                <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${dotColor} opacity-50`} />
-              )}
-              <span className={`relative inline-flex h-2 w-2 rounded-full ${dotColor}`} />
-            </span>
-            <span className={`font-semibold uppercase tracking-wide ${brainColor}`}>{brainLabel}</span>
-            {frank && frank.status !== "not_initialized" && (
-              <span className="text-[var(--text-muted)]">Gen {frank.generation} · {frank.total_scans ?? 0} scans</span>
-            )}
+          <StatusDot active={isLive} />
+          <span className={`text-sm font-semibold ${isLive ? "text-accent" : "text-muted"}`}>
+            {isLive ? "Trading" : frank?.is_paused ? "Paused" : "Offline"}
+          </span>
+          {frank?.generation && (
+            <span className="text-xs text-muted">Gen {frank.generation}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-accent" : "bg-loss animate-pulse"}`} />
+          {connected ? (lastUpdateAgo !== null ? `${lastUpdateAgo}s ago` : "Live") : "Reconnecting..."}
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-loss/30 bg-loss/10 p-3 text-sm text-loss">{error}</div>
+      )}
+
+      {/* Key Metrics - Single Row */}
+      <div className="grid grid-cols-4 gap-3">
+        <MetricCard label="Balance" value={`$${(balance / 100).toFixed(2)}`} />
+        <MetricCard 
+          label="Today's P&L" 
+          value={`${dailyPnl >= 0 ? "+" : ""}$${Math.abs(dailyPnl).toFixed(2)}`}
+          color={dailyPnl >= 0 ? "text-accent" : "text-loss"}
+        />
+        <MetricCard label="Win Rate" value={`${(winRate * 100).toFixed(0)}%`} />
+        <MetricCard label="Positions" value={`${positions}`} />
+      </div>
+
+      {/* Equity Chart */}
+      <div className="rounded-xl glass p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-secondary">Equity Curve</h3>
+          <span className={`text-sm font-semibold tabular-nums ${totalPnl >= 0 ? "text-accent" : "text-loss"}`}>
+            {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} total
+          </span>
+        </div>
+        <EquityChart data={equityData} height={180} />
+      </div>
+
+      {/* P&L Breakdown */}
+      <div className="rounded-xl glass p-4">
+        <h3 className="text-sm font-medium text-secondary mb-3">P&L Breakdown</h3>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <div className="text-xs text-muted uppercase tracking-wider">Realized</div>
+            <div className={`text-lg font-semibold tabular-nums ${realizedPnl >= 0 ? "text-accent" : "text-loss"}`}>
+              {realizedPnl >= 0 ? "+" : ""}${(realizedPnl / 100).toFixed(2)}
+            </div>
           </div>
-          <div className="flex items-center gap-1.5 text-[10px]">
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${sseConnected ? "bg-accent" : "bg-[var(--danger)] animate-pulse"}`} />
-            <span className="text-[var(--text-muted)]">
-              {sseConnected ? (sinceUpdate !== null ? `Live · ${sinceUpdate}s ago` : "Live") : "Reconnecting…"}
-            </span>
+          <div>
+            <div className="text-xs text-muted uppercase tracking-wider">Unrealized</div>
+            <div className={`text-lg font-semibold tabular-nums ${unrealizedPnl >= 0 ? "text-accent" : "text-loss"}`}>
+              {unrealizedPnl >= 0 ? "+" : ""}${(unrealizedPnl / 100).toFixed(2)}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted uppercase tracking-wider">Record</div>
+            <div className="text-lg font-semibold tabular-nums">
+              <span className="text-accent">{wins.length}W</span>
+              <span className="text-muted mx-1">/</span>
+              <span className="text-loss">{losses.length}L</span>
+            </div>
           </div>
         </div>
-        <button onClick={fetchSupplementary} className="rounded-lg glass p-2 text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
-          <IconRefresh size={14} />
-        </button>
       </div>
 
-      {error && !sseConnected && (
-        <div className="rounded-lg border border-[var(--danger)]/20 bg-[var(--danger)]/5 p-3 text-sm text-[var(--danger)]">{error}</div>
-      )}
-
-      {/* Stat Cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="Balance" value={sse ? `$${sse.balance.balance_dollars}` : "--"} icon={<IconPortfolio size={16} />} />
-        <StatCard label="Daily P&L" value={sse ? pnlSign(sse.pnl.daily_pnl) : "--"} change={sse?.pnl.daily_pnl ?? undefined} icon={<IconTrendUp size={16} />} />
-        <StatCard label="Positions" value={`${positions.length}`} suffix=" open" icon={<IconTarget size={16} />} />
-        <StatCard
-          label="Trades"
-          value={frank?.total_trades_executed != null ? `${frank.total_trades_executed}` : "--"}
-          suffix={frank?.daily_trade_cap ? ` (${frank.daily_trades ?? 0}/${frank.daily_trade_cap} today)` : ""}
-          icon={<IconZap size={16} />}
-        />
-        <StatCard label="Win Rate" value={perf && perf.real_trades > 0 ? `${(perf.win_rate * 100).toFixed(0)}%` : "--"} suffix={perf ? ` (${perf.real_trades})` : ""} icon={<IconShield size={16} />} />
-        <StatCard label="Sharpe" value={perf ? perf.sharpe_ratio.toFixed(2) : "--"} icon={<IconBrain size={16} />} />
+      {/* Recent Trades - Clean Table */}
+      <div className="rounded-xl glass p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-secondary">Recent Trades</h3>
+          <span className="text-xs text-muted">{trades.length} trades</span>
+        </div>
+        <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
+          {trades.slice(0, 15).map((trade) => (
+            <TradeRow key={trade.id} trade={trade} />
+          ))}
+          {trades.length === 0 && (
+            <div className="py-8 text-center text-sm text-muted">
+              {isLive ? "Scanning for opportunities..." : "Start trading to see results"}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Equity Curve */}
-      {pnlCurve.length > 2 && (
-        <Card title="Equity Curve" action={
-          <span className="text-xs text-[var(--text-muted)] tabular-nums">{perf ? pnlSign(perf.total_pnl) : "--"} total</span>
-        }>
-          <EquityCurve data={pnlCurve} height={200} />
-        </Card>
-      )}
-
-      {/* Main Grid */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Brain */}
-        <Card title="Brain" glow={brainAlive && brainTrading && !brainPaused} action={<span className={`text-xs font-medium ${brainColor}`}>{brainLabel}</span>}>
-          {frank && frank.status !== "not_initialized" ? (
-            <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-2">
-                <MiniStat label="Total P&L" value={perf ? pnlSign(perf.total_pnl) : "--"} color={perf ? pnlColor(perf.total_pnl) : undefined} />
-                <MiniStat label="Daily P&L" value={sse ? pnlSign(sse.pnl.daily_pnl) : "--"} color={sse ? pnlColor(sse.pnl.daily_pnl) : undefined} />
-                <MiniStat label="Drawdown" value={perf ? `$${perf.max_drawdown.toFixed(2)}` : "--"} />
-                <MiniStat label="Profit Factor" value={perf ? perf.profit_factor.toFixed(2) : "--"} />
-              </div>
-              <div className="h-px bg-white/[0.06]" />
-              <div className="space-y-1">
-                <InfoRow label="Model" value={frank.model_version ?? "--"} mono />
-                <InfoRow label="Uptime" value={fmtUptime(frank.uptime_seconds ?? 0)} />
-                <InfoRow label="Memory" value={`${mem?.total_recorded ?? 0} trades / ${mem?.pending ?? 0} pending`} />
-                {mem && mem.total_resolved > 0 && (
-                  <InfoRow label="Memory WR" value={`${typeof mem.win_rate === "number" ? mem.win_rate.toFixed(1) : mem.win_rate}%`}
-                    color={Number(mem.win_rate) >= 50 ? "text-accent" : "text-[var(--danger)]"} />
-                )}
-                {frank.strategy && (
-                  <InfoRow label="Strategy" value={`Conf ${(frank.strategy.min_confidence * 100).toFixed(0)}% · Edge ${(frank.strategy.min_edge * 100).toFixed(1)}c · Kelly ${(frank.strategy.kelly_fraction * 100).toFixed(0)}%`} />
-                )}
-              </div>
-            </div>
-          ) : (
-            <Skeleton lines={6} />
-          )}
-        </Card>
-
-        {/* Positions */}
-        <Card title="Open Positions" action={<span className="text-xs text-[var(--text-muted)]">{positions.length} active</span>}>
-          {positions.length > 0 ? (
-            <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
-              {positions.map((p) => (
-                <div key={p.ticker} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2.5 hover:bg-white/[0.04] transition-colors">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-[var(--text-primary)] truncate">{title(p.ticker)}</div>
-                    <div className="text-[10px] text-[var(--text-muted)]">
-                      {p.position > 0 ? "YES" : "NO"} x{Math.abs(p.position)}
-                      {p.market_exposure_dollars && <span> · ${p.market_exposure_dollars} exposed</span>}
-                    </div>
-                  </div>
-                  <div className="text-right flex-shrink-0 ml-3">
-                    {p.realized_pnl_dollars && (
-                      <div className={`text-sm tabular-nums font-medium ${parseFloat(p.realized_pnl_dollars) >= 0 ? "text-accent" : "text-[var(--danger)]"}`}>
-                        {parseFloat(p.realized_pnl_dollars) >= 0 ? "+" : ""}${p.realized_pnl_dollars}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex h-32 items-center justify-center text-sm text-[var(--text-muted)]">No open positions</div>
-          )}
-        </Card>
-
-        {/* Recent Trades */}
-        <Card title="Recent Trades" action={<span className="text-xs text-[var(--text-muted)]">{realTrades.length} real</span>}>
-          {realTrades.length > 0 ? (
-            <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
-              {realTrades.slice(0, 10).map((t, i) => (
-                <div key={i} className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2 hover:bg-white/[0.04] transition-colors">
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <div className={`flex h-6 w-6 items-center justify-center rounded flex-shrink-0 ${t.side === "yes" ? "bg-accent/10" : "bg-[var(--danger)]/10"}`}>
-                      {t.side === "yes" ? <IconTrendUp size={12} className="text-accent" /> : <IconTrendDown size={12} className="text-[var(--danger)]" />}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-[var(--text-primary)] truncate">{title(t.ticker)}</div>
-                      <div className="text-[10px] text-[var(--text-muted)]">
-                        {t.side?.toUpperCase()} x{t.count} @ {t.price_cents}c / {((t.confidence ?? 0) * 100).toFixed(0)}% conf
-                        <span className="ml-1 opacity-60">· {timeAgo(t.timestamp)}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right flex-shrink-0 ml-2">
-                    <OutcomeBadge outcome={t.outcome} />
-                    {(t.pnl_cents ?? 0) !== 0 && (
-                      <div className={`text-[10px] font-medium tabular-nums mt-0.5 ${pnlColor(t.pnl_cents ?? 0)}`}>
-                        {t.pnl_cents > 0 ? "+" : ""}{(t.pnl_cents / 100).toFixed(2)}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex h-32 items-center justify-center text-sm text-[var(--text-muted)]">
-              {brainAlive ? "Scanning — no trades yet" : "Start brain to begin trading"}
-            </div>
-          )}
-        </Card>
-
-        {/* Risk */}
-        <Card title="Risk" action={
-          sse?.risk.kill_switch_active
-            ? <span className="text-xs font-semibold text-[var(--danger)]">KILL SWITCH ON</span>
-            : <span className="text-xs text-accent font-medium">Normal</span>
-        }>
-          <div className="space-y-3">
-            <RiskBar label="Positions" current={positions.length} max={10} />
-            <RiskBar label="Exposure" current={(sse?.balance.total_exposure ?? 0) / 100} max={(sse?.balance.balance_cents ?? 1000000) / 100} unit="$" />
-            <RiskBar label="Daily Loss" current={Math.abs(Math.min(sse?.pnl.daily_pnl ?? 0, 0))} max={150} unit="$" />
-            <RiskBar label="Daily Trades" current={frank?.daily_trades ?? 0} max={frank?.daily_trade_cap ?? 500} />
-            <div className="h-px bg-white/[0.06]" />
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-[var(--text-muted)]">Kill Switch</span>
-              <span className={sse?.risk.kill_switch_active ? "text-[var(--danger)] font-medium" : "text-accent"}>
-                {sse?.risk.kill_switch_active ? "Active" : "Off"}
-              </span>
-            </div>
+      {/* Active Positions (if any) */}
+      {sse?.positions && sse.positions.length > 0 && (
+        <div className="rounded-xl glass p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-secondary">Active Positions</h3>
+            <span className="text-xs text-muted">{sse.positions.length} open</span>
           </div>
-        </Card>
-      </div>
-
-      {/* Fills */}
-      {fills.length > 0 && (
-        <Card title="Exchange Fills" action={<span className="text-xs text-[var(--text-muted)]">{fills.length} recent</span>}>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/[0.06] text-left text-xs text-[var(--text-muted)] uppercase tracking-wider">
-                  <th className="pb-2 pr-4 font-medium">Market</th>
-                  <th className="pb-2 pr-4 font-medium">Side</th>
-                  <th className="pb-2 pr-4 font-medium">Action</th>
-                  <th className="pb-2 pr-4 text-right font-medium">Qty</th>
-                  <th className="pb-2 pr-4 text-right font-medium">Price</th>
-                  <th className="pb-2 text-right font-medium">Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {fills.map((f, i) => (
-                  <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
-                    <td className="py-2 pr-4 text-xs font-medium text-[var(--text-primary)] truncate max-w-[200px]">{title(f.ticker)}</td>
-                    <td className="py-2 pr-4">
-                      <span className={`inline-flex rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase ${f.side === "yes" ? "bg-accent/10 text-accent" : "bg-[var(--danger)]/10 text-[var(--danger)]"}`}>{f.side}</span>
-                    </td>
-                    <td className="py-2 pr-4 text-xs text-[var(--text-muted)]">{f.action}</td>
-                    <td className="py-2 pr-4 text-right text-xs tabular-nums text-[var(--text-primary)]">{f.count ?? "--"}</td>
-                    <td className="py-2 pr-4 text-right text-xs tabular-nums text-[var(--text-primary)]">{f.price_dollars ? `$${f.price_dollars}` : "--"}</td>
-                    <td className="py-2 text-right text-xs tabular-nums text-[var(--text-muted)]">{timeAgo(f.created_time)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+            {sse.positions.map((pos) => (
+              <PositionRow key={pos.ticker} position={pos} />
+            ))}
           </div>
-        </Card>
+        </div>
       )}
     </div>
   );
 }
 
-/* ── Sub-components ───────────────────────────────────────────────────── */
+/* ── Components ────────────────────────────────────────────────────────── */
 
-function MiniStat({ label, value, color }: { label: string; value: string; color?: string }) {
-  return (
-    <div className="rounded-lg bg-white/[0.02] border border-white/[0.04] p-2.5">
-      <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{label}</div>
-      <div className={`text-sm font-semibold tabular-nums ${color ?? "text-[var(--text-primary)]"}`}>{value}</div>
-    </div>
-  );
+interface Trade {
+  id: string;
+  ticker: string;
+  title: string;
+  side: string;
+  count: number;
+  priceCents: number;
+  pnlCents: number;
+  outcome: string;
+  confidence: number;
+  edge: number;
+  timestamp: string;
+  category: string;
 }
 
-function InfoRow({ label, value, mono, color }: { label: string; value: string; mono?: boolean; color?: string }) {
-  return (
-    <div className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-1.5">
-      <span className="text-xs text-[var(--text-muted)]">{label}</span>
-      <span className={`text-xs font-medium tabular-nums ${mono ? "font-mono" : ""} ${color ?? "text-[var(--text-primary)]"}`}>{value}</span>
-    </div>
-  );
+interface RawTrade {
+  trade_id?: string;
+  ticker: string;
+  market_title?: string;
+  side: string;
+  count: number;
+  price_cents: number;
+  pnl_cents?: number;
+  outcome?: string;
+  confidence?: number;
+  edge?: number;
+  timestamp: string;
+  category?: string;
 }
 
-function OutcomeBadge({ outcome }: { outcome: string }) {
-  const styles: Record<string, string> = {
-    pending: "bg-[var(--info)]/10 text-[var(--info)] border-[var(--info)]/20",
-    win: "bg-accent/10 text-accent border-accent/20",
-    loss: "bg-[var(--danger)]/10 text-[var(--danger)] border-[var(--danger)]/20",
-    breakeven: "bg-white/5 text-[var(--text-muted)] border-white/10",
-  };
+interface EquityPoint {
+  time: number;
+  value: number;
+}
+
+function StatusDot({ active }: { active: boolean }) {
   return (
-    <span className={`inline-flex rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${styles[outcome] ?? styles.pending}`}>
-      {outcome}
+    <span className="relative flex h-2.5 w-2.5">
+      {active && (
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50" />
+      )}
+      <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${active ? "bg-accent" : "bg-muted"}`} />
     </span>
   );
 }
 
-function RiskBar({ label, current, max, unit }: { label: string; current: number; max: number; unit?: string }) {
-  const pct = max > 0 ? Math.min((current / max) * 100, 100) : 0;
-  const color = pct > 80 ? "bg-[var(--danger)]" : pct > 50 ? "bg-[var(--warning)]" : "bg-accent";
+function MetricCard({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-[var(--text-muted)]">{label}</span>
-        <span className="tabular-nums text-[var(--text-secondary)]">
-          {unit === "$" ? `$${current.toFixed(0)}` : current} / {unit === "$" ? `$${max.toFixed(0)}` : max}
-        </span>
+    <div className="rounded-xl glass p-3">
+      <div className="text-[10px] text-muted uppercase tracking-wider mb-1">{label}</div>
+      <div className={`text-lg font-semibold tabular-nums ${color || "text-primary"}`}>{value}</div>
+    </div>
+  );
+}
+
+function TradeRow({ trade }: { trade: Trade }) {
+  const isWin = trade.outcome === "win";
+  const isLoss = trade.outcome === "loss";
+  const isPending = trade.outcome === "pending";
+  
+  return (
+    <div className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2 hover:bg-white/[0.04] transition-colors">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        {/* Win/Loss indicator */}
+        <div className={`flex h-6 w-6 items-center justify-center rounded-md flex-shrink-0 ${
+          isWin ? "bg-accent/20" : isLoss ? "bg-loss/20" : "bg-white/10"
+        }`}>
+          {isWin && <span className="text-accent text-xs">✓</span>}
+          {isLoss && <span className="text-loss text-xs">✗</span>}
+          {isPending && <span className="text-muted text-xs">○</span>}
+        </div>
+        
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-primary truncate">{trade.title}</div>
+          <div className="text-[10px] text-muted">
+            {trade.side.toUpperCase()} ×{trade.count} @ {trade.priceCents}¢
+            <span className="mx-1">·</span>
+            {timeAgo(trade.timestamp)}
+          </div>
+        </div>
       </div>
-      <div className="h-1.5 w-full rounded-full bg-white/[0.06]">
-        <div className={`h-1.5 rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+      
+      {/* P&L */}
+      <div className="text-right flex-shrink-0 ml-3">
+        <div className={`text-sm font-semibold tabular-nums ${
+          trade.pnlCents > 0 ? "text-accent" : trade.pnlCents < 0 ? "text-loss" : "text-muted"
+        }`}>
+          {trade.pnlCents > 0 ? "+" : ""}{trade.pnlCents !== 0 ? `$${(trade.pnlCents / 100).toFixed(2)}` : "--"}
+        </div>
+        {!isPending && (
+          <div className="text-[9px] text-muted uppercase tracking-wider">
+            {isWin ? "WIN" : isLoss ? "LOSS" : ""}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function Skeleton({ lines = 4 }: { lines?: number }) {
+function PositionRow({ position }: { position: { ticker: string; position: number; market_exposure_dollars?: string | null; realized_pnl_dollars?: string | null } }) {
+  const pnl = position.realized_pnl_dollars ? parseFloat(position.realized_pnl_dollars) : 0;
+  
   return (
-    <div className="space-y-2">
-      {Array.from({ length: lines }).map((_, i) => (
-        <div key={i} className="h-6 rounded-lg animate-shimmer" style={{ width: `${70 + Math.random() * 30}%` }} />
-      ))}
+    <div className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-primary truncate">{prettifyTicker(position.ticker)}</div>
+        <div className="text-[10px] text-muted">
+          {position.position > 0 ? "YES" : "NO"} ×{Math.abs(position.position)}
+          {position.market_exposure_dollars && <span className="ml-1">· ${position.market_exposure_dollars} at risk</span>}
+        </div>
+      </div>
+      {pnl !== 0 && (
+        <div className={`text-sm font-semibold tabular-nums ${pnl >= 0 ? "text-accent" : "text-loss"}`}>
+          {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+        </div>
+      )}
     </div>
   );
+}
+
+function EquityChart({ data, height }: { data: EquityPoint[]; height: number }) {
+  if (data.length < 2) {
+    return (
+      <div className="flex items-center justify-center text-sm text-muted" style={{ height }}>
+        Not enough data for chart
+      </div>
+    );
+  }
+
+  // Simple SVG line chart
+  const minVal = Math.min(...data.map(d => d.value));
+  const maxVal = Math.max(...data.map(d => d.value));
+  const range = maxVal - minVal || 1;
+  const padding = 10;
+  
+  const points = data.map((d, i) => {
+    const x = (i / (data.length - 1)) * 100;
+    const y = 100 - ((d.value - minVal) / range) * 100;
+    return `${x},${y}`;
+  }).join(" ");
+
+  const lastValue = data[data.length - 1]?.value || 0;
+  const isPositive = lastValue >= 0;
+
+  return (
+    <svg viewBox={`-${padding} -${padding} ${100 + padding * 2} ${100 + padding * 2}`} className="w-full" style={{ height }}>
+      {/* Grid lines */}
+      <line x1="0" y1="50" x2="100" y2="50" stroke="rgba(255,255,255,0.06)" strokeDasharray="2,2" />
+      <line x1="0" y1="0" x2="100" y2="0" stroke="rgba(255,255,255,0.03)" />
+      <line x1="0" y1="100" x2="100" y2="100" stroke="rgba(255,255,255,0.03)" />
+      
+      {/* Line */}
+      <polyline
+        fill="none"
+        stroke={isPositive ? "var(--accent)" : "var(--loss)"}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={points}
+      />
+      
+      {/* Gradient fill */}
+      <defs>
+        <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={isPositive ? "var(--accent)" : "var(--loss)"} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={isPositive ? "var(--accent)" : "var(--loss)"} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <polygon
+        fill="url(#equityGradient)"
+        points={`0,100 ${points} 100,100`}
+      />
+    </svg>
+  );
+}
+
+/* ── Utilities ─────────────────────────────────────────────────────────── */
+
+function prettifyTicker(ticker: string): string {
+  return ticker
+    .replace(/^KX/, "")
+    .replace(/-\d{2}[A-Z]{3}\d{2}.*$/, "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/-/g, " ")
+    .slice(0, 30);
+}
+
+function timeAgo(ts: string | number): string {
+  const now = Date.now();
+  const then = typeof ts === "string" ? new Date(ts).getTime() : ts * 1000;
+  const seconds = Math.floor((now - then) / 1000);
+  
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
 }

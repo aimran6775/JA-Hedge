@@ -1,19 +1,12 @@
 "use client";
 
-import { cn } from "@/lib/utils";
 import { type TabId, useDashboardStore } from "@/lib/store";
-import {
-  IconDashboard,
-  IconStrategy,
-  IconMarkets,
-  IconSettings,
-} from "@/components/ui/Icons";
 
-const TABS: { id: TabId; label: string; icon: typeof IconDashboard }[] = [
-  { id: "live", label: "Live", icon: IconDashboard },
-  { id: "analytics", label: "Analytics", icon: IconStrategy },
-  { id: "markets", label: "Markets", icon: IconMarkets },
-  { id: "control", label: "Control", icon: IconSettings },
+const TABS: { id: TabId; label: string; emoji: string }[] = [
+  { id: "live", label: "Live", emoji: "📊" },
+  { id: "analytics", label: "Analytics", emoji: "📈" },
+  { id: "markets", label: "Markets", emoji: "🎯" },
+  { id: "control", label: "Control", emoji: "⚙️" },
 ];
 
 export function TabBar() {
@@ -21,25 +14,23 @@ export function TabBar() {
   const setActiveTab = useDashboardStore((s) => s.setActiveTab);
 
   return (
-    <div className="flex items-center gap-1 border-b border-white/[0.06] bg-[var(--bg-primary)]/80 backdrop-blur-xl px-6">
+    <div className="flex items-center gap-0.5 border-b border-white/[0.04] bg-[var(--bg-primary)]/60 backdrop-blur-xl px-4">
       {TABS.map((tab) => {
         const active = activeTab === tab.id;
-        const Icon = tab.icon;
         return (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={cn(
-              "relative flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors",
+            className={`relative flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-colors ${
               active
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
-            )}
+                ? "text-primary"
+                : "text-muted hover:text-secondary"
+            }`}
           >
-            <Icon size={16} />
+            <span className="text-base">{tab.emoji}</span>
             <span>{tab.label}</span>
             {active && (
-              <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-accent" />
+              <div className="absolute bottom-0 left-1 right-1 h-[2px] rounded-full bg-accent" />
             )}
           </button>
         );
