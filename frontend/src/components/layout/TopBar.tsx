@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { useSSE } from "@/lib/useSSE";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 /* ═══════════════════════════════════════════════════════════════════════
    TOP BAR — Simplified header with key metrics
    ═══════════════════════════════════════════════════════════════════════ */
@@ -27,7 +25,7 @@ export function TopBar() {
     if (activate && !confirm("⚠️ ACTIVATE KILL SWITCH?\n\nThis will immediately halt ALL trading.")) return;
     setToggling(true);
     try {
-      await fetch(`${API_BASE}/api/risk/kill-switch?activate=${activate}`, { method: "POST" });
+      await fetch(`/api/risk/kill-switch?activate=${activate}`, { method: "POST" });
     } catch { /* ignore */ }
     setToggling(false);
   };

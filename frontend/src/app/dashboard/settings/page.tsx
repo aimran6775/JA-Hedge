@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/Icons";
 import { api } from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 
 /* ── Types ──────────────────────────────────────────────────────────────── */
 
@@ -89,8 +89,8 @@ export default function SettingsPage() {
     setLoading(true);
     try {
       const [backendOk, frankOk] = await Promise.all([
-        fetch(`${API_BASE}/health`).then(r => r.ok).catch(() => false),
-        fetch(`${API_BASE}/api/frankenstein/health`).then(r => r.ok).catch(() => false),
+        fetch("/health").then(r => r.ok).catch(() => false),
+        fetch("/api/frankenstein/health").then(r => r.ok).catch(() => false),
       ]);
       setSysInfo({ backend: backendOk, frankenstein: frankOk });
 
@@ -588,7 +588,7 @@ export default function SettingsPage() {
                 <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">Configuration</span>
               </div>
               <div className="space-y-0">
-                <SysRow label="API Base" value={API_BASE} />
+                <SysRow label="API Base" value="/api (proxied)" />
                 <SysRow label="Mode" value="Paper Trading (Demo)" />
                 <SysRow label="Platform" value="Kalshi" />
                 <SysRow label="Frontend" value="Next.js 15" />

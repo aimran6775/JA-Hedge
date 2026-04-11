@@ -2,16 +2,14 @@
  * JA Hedge — Frontend API Client (LIVE).
  *
  * Type-safe fetch wrapper for all backend API endpoints.
- * Connects to Kalshi demo API via our FastAPI backend.
+ * Uses relative URLs so Next.js rewrites proxy to the backend.
  */
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 async function apiFetch<T>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
-  const url = path.startsWith("/api") ? `${API_BASE}${path}` : `${API_BASE}/api${path}`;
+  const url = path.startsWith("/api") ? path : `/api${path}`;
   const res = await fetch(url, {
     headers: {
       "Content-Type": "application/json",
@@ -510,9 +508,9 @@ export interface IntelligenceAlert {
 // ── API Functions ────────────────────────────────────────────────────────
 
 export const api = {
-  // Health (direct endpoint, no /api prefix)
+  // Health (direct endpoint, no /api prefix — proxied via next.config rewrites)
   health: () => {
-    return fetch(`${API_BASE}/health`).then(r => r.json()) as Promise<HealthStatus>;
+    return fetch("/health").then(r => r.json()) as Promise<HealthStatus>;
   },
 
   // Markets

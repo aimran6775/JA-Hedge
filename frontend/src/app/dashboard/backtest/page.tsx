@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
 import { IconTarget, IconTrendUp, IconTrendDown, IconZap, IconShield } from "@/components/ui/Icons";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 
 interface BacktestResult {
   total_trades: number;
@@ -46,7 +46,7 @@ export default function BacktestPage() {
     setError(null);
     setResult(null);
     try {
-      const res = await fetch(`${API_BASE}/api/backtest/run`, {
+      const res = await fetch("/api/backtest/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ strategy, days }),

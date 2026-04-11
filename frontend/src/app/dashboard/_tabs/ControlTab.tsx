@@ -3,8 +3,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { api, type FrankensteinStatus, type RiskSnapshot } from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 /* ═══════════════════════════════════════════════════════════════════════
    CONTROL TAB — Simplified brain controls
    ═══════════════════════════════════════════════════════════════════════ */
@@ -61,7 +59,7 @@ export function ControlTab() {
     setChatLoading(true);
     
     try {
-      const res = await fetch(`${API_BASE}/api/frankenstein/chat`, {
+      const res = await fetch("/api/frankenstein/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: userMsg }),

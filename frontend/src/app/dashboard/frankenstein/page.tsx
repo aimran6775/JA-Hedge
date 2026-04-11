@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/Icons";
 import { api, type FrankensteinStatus, type FrankensteinTrade, type Balance, type Position } from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -174,7 +174,7 @@ export default function FrankensteinPage() {
     try {
       const body: Record<string, unknown> = { message: text.trim() };
       if (sessionId) body.session_id = sessionId;
-      const res = await fetch(`${API_BASE}/api/frankenstein/chat`, {
+      const res = await fetch("/api/frankenstein/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
