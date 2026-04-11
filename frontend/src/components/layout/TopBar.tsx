@@ -13,7 +13,7 @@ export function TopBar() {
   const killActive = sse?.risk?.kill_switch_active ?? false;
   const balanceCents = sse?.balance?.balance_cents ?? 0;
   const pnlCents = sse?.pnl?.daily_pnl ?? 0;
-  const positionCount = sse?.positions?.length ?? 0;
+  const positionCount = sse?.risk?.position_count ?? sse?.balance?.position_count ?? 0;
   const frank = sse?.frankenstein;
   const isLive = frank?.is_alive && frank?.is_trading && !frank?.is_paused || false;
 

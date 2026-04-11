@@ -65,7 +65,7 @@ export function LiveTab() {
   const isLive = frank?.is_alive && frank?.is_trading && !frank?.is_paused || false;
   const balance = sse?.balance?.balance_cents || 0;
   const dailyPnl = sse?.pnl?.daily_pnl || 0;
-  const positions = sse?.positions?.length || 0;
+  const positions = sse?.risk?.position_count || sse?.balance?.position_count || 0;
   const winRate = frank?.performance?.win_rate || 0;
   const totalPnl = frank?.performance?.total_pnl || 0;
   
