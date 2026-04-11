@@ -46,6 +46,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             reason="API keys detected — auto-upgrading to production API for real market data",
         )
 
+    # Ensure persist_dir exists
+    import os as _os_startup
+    try:
+        _os_startup.makedirs(settings.persist_dir, exist_ok=True)
+        _os_startup.makedirs(f"{settings.persist_dir}/models", exist_ok=True)
+        _os_startup.makedirs(f"{settings.persist_dir}/intelligence", exist_ok=True)
+    except Exception as e:
+        log.warning("persist_dir_create_failed", error=str(e))
+
+    # ── Startup (wrapped so app ALWAYS starts) ────────────
+    try:
+        await _do_startup()
+    except Exception as e:
+        log.error("startup_failed_partial", error=str(e), hint="App will serve health but some features unavailable")
+
+    state.ready = True
+    log.info("jahedge_ready", port=settings.backend_port)
+
+    yield
+
+    # ── Shutdown ──────────────────────────────────────────
+    await _do_shutdown()
+
+
+async def _do_startup() -> None:
+    """All startup logic — separated so lifespan can catch exceptions."""
+
     # ── Startup ───────────────────────────────────────────
     try:
         await init_db()
@@ -439,12 +466,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         log.error("sports_monitor_start_failed", error=str(e))
 
-    state.ready = True
-    log.info("jahedge_ready", port=settings.backend_port)
 
-    yield
-
-    # ── Shutdown ──────────────────────────────────────────
+async def _do_shutdown() -> None:
+    """All shutdown logic."""
     log.info("shutting_down")
 
     # Stop Intelligence System
