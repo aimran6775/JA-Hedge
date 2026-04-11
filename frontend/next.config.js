@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // output: "standalone",  // Enable for minimal Docker image
+  output: "standalone",
   async rewrites() {
     // INTERNAL_API_URL is used server-side inside Docker / Railway
     // NEXT_PUBLIC_API_URL is used as fallback for local dev
