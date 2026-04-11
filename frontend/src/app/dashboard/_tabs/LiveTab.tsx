@@ -253,18 +253,18 @@ function TradeRow({ trade }: { trade: Trade }) {
     <div className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2 hover:bg-white/[0.04] transition-colors">
       <div className="flex items-center gap-3 min-w-0 flex-1">
         {/* Win/Loss indicator */}
-        <div className={`flex h-6 w-6 items-center justify-center rounded-md flex-shrink-0 ${
-          isWin ? "bg-accent/20" : isLoss ? "bg-loss/20" : "bg-white/10"
+        <div className={`flex h-6 w-6 items-center justify-center rounded-md flex-shrink-0 text-[10px] font-bold ${
+          isWin ? "bg-accent/20 text-accent" : isLoss ? "bg-loss/20 text-loss" : "bg-white/10 text-muted"
         }`}>
-          {isWin && <span className="text-accent text-xs">✓</span>}
-          {isLoss && <span className="text-loss text-xs">✗</span>}
-          {isPending && <span className="text-muted text-xs">○</span>}
+          {isWin && "W"}
+          {isLoss && "L"}
+          {isPending && "-"}
         </div>
         
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-primary truncate">{trade.title}</div>
           <div className="text-[10px] text-muted">
-            {trade.side.toUpperCase()} ×{trade.count} @ {trade.priceCents}¢
+            {trade.side.toUpperCase()} x{trade.count} @ {trade.priceCents}c
             <span className="mx-1">·</span>
             {timeAgo(trade.timestamp)}
           </div>

@@ -2,11 +2,11 @@
 
 import { type TabId, useDashboardStore } from "@/lib/store";
 
-const TABS: { id: TabId; label: string; emoji: string }[] = [
-  { id: "live", label: "Live", emoji: "📊" },
-  { id: "analytics", label: "Analytics", emoji: "📈" },
-  { id: "markets", label: "Markets", emoji: "🎯" },
-  { id: "control", label: "Control", emoji: "⚙️" },
+const TABS: { id: TabId; label: string }[] = [
+  { id: "live", label: "Live" },
+  { id: "analytics", label: "Analytics" },
+  { id: "markets", label: "Markets" },
+  { id: "control", label: "Control" },
 ];
 
 export function TabBar() {
@@ -21,14 +21,13 @@ export function TabBar() {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`relative flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-colors ${
+            className={`relative px-4 py-2.5 text-sm font-medium transition-colors ${
               active
                 ? "text-primary"
                 : "text-muted hover:text-secondary"
             }`}
           >
-            <span className="text-base">{tab.emoji}</span>
-            <span>{tab.label}</span>
+            {tab.label}
             {active && (
               <div className="absolute bottom-0 left-1 right-1 h-[2px] rounded-full bg-accent" />
             )}

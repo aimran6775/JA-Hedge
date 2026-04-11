@@ -162,8 +162,8 @@ export function ControlTab() {
               max={1500}
             />
             {risk.kill_switch_active && (
-              <div className="rounded-lg bg-loss/20 border border-loss/30 p-2 text-xs text-loss text-center">
-                ⚠️ Kill Switch Active
+              <div className="rounded-lg bg-loss/20 border border-loss/30 p-2 text-xs text-loss text-center font-medium">
+                KILL SWITCH ACTIVE
               </div>
             )}
           </div>

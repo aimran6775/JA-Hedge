@@ -215,13 +215,10 @@ function CategoryRow({
           : "bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.04]"
       }`}
     >
-      <div className="flex items-center gap-3">
-        <span className="text-lg">{categoryEmoji(category)}</span>
-        <div className="text-left">
-          <div className="text-sm font-medium text-primary capitalize">{category.replace(/_/g, " ")}</div>
-          <div className="text-[10px] text-muted">
-            {stats.wins}W / {stats.losses}L · {stats.trades} trades
-          </div>
+      <div className="text-left">
+        <div className="text-sm font-medium text-primary capitalize">{category.replace(/_/g, " ")}</div>
+        <div className="text-[10px] text-muted">
+          {stats.wins}W / {stats.losses}L · {stats.trades} trades
         </div>
       </div>
       <div className="text-right">
@@ -242,11 +239,12 @@ function TradeHistoryRow({ trade }: { trade: FrankensteinTrade }) {
   return (
     <div className="flex items-center justify-between rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
       <div className="flex items-center gap-3 min-w-0 flex-1">
-        <div className={`flex h-5 w-5 items-center justify-center rounded flex-shrink-0 ${
-          isWin ? "bg-accent/20" : isLoss ? "bg-loss/20" : "bg-white/10"
+        <div className={`flex h-5 w-5 items-center justify-center rounded flex-shrink-0 text-[9px] font-bold ${
+          isWin ? "bg-accent/20 text-accent" : isLoss ? "bg-loss/20 text-loss" : "bg-white/10 text-muted"
         }`}>
-          {isWin && <span className="text-accent text-[10px]">✓</span>}
-          {isLoss && <span className="text-loss text-[10px]">✗</span>}
+          {isWin && "W"}
+          {isLoss && "L"}
+          {!isWin && !isLoss && "-"}
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-sm text-primary truncate">{prettifyTicker(trade.ticker)}</div>
@@ -267,22 +265,6 @@ function TradeHistoryRow({ trade }: { trade: FrankensteinTrade }) {
 }
 
 /* ── Utilities ─────────────────────────────────────────────────────────── */
-
-function categoryEmoji(cat: string): string {
-  const map: Record<string, string> = {
-    sports: "🏀",
-    politics: "🏛️",
-    crypto: "₿",
-    weather: "🌤️",
-    finance: "📈",
-    entertainment: "🎬",
-    social_media: "📱",
-    science: "🔬",
-    economy: "💹",
-    unknown: "❓",
-  };
-  return map[cat.toLowerCase()] || "📊";
-}
 
 function prettifyTicker(ticker: string): string {
   return ticker

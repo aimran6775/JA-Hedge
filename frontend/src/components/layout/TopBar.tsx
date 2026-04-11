@@ -69,7 +69,7 @@ export function TopBar() {
               : "bg-loss/10 border border-loss/20 text-loss/70 hover:bg-loss/15 hover:text-loss"
           } ${toggling ? "opacity-50" : ""}`}
         >
-          {killActive ? "⚠ KILL" : "Kill"}
+          {killActive ? "KILL ACTIVE" : "Kill"}
         </button>
 
         <div className="flex items-center gap-1.5 text-xs text-muted">
