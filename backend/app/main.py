@@ -582,41 +582,67 @@ app.include_router(api_router)
 # ── Health Check ──────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health_check() -> dict:
-    from app.state import state as app_state
+    """Health check — always returns 200, even during startup."""
+    try:
+        from app.state import state as app_state
 
-    paper_info = None
-    if app_state.paper_simulator:
-        sim = app_state.paper_simulator
-        paper_info = {
-            "enabled": True,
-            "balance": sim.balance_dollars,
-            "starting_balance": f"{sim.starting_balance_cents / 100:.2f}",
-            "pnl": sim.pnl_dollars,
-            "total_trades": sim.total_fills,
+        paper_info = None
+        try:
+            if app_state.paper_simulator:
+                sim = app_state.paper_simulator
+                paper_info = {
+                    "enabled": True,
+                    "balance": sim.balance_dollars,
+                    "starting_balance": f"{sim.starting_balance_cents / 100:.2f}",
+                    "pnl": sim.pnl_dollars,
+                    "total_trades": sim.total_fills,
+                }
+        except Exception:
+            paper_info = {"enabled": True, "error": "loading"}
+
+        def _safe_frank() -> str:
+            try:
+                return "alive" if (app_state.frankenstein and app_state.frankenstein._state.is_alive) else "sleeping"
+            except Exception:
+                return "unknown"
+
+        def _safe_intel() -> str:
+            try:
+                return "active" if (app_state.intelligence_hub and app_state.intelligence_hub._running) else "not_initialized"
+            except Exception:
+                return "unknown"
+
+        def _safe_odds() -> str:
+            try:
+                return "ready" if (app_state.odds_client and app_state.odds_client.is_available) else "not_connected"
+            except Exception:
+                return "unknown"
+
+        return {
+            "status": "ok" if app_state.ready else "starting",
+            "mode": settings.jahedge_mode.value,
+            "effective_mode": settings.effective_mode.value,
+            "has_api_keys": settings.has_api_keys,
+            "rest_url": settings.kalshi_rest_url,
+            "version": "0.2.0",
+            "paper_trading": paper_info or {"enabled": False},
+            "components": {
+                "database": "connected" if app_state.db_available else "unavailable",
+                "kalshi_api": "ready" if app_state.kalshi_api else "not_initialized",
+                "execution_engine": "ready" if app_state.execution_engine else "not_initialized",
+                "risk_manager": "ready" if app_state.risk_manager else "not_initialized",
+                "ai_strategy": "ready" if app_state.trading_strategy else "not_initialized",
+                "strategy_engine": "ready" if app_state.strategy_engine else "not_initialized",
+                "frankenstein": _safe_frank(),
+                "sports_detector": "ready" if app_state.sports_detector else "not_initialized",
+                "odds_client": _safe_odds(),
+                "sports_predictor": "ready" if app_state.sports_predictor else "not_initialized",
+                "intelligence_hub": _safe_intel(),
+            },
         }
-
-    return {
-        "status": "ok" if app_state.ready else "starting",
-        "mode": settings.jahedge_mode.value,
-        "effective_mode": settings.effective_mode.value,
-        "has_api_keys": settings.has_api_keys,
-        "rest_url": settings.kalshi_rest_url,
-        "version": "0.2.0",
-        "paper_trading": paper_info or {"enabled": False},
-        "components": {
-            "database": "connected" if app_state.db_available else "unavailable",
-            "kalshi_api": "ready" if app_state.kalshi_api else "not_initialized",
-            "execution_engine": "ready" if app_state.execution_engine else "not_initialized",
-            "risk_manager": "ready" if app_state.risk_manager else "not_initialized",
-            "ai_strategy": "ready" if app_state.trading_strategy else "not_initialized",
-            "strategy_engine": "ready" if app_state.strategy_engine else "not_initialized",
-            "frankenstein": "alive" if (app_state.frankenstein and app_state.frankenstein._state.is_alive) else "sleeping",
-            "sports_detector": "ready" if app_state.sports_detector else "not_initialized",
-            "odds_client": "ready" if (app_state.odds_client and app_state.odds_client.is_available) else "not_connected",
-            "sports_predictor": "ready" if app_state.sports_predictor else "not_initialized",
-            "intelligence_hub": "active" if (app_state.intelligence_hub and app_state.intelligence_hub._running) else "not_initialized",
-        },
-    }
+    except Exception:
+        # Absolute fallback — never let health return 500
+        return {"status": "starting", "version": "0.2.0"}
 
 
 @app.get("/health/auth")
