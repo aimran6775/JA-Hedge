@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api, type FrankensteinStatus, type RiskSnapshot } from "@/lib/api";
 
 /* ═══════════════════════════════════════════════════════════════════════
