@@ -29,16 +29,16 @@ class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
     # Signal filters — MAKER-AWARE: edge only needs to beat spread (no fees)
-    min_confidence: float = 0.35     # Phase 27: lowered from 0.40 — take more trades
-    min_edge: float = 0.03           # Phase 27: lowered from 0.04 — 3% min edge for maker mode
+    min_confidence: float = 0.32     # Phase 36: lowered to 0.32 — more trades
+    min_edge: float = 0.025          # Phase 36: lowered to 2.5% — capture more opportunities
 
-    # Position sizing — AGGRESSIVE: deploy capital to make money
-    kelly_fraction: float = 0.30     # Phase 27: doubled from 0.15 — bet bigger on edges
-    max_position_size: int = 50      # Phase 28c: 50 contracts max per trade (aggressive)
-    max_simultaneous_positions: int = 150   # Phase 27: 150 concurrent positions
+    # Position sizing — TURBO MODE: deploy capital aggressively to 2X account
+    kelly_fraction: float = 0.40     # Phase 36: aggressive Kelly — bigger bets
+    max_position_size: int = 100     # Phase 36: 100 contracts max (was 50)
+    max_simultaneous_positions: int = 200   # Phase 36: 200 concurrent positions
 
     # Timing
-    scan_interval: float = 15.0  # Phase 27: scan every 15s — catch more opportunities
+    scan_interval: float = 8.0   # Phase 36: scan every 8s — catch more opportunities
 
     # Risk overrides
     max_daily_loss: float = 500.0    # Phase 27: $500 daily loss limit (was $150)
@@ -92,19 +92,16 @@ class AdaptiveStrategy:
         self.params = base_params or StrategyParams()
         self.adaptation_interval = adaptation_interval
 
-        # Phase 32: TIGHT clamp bounds. The old bounds (MAX_CONF=0.55,
-        # MAX_EDGE=0.12) let adaptation drift so far from defaults that
-        # the system stopped trading entirely (min_conf 0.35→0.42, min_edge
-        # 0.03→0.049 after 72 adaptations).  New bounds keep params within
-        # a narrow band around the defaults so adaptation can't kill trade flow.
-        self._MIN_CONFIDENCE = 0.32    # Floor: always take high-confidence trades
-        self._MAX_CONFIDENCE = 0.43    # Cap: never require >43% confidence
-        self._MIN_EDGE = 0.025         # Floor: 2.5% min edge
-        self._MAX_EDGE = 0.06          # Cap: never require >6% edge (was 12%!)
-        self._MIN_KELLY = 0.15         # Floor: bet meaningful amounts
-        self._MAX_KELLY = 0.35         # Cap: don't over-concentrate
-        self._MIN_AGGRESSION = 0.30    # Floor: stay aggressive
-        self._MAX_AGGRESSION = 0.75    # Cap: not reckless
+        # Phase 36: TURBO MODE clamp bounds — aggressive but controlled.
+        # Target: 2X the $10K account. Need bigger bets, more trades.
+        self._MIN_CONFIDENCE = 0.28    # Floor: take even moderate-confidence trades
+        self._MAX_CONFIDENCE = 0.45    # Cap: never require >45% confidence
+        self._MIN_EDGE = 0.02          # Floor: 2% min edge (aggressive)
+        self._MAX_EDGE = 0.05          # Cap: never require >5% edge
+        self._MIN_KELLY = 0.25         # Floor: bet meaningful amounts
+        self._MAX_KELLY = 0.50         # Cap: up to half-Kelly
+        self._MIN_AGGRESSION = 0.45    # Floor: stay very aggressive
+        self._MAX_AGGRESSION = 0.85    # Cap: near-max aggression
 
         # History
         self._adaptations: list[AdaptationEvent] = []

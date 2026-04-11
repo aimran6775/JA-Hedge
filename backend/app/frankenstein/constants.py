@@ -57,10 +57,9 @@ TIMEOUT_PRICE_NO = 0.10              # timeout resolve NO when ≤ 0.10 (was 0.2
 USE_MAKER_ORDERS = True
 
 # Phase 6+25+27+34: Hard daily trade cap.
-# Phase 34: Reduced from 500→200. At 500, system hit the cap in 30 minutes
-# with 41K markets available. 200 trades/day = still ~$400-600 deployed
-# but spreads capital more carefully over the full trading day.
-MAX_DAILY_TRADES = 200
+# Phase 36: Increased from 200→350. With $10K+ balance and proven 50% WR,
+# need more volume to compound returns. 350 trades/day = ~$700-1000 deployed.
+MAX_DAILY_TRADES = 350
 
 # Phase 7+27: Price floor — minimum contract cost to avoid fee traps
 # Phase 27: Lowered to 10¢ — maker has 0 fees, cheap contracts offer
@@ -105,9 +104,9 @@ CATEGORY_EDGE_CAPS: dict[str, float] = {
 LEARNING_MODE_EDGE_CAP_MULT = 2.0  # 100% higher caps during learning
 
 # ── Diversification limits ──────────────────────────────────────────
-# Phase 27: Aggressive diversification — deploy capital broadly.
-MAX_PER_EVENT = 10      # Phase 28c: 10 per event — many independent markets per event
-MAX_PER_CATEGORY = 50   # Phase 28c: 50 per category — deploy broadly
+# Phase 36: Even more aggressive — deploy capital to 2X the account.
+MAX_PER_EVENT = 15      # Phase 36: 15 per event — maximize event exposure
+MAX_PER_CATEGORY = 80   # Phase 36: 80 per category — deploy capital heavily
 
 # ── Order lifecycle ─────────────────────────────────────────────────
 ORDER_STALE_SECONDS = 150.0  # Phase 27: cancel unfilled after 2.5 min — faster capital recycling

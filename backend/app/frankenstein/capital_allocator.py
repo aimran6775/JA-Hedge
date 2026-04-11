@@ -50,27 +50,31 @@ class CapitalAllocator:
     5. Phase 17: Dynamic category budgets — winning categories get more capital
     """
 
-    # ── Phase 17: Default category budget shares ──────────────────────
+    # ── Phase 36: TURBO MODE category allocations ─────────────────────
     _DEFAULT_CATEGORY_SHARES: dict[str, float] = {
-        # Phase 32: Rebalanced from actual performance data (2640 trades):
-        # Crypto: 92.2% WR, +$221.76  →  25% (was 12%)
-        # Science: 25.9% WR, +$54.08  →  12% (was 5%)
-        # Finance: 31.8% WR, +$24.40  →  12% (keep)
-        # Sports: 5.1% WR, +$18.65   →  15% (was 30%, break-even on 1504 trades)
-        # Culture: 44.3% WR, -$11.98  →  6% (was 8%, slightly negative)
-        # Politics: 0% WR, -$7.32    →  4% (was 12%, losing)
-        # Weather: 0% WR, -$2.10     →  3% (was 8%, losing)
-        "crypto": 0.25,
-        "sports": 0.15,
+        # Phase 36: Aggressive rebalance to 2X account:
+        # Crypto: 92.2% WR, +$221.76  →  40% (MASSIVE boost — best category)
+        # Science: 24.5% WR, +$54.08  →  15% (solid performer)
+        # Finance: 25.5% WR, +$18.90  →  12% (keep)
+        # Sports: 14.9% WR, +$112.02  →  12% (high volume, small edge)
+        # General: 12.6% WR, +$42.93  →  8% (decent)
+        # Current: 29.4% WR, +$6.69   →  5% (small sample but positive)
+        # Culture: 40.5% WR, -$11.98  →  3% (cut — negative PnL)
+        # Politics: 0% WR, -$14.32   →  2% (cut hard — losing)
+        # Weather: 0% WR, -$2.10     →  1% (cut hard — losing)
+        # Entertainment: 0% WR, -$2  →  1% (cut — losing)
+        # Economics: 0% WR, $0       →  1% (no data yet)
+        "crypto": 0.40,
+        "science": 0.15,
         "finance": 0.12,
-        "science": 0.12,
-        "economics": 0.08,
-        "entertainment": 0.08,
-        "culture": 0.06,
-        "politics": 0.04,
-        "general": 0.04,
-        "weather": 0.03,
-        "current_events": 0.03,
+        "sports": 0.12,
+        "general": 0.08,
+        "current_events": 0.05,
+        "culture": 0.03,
+        "politics": 0.02,
+        "weather": 0.01,
+        "entertainment": 0.01,
+        "economics": 0.01,
     }
     # Phase 35c: Assert shares sum to 1.0
     assert abs(sum(_DEFAULT_CATEGORY_SHARES.values()) - 1.0) < 0.01, "Category shares must sum to 1.0"
