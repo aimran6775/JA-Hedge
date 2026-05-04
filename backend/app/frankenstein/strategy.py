@@ -34,8 +34,10 @@ class StrategyParams:
 
     # Position sizing — small bets until we have a winning track record
     kelly_fraction: float = 0.20     # Phase 4: quarter-Kelly until model proven
-    max_position_size: int = 10      # Phase 4: 10 contracts max (was 100) — limit blast radius
-    max_simultaneous_positions: int = 30   # Phase 4: 30 concurrent (was 200) — quality > quantity
+    max_position_size: int = 10      # Phase 4: 10 contracts max (was 100) - limit blast radius
+    # Phase 8 (RECOVERY): raised from 30->150 to absorb carryover positions from
+    # prior poisoned run. Will tighten back to 30 once carryover settles.
+    max_simultaneous_positions: int = 150
 
     # Timing
     scan_interval: float = 15.0   # Phase 4: 15s — give markets room to breathe

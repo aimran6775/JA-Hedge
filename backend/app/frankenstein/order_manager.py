@@ -418,7 +418,14 @@ class OrderManager:
 
             return result
         except Exception as e:
-            log.error("execution_failed", ticker=market.ticker, error=str(e))
+            import traceback
+            log.error(
+                "execution_failed",
+                ticker=market.ticker,
+                error=str(e),
+                error_type=type(e).__name__,
+                traceback=traceback.format_exc(),
+            )
             return None
 
     # ── Phase 6: Multi-Level Quoting ──────────────────────────────────

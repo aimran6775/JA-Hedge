@@ -180,25 +180,28 @@ class AdvancedRiskManager:
         # 5. Single position concentration
         # Compare against total PORTFOLIO balance, not just deployed capital,
         # to avoid over-rejecting when deployed capital is small.
+        # Phase 8 (RECOVERY): coerce to float to prevent Decimal/float TypeError
         if self._limits.max_single_position_pct > 0:
-            portfolio_balance_cents = portfolio_state.balance_cents or 0
-            reference_value = max(portfolio_balance_cents, total_deployed + new_cost, 1)
-            position_pct = new_cost / reference_value
-            if position_pct > self._limits.max_single_position_pct:
+            portfolio_balance_cents = float(portfolio_state.balance_cents or 0)
+            reference_value = max(portfolio_balance_cents, float(total_deployed + new_cost), 1.0)
+            position_pct = float(new_cost) / reference_value
+            if position_pct > float(self._limits.max_single_position_pct):
                 return False, f"Position too concentrated: {position_pct:.1%} > {self._limits.max_single_position_pct:.1%}"
 
         # 6. Drawdown check
         if self._limits.max_drawdown_pct > 0 and self._peak_equity_cents > 0:
-            drawdown = (self._peak_equity_cents - self._current_equity_cents()) / self._peak_equity_cents
-            if drawdown > self._limits.max_drawdown_pct:
+            _peak = float(self._peak_equity_cents)
+            _curr = float(self._current_equity_cents())
+            drawdown = (_peak - _curr) / _peak if _peak > 0 else 0.0
+            if drawdown > float(self._limits.max_drawdown_pct):
                 return False, f"Max drawdown exceeded: {drawdown:.1%} > {self._limits.max_drawdown_pct:.1%}"
 
         # 7. Phase 18: Correlation-aware exposure — same event
         if event_ticker and self._limits.max_same_event_cost_pct > 0:
-            event_cost = self._event_cost_cents(event_ticker) + new_cost
-            balance = max(self._last_balance_or_portfolio(), 1)
+            event_cost = float(self._event_cost_cents(event_ticker) + new_cost)
+            balance = max(float(self._last_balance_or_portfolio()), 1.0)
             event_pct = event_cost / balance
-            if event_pct > self._limits.max_same_event_cost_pct:
+            if event_pct > float(self._limits.max_same_event_cost_pct):
                 return False, (
                     f"Event correlation limit: {event_ticker} cost "
                     f"${event_cost/100:.2f} = {event_pct:.1%} > "
@@ -207,8 +210,8 @@ class AdvancedRiskManager:
 
         # 8. Phase 18: Correlation-aware exposure — same category
         if category and self._limits.max_same_category_cost_pct > 0:
-            cat_cost = self._category_cost_cents(category) + new_cost
-            balance = max(self._last_balance_or_portfolio(), 1)
+            cat_cost = float(self._category_cost_cents(category) + new_cost)
+            balance = max(float(self._last_balance_or_portfolio()), 1.0)
             cat_pct = cat_cost / balance
             if cat_pct > self._limits.max_same_category_cost_pct:
                 return False, (
@@ -287,8 +290,9 @@ class AdvancedRiskManager:
 
         # Drawdown scaling — Phase 20: trigger earlier at 5% (was 10%)
         if self._limits.scale_down_on_loss and self._peak_equity_cents > 0:
-            equity = self._current_equity_cents()
-            drawdown_pct = max(0, (self._peak_equity_cents - equity) / self._peak_equity_cents)
+            equity = float(self._current_equity_cents())
+            _peak = float(self._peak_equity_cents)
+            drawdown_pct = max(0.0, (_peak - equity) / _peak) if _peak > 0 else 0.0
             if drawdown_pct > 0.05:
                 scale *= max(0.3, 1.0 - (drawdown_pct - 0.05) * self._limits.scale_factor_per_loss_pct)
 

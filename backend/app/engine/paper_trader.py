@@ -642,12 +642,16 @@ class PaperTradingSimulator:
         volume = getattr(cached, "volume", 0) or 0
 
         # Convert to cents if needed
-        def _to_cents(v: float | int | None) -> int | None:
+        def _to_cents(v: Any) -> int | None:
             if v is None:
                 return None
-            if isinstance(v, float) and v <= 1.0:
-                return int(v * 100)
-            return int(v)
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return None
+            if fv <= 1.0:
+                return int(fv * 100)
+            return int(fv)
 
         last_cents = _to_cents(last_price)
         yes_bid_c = _to_cents(yes_bid)

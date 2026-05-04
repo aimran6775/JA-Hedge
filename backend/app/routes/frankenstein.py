@@ -188,6 +188,48 @@ async def hard_reset_memory(token: str = "") -> dict:
     }
 
 
+@router.post("/paper-reset")
+async def paper_reset(token: str = "") -> dict:
+    """PHASE 8 (May 2026): Reset paper trading simulator state.
+
+    Clears all paper positions, orders, and resets balance to starting.
+    Use after /hard-reset to also wipe carryover paper positions that
+    block new trade flow via position-count limits.
+    """
+    if token != "PURGE_FRANKENSTEIN":
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="Provide token=PURGE_FRANKENSTEIN to confirm",
+        )
+    from app.state import state as _st
+    sim = getattr(_st, "paper_simulator", None)
+    if sim is None:
+        return {"error": "no_paper_simulator"}
+    before_pos = len(getattr(sim, "_positions", {}) or {})
+    before_orders = len(getattr(sim, "_orders", {}) or {})
+    info = sim.reset()
+    # Also clear advanced risk position registry on the brain
+    try:
+        frank = _get_frank()
+        if hasattr(frank, "_scanner") and hasattr(frank._scanner, "_adv_risk"):
+            adv = frank._scanner._adv_risk
+            if hasattr(adv, "_position_risks"):
+                adv._position_risks.clear()
+            if hasattr(adv, "_event_groups"):
+                adv._event_groups.clear()
+            if hasattr(adv, "_category_groups"):
+                adv._category_groups.clear()
+    except Exception:
+        pass
+    return {
+        "status": "paper_reset",
+        "positions_wiped": before_pos,
+        "orders_wiped": before_orders,
+        "reset_info": info,
+    }
+
+
 @router.get("/recovery-status")
 async def recovery_status() -> dict:
     """PHASE 7 (May 2026): Single endpoint summarizing the metrics that
