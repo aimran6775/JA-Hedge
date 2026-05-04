@@ -759,8 +759,15 @@ class XGBoostPredictor(PredictionModel):
         market_price = features.midpoint
         edge = prob_yes - market_price
 
-        # Determine side
-        if edge > 0:
+        # Phase 14: require a MINIMUM decisive edge to commit to a non-neutral
+        # side. Below this threshold, the prediction is effectively noise and
+        # will be filtered out by the scanner's min_edge gate anyway. We default
+        # to 'no' (the rare side in our data) so any leakage doesn't reinforce
+        # the historical YES bias.
+        MIN_DECISIVE_EDGE = 0.005  # 0.5¢ — below this is signal noise
+        if abs(edge) < MIN_DECISIVE_EDGE:
+            side = "no"
+        elif edge > 0:
             side = "yes"
         else:
             side = "no"
@@ -830,139 +837,103 @@ class XGBoostPredictor(PredictionModel):
         """
         Heuristic prediction for when no trained model is available.
 
-        Phase 25: Major overhaul — the heuristic now uses intelligence
-        alt-data (Polymarket, Vegas, crypto) as first-class signals.
-        These are REAL external information, not just market price echo.
+        Phase 14 (Dec 2025): COMPLETE REWRITE to kill structural YES bias.
 
-        KEY PRINCIPLES:
-        1. Market price is the baseline, but alt-data CAN diverge 10-15%
-        2. Cross-platform edges (Kalshi vs Polymarket/Vegas) are genuine
-        3. During learning mode, we want SMALL adjustments — let positions
-           hold to settlement for clean training labels
-        4. Momentum, RSI, MACD are secondary signals at best
+        Root cause of prior YES bias: stacked 9 small adjustments
+        (convergence_adj, RSI, MACD, momentum, volume) that all sum to a
+        slightly positive number on average — and convergence_adj specifically
+        pushed high-mid markets *further* toward YES. Combined with Kalshi's
+        market population skewing mid > 0.5 (most binary questions are framed
+        such that YES is the more likely outcome at most price points), the
+        heuristic produced ~95% YES trades.
+
+        NEW PRINCIPLE: "Shut up if you don't know."
+        - With ALT-DATA (Polymarket/Vegas/crypto/sentiment): use it as the
+          primary signal — that's real external information.
+        - Without alt-data: prob_yes = mid → edge = 0 → trade is filtered
+          out by the min_edge gate. No spurious signals from technical noise.
+        - Optional: a tiny convergence nudge in the LAST hour ONLY, applied
+          symmetrically (so high and low mids are treated identically).
+        - Optional: side-balance prior — if recent bot trades skew heavily
+          one side, slightly bias the prob away from the dominant side to
+          help the gate find counter-side opportunities.
         """
         mid = features.midpoint
         if mid <= 0 or mid >= 1:
             mid = 0.5
 
-        # -- Base: start from market price (the best estimator) --
         base_prob = mid
+        total_adjustment = 0.0
+        alt_data_signals = 0  # count of real external signals firing
 
-        # -- Signal 1: Cross-platform edge (STRONGEST SIGNAL) --
-        # If Polymarket or Vegas has a different price, that's real information.
-        cross_platform_adj = 0.0
-        if hasattr(features, 'alt_polymarket_prob') and features.alt_polymarket_prob > 0:
-            # Polymarket is a deep prediction market — trust its price
+        # ── Signal A: Cross-platform edge (Polymarket / Vegas) ──────────
+        # This is the STRONGEST real signal — another deep market disagrees.
+        if getattr(features, 'alt_polymarket_prob', 0.0) > 0:
             poly_diff = features.alt_polymarket_prob - mid
-            cross_platform_adj = poly_diff * 0.40  # use 40% of the difference
-            cross_platform_adj = max(-0.08, min(0.08, cross_platform_adj))
-        elif hasattr(features, 'alt_vegas_prob') and features.alt_vegas_prob > 0:
-            # Vegas odds are calibrated by sharp bettors
+            adj = max(-0.08, min(0.08, poly_diff * 0.40))
+            total_adjustment += adj
+            alt_data_signals += 1
+        elif getattr(features, 'alt_vegas_prob', 0.0) > 0:
             vegas_diff = features.alt_vegas_prob - mid
-            cross_platform_adj = vegas_diff * 0.35
-            cross_platform_adj = max(-0.07, min(0.07, cross_platform_adj))
+            adj = max(-0.07, min(0.07, vegas_diff * 0.35))
+            total_adjustment += adj
+            alt_data_signals += 1
 
-        # -- Signal 2: Time-weighted market trust --
-        if features.hours_to_expiry > 0:
-            time_trust = 1.0 / (1.0 + 0.1 * features.hours_to_expiry)
-        else:
-            time_trust = 0.95
+        # ── Signal B: Crypto distance from strike ───────────────────────
+        crypto_dist = getattr(features, 'alt_crypto_strike_dist', 0.0)
+        if crypto_dist and abs(crypto_dist) > 0.02:
+            adj = max(-0.06, min(0.06, crypto_dist * 0.15))
+            total_adjustment += adj
+            alt_data_signals += 1
 
-        # -- Signal 3: Momentum adjustments --
-        momentum_adj = 0.0
-        if features.price_change_5m > 0.01:
-            momentum_adj = min(features.price_change_5m * 0.6, 0.03)
-        elif features.price_change_5m < -0.01:
-            momentum_adj = max(features.price_change_5m * 0.6, -0.03)
-        elif features.price_change_1m > 0.005:
-            momentum_adj = min(features.price_change_1m * 0.5, 0.015)
-        elif features.price_change_1m < -0.005:
-            momentum_adj = max(features.price_change_1m * 0.5, -0.015)
+        # ── Signal C: News + social sentiment ───────────────────────────
+        news_sent = getattr(features, 'alt_news_sentiment', 0.0) or 0.0
+        soc_sent = getattr(features, 'alt_social_sentiment', 0.0) or 0.0
+        sent_adj = news_sent * 0.02 + soc_sent * 0.015
+        sent_adj = max(-0.03, min(0.03, sent_adj))
+        if abs(sent_adj) > 0.001:
+            total_adjustment += sent_adj
+            alt_data_signals += 1
 
-        # -- Signal 4: Convergence boost near expiry --
-        convergence_adj = 0.0
-        if features.hours_to_expiry < 12:
+        # ── Signal D: Symmetric near-expiry convergence (LAST HOUR ONLY) ─
+        # Tiny nudge toward whichever side is dominant, but only when there's
+        # essentially no time left and the market has already committed.
+        # CRITICAL: applied identically for mid > 0.5 and mid < 0.5 — no
+        # population skew can leak through.
+        if features.hours_to_expiry < 1.0 and features.hours_to_expiry > 0:
             dist = abs(mid - 0.5)
-            if dist > 0.25:
+            if dist > 0.30:  # market is at >80% or <20%
                 direction = 1.0 if mid > 0.5 else -1.0
-                convergence_adj = direction * dist * time_trust * 0.06
+                # Strictly symmetric magnitude
+                total_adjustment += direction * 0.02
 
-        # -- Signal 5: Volume confirmation --
-        volume_adj = 0.0
-        if features.volume_ratio > 1.3 and abs(features.price_change_5m) > 0.008:
-            volume_adj = features.price_change_5m * 0.2 * min(features.volume_ratio / 2.5, 1.0)
-            volume_adj = max(-0.015, min(0.015, volume_adj))
+        # ── Signal E: Side-balance prior ────────────────────────────────
+        # If the bot has been trading one side too heavily recently,
+        # subtract a small bias from that side to help the scanner find
+        # counter-opportunities. This is a SOFT prior, not a hard gate.
+        sb_nudge = self._side_balance_prior()
+        if sb_nudge != 0.0:
+            total_adjustment += sb_nudge
 
-        # -- Signal 6: RSI-based adjustment --
-        rsi_adj = 0.0
-        if features.rsi_14 > 0:
-            if features.rsi_14 > 70 and features.hours_to_expiry < 48:
-                rsi_adj = 0.02
-            elif features.rsi_14 < 30 and features.hours_to_expiry < 48:
-                rsi_adj = -0.02
-            elif features.rsi_14 > 70 and features.hours_to_expiry >= 48:
-                rsi_adj = -0.01
-            elif features.rsi_14 < 30 and features.hours_to_expiry >= 48:
-                rsi_adj = 0.01
-
-        # -- Signal 7: MACD crossover --
-        macd_adj = 0.0
-        if features.macd != 0:
-            if features.macd > 0.015:
-                macd_adj = min(features.macd * 0.3, 0.015)
-            elif features.macd < -0.015:
-                macd_adj = max(features.macd * 0.3, -0.015)
-
-        # -- Signal 8: Crypto distance to strike --
-        crypto_adj = 0.0
-        if hasattr(features, 'alt_crypto_strike_dist') and features.alt_crypto_strike_dist != 0:
-            # If crypto price is well above/below strike, that's a strong signal
-            dist = features.alt_crypto_strike_dist
-            if abs(dist) > 0.05:  # >5% from strike
-                crypto_adj = max(-0.06, min(0.06, dist * 0.15))
-
-        # -- Signal 9: News/social sentiment --
-        sentiment_adj = 0.0
-        if hasattr(features, 'alt_news_sentiment') and features.alt_news_sentiment != 0:
-            sentiment_adj += features.alt_news_sentiment * 0.02
-        if hasattr(features, 'alt_social_sentiment') and features.alt_social_sentiment != 0:
-            sentiment_adj += features.alt_social_sentiment * 0.015
-        sentiment_adj = max(-0.03, min(0.03, sentiment_adj))
-
-        # -- Combine signals --
-        # Cross-platform edge is the strongest signal — gets full weight
-        # Other signals are secondary — weighted by time trust
-        signal_weight = max(0.30, 1.0 - time_trust * 0.5)
-        total_adjustment = (
-            cross_platform_adj  # full weight — this is real external info
-            + signal_weight * (momentum_adj + volume_adj + rsi_adj + macd_adj)
-            + convergence_adj
-            + crypto_adj
-            + sentiment_adj
-        )
-
-        # Hard cap total heuristic adjustment at +-12%
-        # Phase 25: raised from +-10% to allow cross-platform edges through
+        # Hard cap total adjustment
         total_adjustment = max(-0.12, min(0.12, total_adjustment))
-
         prob_yes = base_prob + total_adjustment
 
-        # -- Spread penalty --
+        # Wide-spread penalty (pull toward 0.5 if spread is huge)
         if features.spread_pct > 0.10:
             spread_penalty = min(features.spread_pct * 0.15, 0.06)
             prob_yes = prob_yes * (1.0 - spread_penalty) + 0.5 * spread_penalty
 
         prob_yes = max(0.05, min(0.95, prob_yes))
 
-        # Phase 25: Heuristic uncertainty reflects whether we have alt-data.
-        # With cross-platform signals, we're more confident; without, less.
-        has_alt_data = (
-            cross_platform_adj != 0
-            or crypto_adj != 0
-            or sentiment_adj != 0
-        )
-        _std = 0.08 if has_alt_data else 0.15
-        _agreement = 0.55 if has_alt_data else 0.30
+        # Confidence reflects whether we had real data to work with.
+        # No alt-data → very low confidence → trade likely fails edge gate.
+        if alt_data_signals >= 2:
+            _std, _agreement = 0.06, 0.65
+        elif alt_data_signals == 1:
+            _std, _agreement = 0.10, 0.50
+        else:
+            _std, _agreement = 0.20, 0.20  # essentially no signal
 
         pred = self._build_prediction(
             prob_yes, features,
@@ -971,3 +942,46 @@ class XGBoostPredictor(PredictionModel):
         )
         pred.raw_prob = prob_yes
         return pred
+
+    # ── Side-balance feedback hook (Phase 14) ───────────────────────────
+    # The predictor reads the global Frankenstein memory (if available) to
+    # learn its own bias and counter it. Set by main.py on startup.
+    _memory_ref: Any = None
+
+    @classmethod
+    def attach_memory(cls, memory: Any) -> None:
+        """Inject Frankenstein.memory so heuristic can self-correct side bias."""
+        cls._memory_ref = memory
+
+    def _side_balance_prior(self) -> float:
+        """Return a small adjustment to prob_yes that counters recent side bias.
+
+        - If recent bot trades are >70% YES → subtract up to 0.04 (push toward NO)
+        - If recent bot trades are >70% NO  → add up to 0.04 (push toward YES)
+        - Else 0.
+        Soft prior — a partner to the scanner's hard gate.
+        """
+        try:
+            mem = self.__class__._memory_ref
+            if mem is None:
+                return 0.0
+            trades = getattr(mem, '_trades', None)
+            if not trades:
+                return 0.0
+            recent = list(trades)[-50:]
+            buys = [t for t in recent if getattr(t, 'action', '') == 'buy'
+                    and getattr(t, 'predicted_side', None) in ('yes', 'no')]
+            if len(buys) < 20:
+                return 0.0
+            yes_count = sum(1 for t in buys if t.predicted_side == 'yes')
+            yes_ratio = yes_count / len(buys)
+            # Symmetric: imbalance above 0.5 in either direction → counter-nudge
+            imbalance = yes_ratio - 0.5  # +0.5 = all YES, -0.5 = all NO
+            if abs(imbalance) < 0.20:  # 30%/70% threshold
+                return 0.0
+            # Counter-bias: scale linearly past the threshold, cap at 4%
+            excess = (abs(imbalance) - 0.20) / 0.30  # 0..1 over [0.20..0.50]
+            magnitude = min(0.04, excess * 0.04)
+            return -magnitude if imbalance > 0 else magnitude
+        except Exception:
+            return 0.0

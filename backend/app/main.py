@@ -208,6 +208,16 @@ async def _do_startup() -> None:
     state.frankenstein = frankenstein
     log.info("🧟 frankenstein_created", generation=0)
 
+    # Phase 14: wire memory into the heuristic predictor so it can self-correct
+    # side bias (subtract a small prior from prob_yes when recent trades skew
+    # heavily YES, and vice versa).
+    try:
+        from app.ai.models import XGBoostPredictor
+        XGBoostPredictor.attach_memory(frankenstein.memory)
+        log.info("🧟 heuristic_side_balance_prior_wired")
+    except Exception as e:
+        log.warning("heuristic_memory_wire_failed", error=str(e))
+
     # Phase 35: Wire LLM analyzer into Frankenstein's scanner
     if llm_analyzer:
         frankenstein._scanner._llm_analyzer = llm_analyzer

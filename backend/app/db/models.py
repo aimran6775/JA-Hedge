@@ -82,9 +82,14 @@ class MarketRecord(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # Relationships
+    # Relationships — ticker is shared key but PriceSnapshot.ticker is NOT a real FK
+    # (snapshots can exist for tickers we haven't cached yet). Mark viewonly so
+    # SQLAlchemy doesn't try to manage cascades or warn about ambiguous joins.
     price_snapshots: Mapped[list["PriceSnapshot"]] = relationship(
-        back_populates="market", lazy="selectin"
+        back_populates="market",
+        lazy="select",
+        viewonly=True,
+        primaryjoin="MarketRecord.ticker == foreign(PriceSnapshot.ticker)",
     )
 
     __table_args__ = (
@@ -141,11 +146,12 @@ class PriceSnapshot(Base):
     spread: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     midpoint: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
-    # Relationship
+    # Relationship — ticker is not a true FK (snapshots can predate market row).
+    # viewonly + foreign() annotation tells SA this is informational only.
     market: Mapped[MarketRecord | None] = relationship(
         back_populates="price_snapshots",
-        foreign_keys=[ticker],
-        primaryjoin="PriceSnapshot.ticker == MarketRecord.ticker",
+        viewonly=True,
+        primaryjoin="foreign(PriceSnapshot.ticker) == MarketRecord.ticker",
     )
 
     __table_args__ = (
