@@ -70,7 +70,7 @@ async def metrics() -> Response:
     if frank is not None:
         parts.append(_metric(
             "jahedge_frank_is_alive",
-            1 if getattr(frank, "is_alive", False) else 0,
+            1 if getattr(frank._state, "is_alive", False) else 0,
         ))
         parts.append(_metric(
             "jahedge_frank_is_paused",
@@ -98,8 +98,9 @@ async def metrics() -> Response:
         # Side balance ratio over recent window
         try:
             import time as _t
-            uptime = _t.time() - getattr(frank._state, "start_time", _t.time())
-            parts.append(_metric("jahedge_frank_uptime_seconds", uptime))
+            awaken = getattr(frank._state, "awaken_time", None) or getattr(frank._state, "birth_time", None)
+            if awaken:
+                parts.append(_metric("jahedge_frank_uptime_seconds", _t.time() - awaken))
         except Exception:
             pass
         try:
