@@ -154,22 +154,84 @@ class OnlineLearner:
             X, y = data
             sample_weights = None
 
-        # Phase 25: Class balance check — skip if all same label.
+        # Phase 25 + Phase 2 (May 2026): Class balance check.
         # Training on 100% YES or 100% NO teaches the model nothing.
-        # Need at least 15% minority class for meaningful gradients.
-        from app.frankenstein.constants import MIN_CLASS_BALANCE
+        # Phase 2: Instead of skipping forever, use synthetic minority
+        # oversampling (random duplicate-with-jitter) to break out of
+        # the deadlock where one side dominates 100% (the catastrophic
+        # YES-bias loop).  We still skip if minority is below HARD floor.
+        from app.frankenstein.constants import (
+            MIN_CLASS_BALANCE,
+            MIN_CLASS_BALANCE_HARD,
+            USE_SYNTHETIC_OVERSAMPLING,
+        )
         if len(y) > 0:
             pos_rate = float(y.mean())
             minority_rate = min(pos_rate, 1.0 - pos_rate)
-            if minority_rate < MIN_CLASS_BALANCE:
+
+            if minority_rate < MIN_CLASS_BALANCE_HARD:
+                # Truly unrecoverable — we have basically no minority data.
                 log.info(
-                    "retrain_skipped_class_imbalance",
+                    "retrain_skipped_class_imbalance_hard",
                     pos_rate=f"{pos_rate:.3f}",
                     minority_rate=f"{minority_rate:.3f}",
-                    min_required=f"{MIN_CLASS_BALANCE:.3f}",
+                    min_required=f"{MIN_CLASS_BALANCE_HARD:.3f}",
                     samples=len(y),
                 )
                 return None
+
+            if minority_rate < MIN_CLASS_BALANCE and USE_SYNTHETIC_OVERSAMPLING:
+                # Synthetic oversampling: duplicate minority samples with
+                # small Gaussian jitter on the features.  This is a
+                # poor-man's SMOTE — good enough to break the deadlock.
+                import numpy as _np
+                minority_label = 1 if pos_rate < 0.5 else 0
+                minority_mask = (y == minority_label)
+                minority_X = X[minority_mask]
+                minority_w = sample_weights[minority_mask] if sample_weights is not None else None
+
+                # Target ratio: bring minority up to MIN_CLASS_BALANCE
+                target_minority = int(len(y) * MIN_CLASS_BALANCE / (1 - MIN_CLASS_BALANCE))
+                needed = max(0, target_minority - int(minority_mask.sum()))
+
+                if needed > 0 and len(minority_X) > 0:
+                    # Duplicate-with-jitter
+                    rng = _np.random.default_rng(42)
+                    indices = rng.integers(0, len(minority_X), size=needed)
+                    synth_X = minority_X[indices].astype(_np.float32, copy=True)
+                    # Small Gaussian noise on each feature (1% of std)
+                    feat_std = synth_X.std(axis=0, keepdims=True) + 1e-6
+                    synth_X = synth_X + rng.normal(0, 0.01 * feat_std, synth_X.shape)
+                    synth_y = _np.full(needed, minority_label, dtype=y.dtype)
+                    # Synthetic samples get half the weight of real ones
+                    if minority_w is not None and len(minority_w) > 0:
+                        synth_w = _np.full(needed, float(minority_w.mean()) * 0.5)
+                    else:
+                        synth_w = _np.full(needed, 0.5)
+
+                    X = _np.vstack([X, synth_X])
+                    y = _np.concatenate([y, synth_y])
+                    if sample_weights is not None:
+                        sample_weights = _np.concatenate([sample_weights, synth_w])
+                    else:
+                        sample_weights = _np.concatenate([_np.ones(len(y) - needed), synth_w])
+
+                    log.info(
+                        "retrain_oversampled_minority",
+                        original_minority=int(minority_mask.sum()),
+                        added=needed,
+                        new_pos_rate=f"{float(y.mean()):.3f}",
+                        samples=len(y),
+                    )
+                else:
+                    log.info(
+                        "retrain_skipped_class_imbalance",
+                        pos_rate=f"{pos_rate:.3f}",
+                        minority_rate=f"{minority_rate:.3f}",
+                        min_required=f"{MIN_CLASS_BALANCE:.3f}",
+                        samples=len(y),
+                    )
+                    return None
 
         # Phase 5: Blend pretrained historical data with live data
         # After enough real trades, mix in historical data to prevent

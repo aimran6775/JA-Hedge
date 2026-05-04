@@ -35,6 +35,9 @@ from app.frankenstein.constants import (
     MIN_PRICE_FLOOR_CENTS,
     MIN_PRICE_FLOOR_LEARNING_CENTS,
     ROUND_TRIP_FEE_CENTS,
+    SIDE_BALANCE_MAX_RATIO,
+    SIDE_BALANCE_MIN_TRADES,
+    SIDE_BALANCE_WINDOW,
     USE_MAKER_ORDERS,
     round_trip_fee_pct,
 )
@@ -165,6 +168,29 @@ class MarketScanner:
                 if usable >= MIN_TRAINING_SAMPLES:
                     return False  # Have enough real data
         return True  # Still learning
+
+    # ── Phase 1 (May 2026): Side-Balance Defense ────────────────────
+
+    def _side_balance_block(self, proposed_side: str) -> bool:
+        """Return True if accepting another `proposed_side` trade would push
+        the bot's recent side distribution past SIDE_BALANCE_MAX_RATIO.
+
+        This prevents the catastrophic 100%-YES bias seen in production.
+        Once the imbalance hits the threshold, the bot is FORCED to wait
+        for opposite-side opportunities until the window rebalances.
+        """
+        try:
+            recent = list(self.memory._trades)[-SIDE_BALANCE_WINDOW:]
+            recent_buys = [t for t in recent if t.action == "buy" and t.predicted_side in ("yes", "no")]
+            if len(recent_buys) < SIDE_BALANCE_MIN_TRADES:
+                return False  # Not enough data — allow
+            same_side = sum(1 for t in recent_buys if t.predicted_side == proposed_side)
+            ratio = same_side / len(recent_buys)
+            if ratio >= SIDE_BALANCE_MAX_RATIO:
+                return True  # Block — too imbalanced already
+            return False
+        except Exception:
+            return False  # On any error, don't block
 
     # ── Main Scan ─────────────────────────────────────────────────────
 
@@ -1078,6 +1104,35 @@ class MarketScanner:
             _floor_cents = MIN_PRICE_FLOOR_LEARNING_CENTS if _is_learning else MIN_PRICE_FLOOR_CENTS
             _floor = _floor_cents / 100.0
             if mid_price < _floor or mid_price > 1.0 - _floor:
+                rejections = getattr(state, "scan_debug_rejections", None)
+                if rejections is not None:
+                    rejections["price_floor"] = rejections.get("price_floor", 0) + 1
+                continue
+
+            # Phase 4 (RECOVERY): Price ceiling — block YES side >82c and
+            # NO side that implies YES <18c. The bot's prior 100%-YES bias
+            # was concentrated in the 1-9c long-shot zone; this enforces
+            # symmetric exclusion of both extreme tails.
+            try:
+                from app.frankenstein.constants import MAX_PRICE_CEILING_CENTS
+                _ceil = MAX_PRICE_CEILING_CENTS / 100.0
+                # The actual side's effective price
+                side_price = mid_price if prediction.side == "yes" else (1.0 - mid_price)
+                if side_price > _ceil:
+                    rejections = getattr(state, "scan_debug_rejections", None)
+                    if rejections is not None:
+                        rejections["price_ceiling"] = rejections.get("price_ceiling", 0) + 1
+                    continue
+            except ImportError:
+                pass
+
+            # ── PHASE 1 (May 2026): SIDE-BALANCE DEFENSE ─────────────
+            # Block this trade if accepting it would worsen a systemic
+            # one-side bias.  Catches the 100%-YES failure mode.
+            if self._side_balance_block(prediction.side):
+                rejections = getattr(state, "scan_debug_rejections", None)
+                if rejections is not None:
+                    rejections["side_imbalance"] = rejections.get("side_imbalance", 0) + 1
                 continue
 
             # Market-anchor sanity (edge cap)

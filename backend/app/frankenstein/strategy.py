@@ -28,30 +28,30 @@ log = get_logger("frankenstein.strategy")
 class StrategyParams:
     """Tunable strategy parameters — Frankenstein adjusts these live."""
 
-    # Signal filters — MAKER-AWARE: edge only needs to beat spread (no fees)
-    min_confidence: float = 0.32     # Phase 36: lowered to 0.32 — more trades
-    min_edge: float = 0.025          # Phase 36: lowered to 2.5% — capture more opportunities
+    # Signal filters — RECOVERY MODE: tighten everything until model proves itself
+    min_confidence: float = 0.58     # Phase 4: high bar — model is untrained, demand strong signal
+    min_edge: float = 0.045          # Phase 4: 4.5% min edge — survive spread + slippage
 
-    # Position sizing — TURBO MODE: deploy capital aggressively to 2X account
-    kelly_fraction: float = 0.40     # Phase 36: aggressive Kelly — bigger bets
-    max_position_size: int = 100     # Phase 36: 100 contracts max (was 50)
-    max_simultaneous_positions: int = 200   # Phase 36: 200 concurrent positions
+    # Position sizing — small bets until we have a winning track record
+    kelly_fraction: float = 0.20     # Phase 4: quarter-Kelly until model proven
+    max_position_size: int = 10      # Phase 4: 10 contracts max (was 100) — limit blast radius
+    max_simultaneous_positions: int = 30   # Phase 4: 30 concurrent (was 200) — quality > quantity
 
     # Timing
-    scan_interval: float = 8.0   # Phase 36: scan every 8s — catch more opportunities
+    scan_interval: float = 15.0   # Phase 4: 15s — give markets room to breathe
 
     # Risk overrides
-    max_daily_loss: float = 500.0    # Phase 27: $500 daily loss limit (was $150)
+    max_daily_loss: float = 100.0    # Phase 4: $100/day cap (was $500) — preserve capital
     stop_loss_pct: float = 0.15      # Not used in maker mode (hold to settlement)
     take_profit_pct: float = 0.20    # Not used in maker mode (hold to settlement)
 
     # Model thresholds
-    max_spread_cents: int = 55   # Phase 27: wider spreads ok — maker creates liquidity
+    max_spread_cents: int = 30   # Phase 4: tighter spreads only (was 55) — better fills
     min_volume: float = 0.0     # Maker creates liquidity — no volume requirement
-    min_hours_to_expiry: float = 0.5  # Phase 27: 30 min minimum (was 1h) — trade closer to expiry
+    min_hours_to_expiry: float = 2.0  # Phase 4: 2h minimum (was 0.5h) — avoid coin-flip expiries
 
     # Aggression level (0.0 = ultra conservative, 1.0 = maximum aggression)
-    aggression: float = 0.55         # Phase 27: high aggression (was 0.35)
+    aggression: float = 0.30         # Phase 4: conservative (was 0.55) — earn aggression back
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -92,16 +92,16 @@ class AdaptiveStrategy:
         self.params = base_params or StrategyParams()
         self.adaptation_interval = adaptation_interval
 
-        # Phase 36: TURBO MODE clamp bounds — aggressive but controlled.
-        # Target: 2X the $10K account. Need bigger bets, more trades.
-        self._MIN_CONFIDENCE = 0.28    # Floor: take even moderate-confidence trades
-        self._MAX_CONFIDENCE = 0.45    # Cap: never require >45% confidence
-        self._MIN_EDGE = 0.02          # Floor: 2% min edge (aggressive)
-        self._MAX_EDGE = 0.05          # Cap: never require >5% edge
-        self._MIN_KELLY = 0.25         # Floor: bet meaningful amounts
-        self._MAX_KELLY = 0.50         # Cap: up to half-Kelly
-        self._MIN_AGGRESSION = 0.45    # Floor: stay very aggressive
-        self._MAX_AGGRESSION = 0.85    # Cap: near-max aggression
+        # Phase 4: RECOVERY MODE clamp bounds — prevent adaptive drift back to dangerous territory.
+        # The bot just lost 1000+ trades in a row with permissive bounds. Lock it down.
+        self._MIN_CONFIDENCE = 0.50    # Floor: never accept low-confidence trades
+        self._MAX_CONFIDENCE = 0.75    # Cap: avoid demanding the impossible
+        self._MIN_EDGE = 0.035         # Floor: 3.5% min edge always
+        self._MAX_EDGE = 0.10          # Cap: 10% — wider window to discover good trades
+        self._MIN_KELLY = 0.10         # Floor: bet small but real
+        self._MAX_KELLY = 0.30         # Cap: never go above 30% Kelly until proven
+        self._MIN_AGGRESSION = 0.20    # Floor: stay conservative
+        self._MAX_AGGRESSION = 0.55    # Cap: half-aggression max
 
         # History
         self._adaptations: list[AdaptationEvent] = []

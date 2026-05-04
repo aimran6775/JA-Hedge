@@ -146,6 +146,121 @@ async def purge_bootstrap_data() -> dict:
     }
 
 
+@router.post("/hard-reset")
+async def hard_reset_memory(token: str = "") -> dict:
+    """PHASE 3 (May 2026): Nuclear reset for recovering from a poisoned run.
+
+    Wipes ALL trade memory (live + bootstrap), resets the model to
+    untrained, and persists.  Use this when the trade history is
+    fundamentally broken (e.g. 100% one-side bias).
+
+    Requires token=PURGE_FRANKENSTEIN to prevent accidents.
+    """
+    if token != "PURGE_FRANKENSTEIN":
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="Provide token=PURGE_FRANKENSTEIN to confirm",
+        )
+
+    frank = _get_frank()
+    before = len(frank.memory._trades)
+    frank.memory.clear()
+
+    # Reset learner / generation
+    try:
+        frank.learner._generation = 0
+        frank.learner.current_version = "untrained"
+    except Exception:
+        pass
+
+    # Persist the empty memory
+    try:
+        frank.memory.save_to_disk()
+    except Exception:
+        pass
+
+    return {
+        "status": "hard_reset",
+        "trades_wiped": before,
+        "memory_size": len(frank.memory._trades),
+        "next_step": "Restart trading cycle from clean slate",
+    }
+
+
+@router.get("/recovery-status")
+async def recovery_status() -> dict:
+    """PHASE 7 (May 2026): Single endpoint summarizing the metrics that
+    matter during the post-hard-reset recovery period. Tracks side balance,
+    model status, win rate, kill-switch state, and key debug counters.
+    """
+    try:
+        frank = _get_frank()
+    except Exception as e:
+        return {"error": str(e), "alive": False}
+
+    state = frank.state
+
+    # Side distribution over recent trades
+    trades = list(getattr(frank.memory, "_trades", []))
+    recent = trades[-100:] if trades else []
+    yes_n = sum(1 for t in recent if getattr(t, "predicted_side", None) == "yes")
+    no_n = sum(1 for t in recent if getattr(t, "predicted_side", None) == "no")
+    total = yes_n + no_n
+    yes_ratio = (yes_n / total) if total else None
+
+    # Resolved + win stats (last 200)
+    resolved = [t for t in trades[-500:] if getattr(t, "market_result", None) in ("yes", "no")]
+    wins = [t for t in resolved if getattr(t, "predicted_side", None) == getattr(t, "market_result", None)]
+    win_rate = (len(wins) / len(resolved)) if resolved else None
+
+    # Model
+    learner = getattr(frank, "learner", None)
+    model_version = getattr(learner, "current_version", "unknown") if learner else "unknown"
+    generation = getattr(learner, "_generation", 0) if learner else 0
+
+    # Strategy params
+    params_obj = getattr(frank, "strategy", None)
+    params = params_obj.params.to_dict() if params_obj and hasattr(params_obj, "params") else {}
+
+    # Rejections
+    rejections = dict(getattr(state, "scan_debug_rejections", {}) or {})
+
+    # Health flags
+    diagnostics = []
+    if total >= 20 and yes_ratio is not None and (yes_ratio > 0.80 or yes_ratio < 0.20):
+        diagnostics.append(f"side_imbalance: {yes_ratio:.0%} yes over last {total} trades")
+    if model_version == "untrained" and len(resolved) > 50:
+        diagnostics.append(f"model_still_untrained after {len(resolved)} resolved trades")
+    if win_rate is not None and len(resolved) >= 30 and win_rate < 0.40:
+        diagnostics.append(f"win_rate_low: {win_rate:.1%} over {len(resolved)} resolved")
+
+    return {
+        "alive": True,
+        "memory": {
+            "total_trades": len(trades),
+            "resolved": len(resolved),
+            "wins": len(wins),
+            "win_rate": win_rate,
+        },
+        "side_balance": {
+            "window": total,
+            "yes": yes_n,
+            "no": no_n,
+            "yes_ratio": yes_ratio,
+            "healthy": (total < 20) or (yes_ratio is not None and 0.20 <= yes_ratio <= 0.80),
+        },
+        "model": {
+            "version": model_version,
+            "generation": generation,
+        },
+        "strategy_params": params,
+        "scan_rejections": rejections,
+        "diagnostics": diagnostics,
+        "status": "healthy" if not diagnostics else "needs_attention",
+    }
+
+
 @router.get("/debug/rejections")
 async def debug_rejections() -> dict:
     """Debug: show ALL candidates with full confidence analysis."""

@@ -138,6 +138,7 @@ class FrankensteinState:
     generation: int = 0
     model_version: str = "untrained"
     last_scan_debug: dict = field(default_factory=dict)
+    scan_debug_rejections: dict = field(default_factory=dict)
     daily_trade_count: int = 0
     daily_trade_date: str = ""
     circuit_breaker_triggered: bool = False

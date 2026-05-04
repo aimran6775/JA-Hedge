@@ -57,22 +57,44 @@ TIMEOUT_PRICE_NO = 0.10              # timeout resolve NO when ≤ 0.10 (was 0.2
 USE_MAKER_ORDERS = True
 
 # Phase 6+25+27+34: Hard daily trade cap.
-# Phase 36: Increased from 200→350. With $10K+ balance and proven 50% WR,
-# need more volume to compound returns. 350 trades/day = ~$700-1000 deployed.
-MAX_DAILY_TRADES = 350
+# Phase 4 (RECOVERY): cut from 350->100. Volume was masking the fact that
+# we were losing 100% of resolved trades. Quality > quantity until WR > 50%.
+MAX_DAILY_TRADES = 100
 
 # Phase 7+27: Price floor — minimum contract cost to avoid fee traps
 # Phase 27: Lowered to 10¢ — maker has 0 fees, cheap contracts offer
 # asymmetric payoff (risk 10¢ to win 90¢ = 9:1 reward/risk).
-MIN_PRICE_FLOOR_CENTS = 10             # 10¢ minimum — maker mode has no fees
-MIN_PRICE_FLOOR_LEARNING_CENTS = 8     # 8¢ minimum (learning mode)
+# Phase 4 (RECOVERY): Raised floor from 10c->18c. Bot was buying 1-9c
+# extreme long-shot YES contracts and 100% settled NO. Stay above the
+# long-shot bias zone where YES contracts are systematically overpriced.
+MIN_PRICE_FLOOR_CENTS = 18             # 18c minimum - avoid YES long-shot trap
+MIN_PRICE_FLOOR_LEARNING_CENTS = 15    # 15c minimum (learning mode)
+
+# Phase 4: also cap upside - buying 90c+ contracts is just betting the
+# favorite pays out. Edge there is usually noise.
+MAX_PRICE_CEILING_CENTS = 82           # Don't buy above 82c
 
 # Phase 15: Circuit breaker — pause trading if accuracy drops below threshold
 # Phase 22: Lowered from 30→15 trades so breaker trips faster on bad streaks.
 # Cooldown 4h→2h: resume sooner after retrain to collect fresh learning data.
 CIRCUIT_BREAKER_MIN_TRADES = 15
-CIRCUIT_BREAKER_MIN_ACCURACY = 0.35    # pause if accuracy < 35%
-CIRCUIT_BREAKER_COOLDOWN_HOURS = 2     # stay paused for 2 hours (was 4)
+CIRCUIT_BREAKER_MIN_ACCURACY = 0.40    # Phase 5: pause if accuracy < 40% (was 35%)
+CIRCUIT_BREAKER_COOLDOWN_HOURS = 4     # Phase 5: 4h cooldown (was 2h) - let learner catch up
+
+# Phase 5: Multi-level circuit breakers (NEW)
+# Hard kill switch - stop trading entirely until manual reset.
+KILL_SWITCH_MAX_DRAWDOWN_PCT = 0.08    # 8% account drawdown -> kill
+KILL_SWITCH_MAX_CONSECUTIVE_LOSSES = 15 # 15 in a row -> kill
+KILL_SWITCH_MAX_DAILY_LOSS_CENTS = 10000  # $100 lost in one day -> kill
+KILL_SWITCH_COOLDOWN_HOURS = 24        # 24h forced cooldown after kill
+
+# Soft pause - auto-resume after cooldown.
+SOFT_PAUSE_CONSECUTIVE_LOSSES = 8      # 8 in a row -> 1h pause
+SOFT_PAUSE_COOLDOWN_HOURS = 1
+
+# Side-imbalance kill: if we trip side-balance gate >100 times/hour we have
+# a systemic bias bug - pause and alert.
+SIDE_IMBALANCE_RATE_LIMIT = 100        # rejections per hour
 
 # ── Dynamic edge caps by market category ────────────────────────────
 # Maximum edge the model is allowed to claim.  Edges above these caps
@@ -103,10 +125,27 @@ CATEGORY_EDGE_CAPS: dict[str, float] = {
 # data collection phase so more trades flow through for model training.
 LEARNING_MODE_EDGE_CAP_MULT = 2.0  # 100% higher caps during learning
 
+# ── PHASE 1 (May 2026): SIDE BALANCE DEFENSE ─────────────────────────
+# Critical fix: prior runs showed 1035/1035 trades all predicted YES.
+# Symptom of broken heuristic + signal collusion. We now monitor recent
+# side distribution and BLOCK further same-side trades when imbalance
+# exceeds the threshold. Forces the bot to sample both sides for
+# learning, prevents catastrophic single-side bias.
+SIDE_BALANCE_WINDOW = 50            # Look at last N trades
+SIDE_BALANCE_MAX_RATIO = 0.75       # Block if >75% of recent trades are one side
+SIDE_BALANCE_MIN_TRADES = 10        # Only enforce after this many trades
+
+# ── PHASE 2 (May 2026): FORCE TRAINING DESPITE IMBALANCE ─────────────
+# When all resolved labels are one side (e.g. 100% NO), the old
+# MIN_CLASS_BALANCE check blocks training forever. We now permit
+# training with synthetic minority oversampling at lower thresholds.
+MIN_CLASS_BALANCE_HARD = 0.05       # Below this, even SMOTE can't help
+USE_SYNTHETIC_OVERSAMPLING = True   # Enable SMOTE-like oversampling
+
 # ── Diversification limits ──────────────────────────────────────────
-# Phase 36: Even more aggressive — deploy capital to 2X the account.
-MAX_PER_EVENT = 15      # Phase 36: 15 per event — maximize event exposure
-MAX_PER_CATEGORY = 80   # Phase 36: 80 per category — deploy capital heavily
+# Phase 4 (RECOVERY): Severe cap until WR proven.
+MAX_PER_EVENT = 3       # Phase 4: only 3 contracts per event (was 15)
+MAX_PER_CATEGORY = 15   # Phase 4: 15 per category (was 80) - diversify
 
 # ── Order lifecycle ─────────────────────────────────────────────────
 ORDER_STALE_SECONDS = 150.0  # Phase 27: cancel unfilled after 2.5 min — faster capital recycling
@@ -136,10 +175,10 @@ FILL_PROB_MIN_STALE_SECONDS = 60.0   # Phase 27: 1 min floor — recycle capital
 # ── Phase 4: Capital Recycling ──────────────────────────────────────
 # Minimum available balance (after reservations) before we stop opening
 # new positions. Prevents over-commitment.
-CAPITAL_RECYCLE_MIN_BALANCE_CENTS = 100  # Phase 27: $1.00 minimum — deploy almost everything
+CAPITAL_RECYCLE_MIN_BALANCE_CENTS = 200000  # Phase 4: keep $2000 dry powder
 
 # Maximum fraction of total balance that can be reserved in pending orders
-MAX_RESERVED_CAPITAL_PCT = 0.85  # Phase 27: up to 85% of balance in orders
+MAX_RESERVED_CAPITAL_PCT = 0.50  # Phase 4: max 50% deployed (was 85%)
 
 # How often to reconcile fills with the exchange (catch missed WS fills)
 FILL_RECONCILE_INTERVAL_S = 120.0  # every 2 min

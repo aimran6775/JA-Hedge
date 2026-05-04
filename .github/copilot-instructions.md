@@ -1,5 +1,9 @@
 # Copilot instructions for JA Hedge
 
+
+DONT USE TERMINAL for lines for longer runs. use script instead.
+
+
 ## Architecture overview
 - **Monorepo**: `backend/` (FastAPI + Python 3.11) and `frontend/` (Next.js 15 + React 19 + Tailwind).
 - **Domain**: AI-powered algorithmic trading on Kalshi event contracts (politics, sports, weather, crypto, etc.).
