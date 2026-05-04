@@ -199,7 +199,7 @@ async def recovery_status() -> dict:
     except Exception as e:
         return {"error": str(e), "alive": False}
 
-    state = frank.state
+    state = getattr(frank, "_state", None) or getattr(frank, "state", None)
 
     # Side distribution over recent trades
     trades = list(getattr(frank.memory, "_trades", []))
@@ -224,7 +224,7 @@ async def recovery_status() -> dict:
     params = params_obj.params.to_dict() if params_obj and hasattr(params_obj, "params") else {}
 
     # Rejections
-    rejections = dict(getattr(state, "scan_debug_rejections", {}) or {})
+    rejections = dict(getattr(state, "scan_debug_rejections", {}) or {}) if state else {}
 
     # Health flags
     diagnostics = []
