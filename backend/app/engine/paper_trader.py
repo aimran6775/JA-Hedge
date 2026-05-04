@@ -639,7 +639,12 @@ class PaperTradingSimulator:
         yes_ask = getattr(cached, "yes_ask", None)
         no_bid = getattr(cached, "no_bid", None)
         no_ask = getattr(cached, "no_ask", None)
-        volume = getattr(cached, "volume", 0) or 0
+        # Phase 8 (RECOVERY): Market.volume is Decimal | None - coerce to float
+        # to avoid `Decimal / float` TypeError downstream.
+        try:
+            volume = float(getattr(cached, "volume", 0) or 0)
+        except (TypeError, ValueError):
+            volume = 0.0
 
         # Convert to cents if needed
         def _to_cents(v: Any) -> int | None:
