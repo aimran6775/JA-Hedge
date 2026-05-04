@@ -1135,6 +1135,28 @@ class MarketScanner:
                     rejections["side_imbalance"] = rejections.get("side_imbalance", 0) + 1
                 continue
 
+            # ── PHASE 18 (May 2026): CROSS-PLATFORM SANITY GATE ──────
+            # If Polymarket / Vegas strongly disagrees with our side, block.
+            # Polymarket is a deeper market; if it says NO at 25% but we want
+            # YES at Kalshi 50%, the cross-platform mispricing is the signal,
+            # but only one direction is correct. Trade WITH the consensus.
+            try:
+                poly_prob = float(getattr(features, 'alt_polymarket_prob', 0.0) or 0.0)
+                vegas_prob = float(getattr(features, 'alt_vegas_prob', 0.0) or 0.0)
+                ext_prob = poly_prob if poly_prob > 0 else vegas_prob
+                if ext_prob > 0:
+                    veto = (
+                        (prediction.side == "yes" and ext_prob < 0.40)
+                        or (prediction.side == "no" and ext_prob > 0.60)
+                    )
+                    if veto:
+                        rejections = getattr(state, "scan_debug_rejections", None)
+                        if rejections is not None:
+                            rejections["cross_platform_veto"] = rejections.get("cross_platform_veto", 0) + 1
+                        continue
+            except Exception:
+                pass
+
             # Market-anchor sanity (edge cap)
             cat = detect_category(market.title or "", market.category or "", ticker=market.ticker)
             MAX_ALLOWED_EDGE = CATEGORY_EDGE_CAPS.get(cat, 0.12)
@@ -1898,6 +1920,21 @@ class MarketScanner:
         if hasattr(prediction, "prediction_std") and prediction.prediction_std > 0:
             uncertainty_scale = max(0.2, 1.0 - prediction.prediction_std * 3.0)
             adjusted *= uncertainty_scale
+
+        # Phase 22 (May 2026): Tree-agreement Kelly discount.
+        # If individual ensemble trees disagree, the prediction is fragile.
+        # Scale Kelly by tree_agreement so coin-flippy signals get small bets.
+        # tree_agreement of 1.0 = full kelly, 0.55 = ~55% kelly, < 0.55 already
+        # blocked above.
+        if hasattr(prediction, "tree_agreement") and prediction.tree_agreement > 0:
+            ta_scale = max(0.30, min(1.0, prediction.tree_agreement))
+            adjusted *= ta_scale
+
+        # Phase 22: Calibration-error discount. If model is poorly calibrated
+        # at this probability level, take a smaller bet.
+        if hasattr(prediction, "calibration_error") and prediction.calibration_error > 0.05:
+            cal_scale = max(0.40, 1.0 - prediction.calibration_error * 2.0)
+            adjusted *= cal_scale
 
         # Phase 5: discount by predicted fill probability
         # Lower fill prob → smaller position (capital may sit idle)

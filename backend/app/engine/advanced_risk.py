@@ -32,11 +32,12 @@ log = get_logger("engine.advanced_risk")
 class PortfolioRiskLimits:
     """Enhanced risk limits for the whole portfolio."""
 
-    # Position limits — Phase 28c: AGGRESSIVE capital deployment
-    max_positions: int = 200                   # Phase 28c: lots of positions
-    max_per_event: int = 15                    # Phase 28c: 15 per event (synced with scanner)
-    max_per_category: int = 60                 # Phase 28c: 60 per category
-    max_portfolio_cost_cents: int = 8000_00    # Phase 28c: $8,000 max deployed (80% of $10k)
+    # Position limits — Phase 21 (May 2026): tightened diversification
+    # to prevent correlated wipeout (e.g., 15 positions on the same NBA game).
+    max_positions: int = 200                   # Lots of positions OK if uncorrelated
+    max_per_event: int = 4                     # Phase 21: HARD CAP — 4 per event
+    max_per_category: int = 25                 # Phase 21: 25 per category (was 60)
+    max_portfolio_cost_cents: int = 8000_00    # $8,000 max deployed (80% of $10k)
 
     # Loss limits — Phase 27: accept higher drawdowns for higher returns
     max_daily_loss_cents: int = 500_00         # Phase 27: $500 daily loss
@@ -47,14 +48,14 @@ class PortfolioRiskLimits:
     scale_down_on_loss: bool = True
     scale_factor_per_loss_pct: float = 2.0     # Phase 27: 2x reduction per % (gentler)
 
-    # Concentration — Phase 28c: allow larger single positions
-    max_single_position_pct: float = 0.20      # Phase 28c: 20% in one position
-    max_correlated_exposure_pct: float = 0.50  # Phase 28c: 50% in correlated
+    # Concentration — Phase 21: tightened to prevent single-position blowups
+    max_single_position_pct: float = 0.10      # Phase 21: 10% in one position (was 20%)
+    max_correlated_exposure_pct: float = 0.30  # Phase 21: 30% in correlated (was 50%)
 
-    # Phase 18+28c: Correlation thresholds
+    # Phase 18+21: Correlation thresholds
     correlation_high_threshold: float = 0.70
-    max_same_event_cost_pct: float = 0.40      # Phase 28c: 40% of balance in same event
-    max_same_category_cost_pct: float = 0.70   # Phase 28c: 70% of balance in same category
+    max_same_event_cost_pct: float = 0.15      # Phase 21: 15% in same event (was 40%)
+    max_same_category_cost_pct: float = 0.40   # Phase 21: 40% in same category (was 70%)
 
 
 @dataclass
