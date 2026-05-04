@@ -23,21 +23,23 @@ export function LiveTab() {
         api.frankenstein.analytics().catch(() => null),
       ]);
       
-      // Transform trades with proper P&L
-      const transformed = (tradesRes || []).map((t: RawTrade) => ({
-        id: t.trade_id || `${t.ticker}-${t.timestamp}`,
-        ticker: t.ticker,
-        title: t.market_title || prettifyTicker(t.ticker),
-        side: t.side,
-        count: t.count,
-        priceCents: t.price_cents,
-        pnlCents: t.pnl_cents || 0,
-        outcome: t.outcome || "pending",
-        confidence: t.confidence || 0,
-        edge: t.edge || 0,
-        timestamp: t.timestamp,
-        category: t.category || "unknown",
-      }));
+      // Transform trades with proper P&L (defensive — backend fields may be missing)
+      const transformed = (tradesRes || [])
+        .filter((t: RawTrade) => t && t.ticker)
+        .map((t: RawTrade) => ({
+          id: t.trade_id || `${t.ticker}-${t.timestamp}`,
+          ticker: t.ticker || "",
+          title: t.market_title || prettifyTicker(t.ticker || ""),
+          side: t.side_executed || t.predicted_side || t.side || "",
+          count: t.count ?? 0,
+          priceCents: t.price_cents ?? 0,
+          pnlCents: t.pnl_cents ?? 0,
+          outcome: t.outcome || "pending",
+          confidence: t.confidence ?? 0,
+          edge: t.edge ?? 0,
+          timestamp: t.timestamp ?? 0,
+          category: t.category || "unknown",
+        }));
       setTrades(transformed);
 
       // Build equity curve from analytics
@@ -200,22 +202,25 @@ interface Trade {
   outcome: string;
   confidence: number;
   edge: number;
-  timestamp: string;
+  timestamp: string | number;
   category: string;
 }
 
 interface RawTrade {
   trade_id?: string;
-  ticker: string;
+  ticker?: string;
   market_title?: string;
-  side: string;
-  count: number;
-  price_cents: number;
+  // Backend uses predicted_side / side_executed; older rows may use `side`
+  predicted_side?: string;
+  side_executed?: string;
+  side?: string;
+  count?: number;
+  price_cents?: number;
   pnl_cents?: number;
   outcome?: string;
   confidence?: number;
   edge?: number;
-  timestamp: string;
+  timestamp?: string | number;
   category?: string;
 }
 
@@ -264,7 +269,7 @@ function TradeRow({ trade }: { trade: Trade }) {
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-primary truncate">{trade.title}</div>
           <div className="text-[10px] text-muted">
-            {trade.side.toUpperCase()} x{trade.count} @ {trade.priceCents}c
+            {(trade.side || "--").toUpperCase()} x{trade.count} @ {trade.priceCents}c
             <span className="mx-1">·</span>
             {timeAgo(trade.timestamp)}
           </div>
