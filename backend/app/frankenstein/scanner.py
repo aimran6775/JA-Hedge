@@ -30,6 +30,8 @@ from app.frankenstein.confidence import ConfidenceBreakdown, ConfidenceScorer
 from app.frankenstein.constants import (
     CATEGORY_EDGE_CAPS,
     MAX_DAILY_TRADES,
+    MAX_HOURS_TO_EXPIRY_LEARNING,
+    MAX_HOURS_TO_EXPIRY_TRAINED,
     MAX_PER_CATEGORY,
     MAX_PER_EVENT,
     MIN_PRICE_FLOOR_CENTS,
@@ -544,8 +546,16 @@ class MarketScanner:
                 from datetime import datetime, timezone as _tz
                 _delta = (m.expiration_time - datetime.now(_tz.utc)).total_seconds() / 3600
                 # Sports/props often expire within an hour — allow shorter
-                _min_hours = 0.5 if self._is_in_learning_mode() else 0.75
+                _learning = self._is_in_learning_mode()
+                _min_hours = 0.5 if _learning else 0.75
                 if _delta < _min_hours:
+                    continue
+                # Phase 27: cap how far in the future a market can settle.
+                # Without this the bot fills its daily cap with 2029-2030
+                # entertainment futures that never resolve → no training labels.
+                _max_hours = MAX_HOURS_TO_EXPIRY_LEARNING if _learning else MAX_HOURS_TO_EXPIRY_TRAINED
+                if _delta > _max_hours:
+                    self._max_expiry_drops = getattr(self, "_max_expiry_drops", 0) + 1
                     continue
 
             pre_filtered.append(m)

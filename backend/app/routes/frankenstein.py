@@ -267,6 +267,13 @@ async def recovery_status() -> dict:
 
     # Rejections
     rejections = dict(getattr(state, "scan_debug_rejections", {}) or {}) if state else {}
+    # Phase 27: also surface pre-filter expiry-ceiling drops
+    try:
+        scanner = getattr(frank, "_scanner", None)
+        if scanner is not None:
+            rejections["max_expiry_ceiling"] = int(getattr(scanner, "_max_expiry_drops", 0))
+    except Exception:
+        pass
 
     # Health flags
     diagnostics = []
