@@ -61,14 +61,13 @@ USE_MAKER_ORDERS = True
 # we were losing 100% of resolved trades. Quality > quantity until WR > 50%.
 MAX_DAILY_TRADES = 100
 
-# Phase 27: Cap how far in the future a market can settle.
-# Bot was burning daily cap on 2029-2030 entertainment/political futures
-# (KXTRUMPPARDONS-29*, BEYONCEGENRE-30*, KXTAYLORSWIFTWEDDING-30*) that
-# never resolve in our lifetime → 0 training labels → model stays untrained
-# forever. While learning, force short-dated markets so memory fills with
-# resolved outcomes. Once trained, allow longer horizons.
-MAX_HOURS_TO_EXPIRY_LEARNING = 72       # 3 days while untrained
-MAX_HOURS_TO_EXPIRY_TRAINED = 336       # 14 days once trained
+# Phase 27: Day-trading horizon cap.
+# Bot is a DAY TRADER — same-day settlement preferred, 1 week absolute max.
+# Anything longer (2029-2030 entertainment futures etc.) gets dropped so the
+# learning loop actually closes within the same trading session.
+# Learning mode is even tighter so memory fills with resolved labels fast.
+MAX_HOURS_TO_EXPIRY_LEARNING = 24       # 1 day while untrained (intraday only)
+MAX_HOURS_TO_EXPIRY_TRAINED = 168       # 7 days absolute ceiling once trained
 
 # Phase 7+27: Price floor — minimum contract cost to avoid fee traps
 # Phase 27: Lowered to 10¢ — maker has 0 fees, cheap contracts offer

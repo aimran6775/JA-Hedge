@@ -359,12 +359,23 @@ class MarketScanner:
 
         # Phase 17: Rank by composite score — EV * fill probability proxy
         # Tighter spreads → higher fill probability → rank higher
+        # Phase 27: Day-trading bias — prefer faster-settling markets so the
+        # learning loop closes within the session. Same-day = 1.0x, +1d = 0.85x,
+        # +3d = 0.6x, +7d = 0.4x. Markets that resolve today produce labels today.
         def _rank_score(c: dict) -> float:
             ev = c["ev"]
             spread = c["features"].spread  # 0-1 range
-            # Spread penalty: 1¢ spread → 1.0x, 5¢ → 0.7x, 10¢ → 0.5x
             spread_factor = max(0.3, 1.0 - spread * 5.0)
-            return ev * spread_factor
+            hrs = float(getattr(c["features"], "hours_to_expiry", 24.0) or 24.0)
+            if hrs <= 12:
+                speed_factor = 1.0
+            elif hrs <= 24:
+                speed_factor = 0.90
+            elif hrs <= 72:
+                speed_factor = 0.65
+            else:
+                speed_factor = 0.45
+            return ev * spread_factor * speed_factor
 
         trade_candidates.sort(key=_rank_score, reverse=True)
 
