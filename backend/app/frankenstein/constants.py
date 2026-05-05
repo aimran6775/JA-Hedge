@@ -62,13 +62,12 @@ USE_MAKER_ORDERS = True
 MAX_DAILY_TRADES = 100
 
 # Phase 27: Day-trading horizon cap.
-# Bot is a DAY TRADER — same-day settlement preferred, 1 week absolute max.
-# Phase 27c: 24h was too tight (only sports/crypto/weather settle same-day,
-# and that starved the bot of candidates). Use 96h learning / 168h trained
-# as the hard ceiling, but the rank-score bias in scanner._rank_score still
-# strongly prefers <12h and <24h markets, so same-day always wins ties.
-MAX_HOURS_TO_EXPIRY_LEARNING = 96       # 4 days while untrained
-MAX_HOURS_TO_EXPIRY_TRAINED = 168       # 7 days absolute ceiling once trained
+# Hard ceiling: 1 week (user requirement). The bot prefers same-day markets
+# via _rank_score speed_factor (see scanner.py): <12h=1.0x, <24h=0.9x,
+# <72h=0.65x, else 0.45x. So short-dated always wins ranking ties, but the
+# 1-week ceiling keeps enough candidate volume for the daily cap to fill.
+MAX_HOURS_TO_EXPIRY_LEARNING = 168      # 1 week while untrained
+MAX_HOURS_TO_EXPIRY_TRAINED = 168       # 1 week absolute ceiling once trained
 
 # Phase 7+27: Price floor — minimum contract cost to avoid fee traps
 # Phase 27: Lowered to 10¢ — maker has 0 fees, cheap contracts offer
